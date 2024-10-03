@@ -13,6 +13,7 @@ const backend = require('./backend/index');
 backend.createWebSocketServer(server);
 
 // Serve Backend APIs
+app.use(express.json());
 app.use('/api', backend.router);
 
 // Serve frontend static files

@@ -6,18 +6,41 @@ const app = express();
 
 
 let wss;
+const clients = new Map();
+
 
 function createWebSocketServer(server) {
   wss = new WebSocket.Server({ server });
 
-  wss.on("connection", (ws) => {
-    console.log("New WebSocket connection");
-    ws.on("message", (message) => {
-      console.log(`Received Message: ${message}`);
-      ws.send("Hello from WebSocket server");
+  wss.on('connection', (ws) => {
+    console.log('New client connected');
+  
+    ws.on('message', (message) => {
+      const data = JSON.parse(message);
+      
+      if (data.username) {
+        clients.set(data.username, ws); 
+        console.log(`Client connected: ${data.username}`);
+      }
+      console.log("aaaa: "+Array.from(clients));
+    });
+  
+    ws.on('close', () => {
+      for (let [username, client] of clients) {
+        if (client === ws) {
+          clients.delete(username);
+          console.log(`Client disconnected: ${username}`);
+        }
+      }
+      console.log("bbbb:"+Array.from(clients));
     });
   });
+  
+  
 };
+
+
+connectDB();
 
 app.use('/', router);
 

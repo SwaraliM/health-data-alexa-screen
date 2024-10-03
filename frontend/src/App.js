@@ -1,27 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import WelcomePage from './pages/WelcomePage'; 
 
 function App() {
-  const [message, setMessage] = useState('');
-
-  useEffect(() => {
-    const socket = new WebSocket(process.env.BACKEND_WEBSOCKET_URL); // WebSocket server URL
-    socket.onopen = () => {
-      console.log('WebSocket connected');
-      socket.send('Hello from React');
-    };
-    socket.onmessage = (event) => {
-      setMessage(event.data);
-    };
-    return () => {
-      socket.close();
-    };
-  }, []);
 
   return (
-    <div className="App">
-      <h1>WebSocket Example</h1>
-      <p>Message from server: {message}</p>
-    </div>
+    <Router>
+    <Routes>
+    <Route path="/" element={<WelcomePage />} />
+    </Routes>
+  </Router>
   );
 }
 

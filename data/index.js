@@ -1,4 +1,5 @@
 const axios = require('axios');
+const connectDB = require('./dbConnect');
 
 async function fetchData() {
   try {
@@ -8,6 +9,8 @@ async function fetchData() {
     console.error('Error fetching data:', error);
   }
 }
+
+// connectDB();
 
 // fetch data every hour
 setInterval(fetchData, 60 * 60 * 1000);
