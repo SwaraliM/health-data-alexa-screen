@@ -1,7 +1,8 @@
 const express = require("express");
-const router = express.Router();
 const WebSocket = require("ws");
 const connectDB = require('./dbConnect');
+const router = require('./routes');
+const app = express();
 
 
 let wss;
@@ -18,12 +19,7 @@ function createWebSocketServer(server) {
   });
 };
 
-connectDB();
-
-
-router.get("/", (req, res) => {
-  res.send("Hello from Backend");
-});
+app.use('/', router);
 
 module.exports = {
   router,
