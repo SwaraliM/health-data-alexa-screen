@@ -21,6 +21,7 @@ function WelcomePage() {
       .then((response) => response.json())
       .then((data) => {
         if (data.message == LOGIN_SUCCESS && data.isAuthorized) {
+          localStorage.setItem('username', username);
           //establish websocket
           const socket = new WebSocket(
             process.env.REACT_APP_BACKEND_WEBSOCKET_URL
@@ -36,6 +37,7 @@ function WelcomePage() {
             navigate(`/dashboard/${username}`);
           };
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
+          localStorage.setItem('username', username);
           navigate("/auth");
         } else {
           alert("Login failed. Please check your username and password.");

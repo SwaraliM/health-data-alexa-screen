@@ -23,7 +23,7 @@ const userSchema = new mongoose.Schema({
     required: false,
   },
   tokenExpiry: {
-    type: Date,
+    type: String,
     required: false,
   },
 });
