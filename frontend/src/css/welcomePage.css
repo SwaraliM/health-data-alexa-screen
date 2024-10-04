@@ -1,0 +1,51 @@
+.title {
+  font-size: var(--font-size-h1); /* Use the global h1 font size */
+  color: #f3f3f3; /* White color for visibility against the dark background */
+  margin-bottom: 20px; /* Add some space below the title */
+}
+
+form {
+  /* background-color: red; */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px;
+  color: #f3f3f3;
+}
+
+label {
+  /* background-color: green; */
+  margin: 30px;
+  font-size: var(--font-size-h2);
+}
+
+.input-name {
+    margin-right: 30px;
+}
+
+input {
+    width: 300px;
+    padding: 10px;
+    margin-bottom: 20px;
+    font-size: var(--font-size-h3);
+    border-radius: 5px;
+    border: 1px solid #ccc;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+  }
+
+  button {
+    width: auto;
+    padding: 10px 70px;
+    margin-top: 20px;
+    background-color: #ff920d;
+    color: #202020;
+    font-size: var(--font-size-h2);
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+  }
+  
+  button:hover {
+    background-color: #ffad4a; /* Darker shade on hover */
+  }

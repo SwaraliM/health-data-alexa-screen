@@ -24,7 +24,7 @@ app.get('*', (req, res) => {
 });
 
 // Start data-sync server
-const data = spawn('node', ['data/index.js'], { stdio: 'inherit' });
+// const data = spawn('node', ['data/index.js'], { stdio: 'inherit' });
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

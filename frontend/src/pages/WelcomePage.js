@@ -2,6 +2,8 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { LOGIN_SUCCESS } from "../utils/constants";
+import PageLayout from "../components/PageLayout";
+import '../css/welcomePage.css';
 
 function WelcomePage() {
   const [username, setUsername] = useState("");
@@ -47,12 +49,12 @@ function WelcomePage() {
   };
 
   return (
-    <div>
-      <h1>Welcome</h1>
+    <PageLayout>
+      <div className="title">Welcome to Voice Assistant Applicaiton</div>
       <form onSubmit={handleSubmit}>
         <div>
           <label>
-            Username:
+            <span className="input-name">Username:</span>
             <input
               type="text"
               value={username}
@@ -63,7 +65,7 @@ function WelcomePage() {
         </div>
         <div>
           <label>
-            Password:
+          <span className="input-name">Password:</span>
             <input
               type="password"
               value={password}
@@ -74,7 +76,7 @@ function WelcomePage() {
         </div>
         <button type="submit">Login</button>
       </form>
-    </div>
+    </PageLayout>
   );
 }
 

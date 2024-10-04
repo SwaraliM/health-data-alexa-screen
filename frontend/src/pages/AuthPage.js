@@ -1,4 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect } from "react";
+import PageLayout from "../components/PageLayout";
+import '../css/authPage.css';
 
 const AuthPage = () => {
   useEffect(() => {
@@ -8,7 +10,11 @@ const AuthPage = () => {
     window.location.href = fitbitAuthUrl;
   }, []);
 
-  return <div>redirecting to Fitbit Authentication Page, Please wait...</div>;
+  return (
+    <PageLayout>
+      <div>Redirecting to Fitbit Authentication Page, Please Wait...</div>
+    </PageLayout>
+  );
 };
 
 export default AuthPage;

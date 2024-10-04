@@ -1,0 +1,4 @@
+div {
+    font-size: var(--font-size-h1); /* Use the global h1 font size */
+    color: #f3f3f3; /* White color for visibility against the dark background */
+  }

@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import PageLayout from "../components/PageLayout";
+import '../css/authCallback.css';
 
 const AuthCallback = () => {
   const navigate = useNavigate();
@@ -59,6 +61,16 @@ const AuthCallback = () => {
           throw new Error("error in saving token");
         }
 
+        //establish websocket
+        const socket = new WebSocket(
+          process.env.REACT_APP_BACKEND_WEBSOCKET_URL
+        );
+
+        socket.onopen = () => {
+          socket.send(JSON.stringify({ username }));
+          console.log(`WebSocket connection established for user: ${username}`);
+        };
+
         navigate(`/dashboard/${username}`);
       } catch (error) {
         console.error("error:", error);
@@ -70,7 +82,11 @@ const AuthCallback = () => {
     }
   }, []);
 
-  return <div>processing，please wait...</div>;
+  return (
+    <PageLayout>
+      <div>Processing, Please Wait...</div>
+    </PageLayout>
+  );
 };
 
 export default AuthCallback;

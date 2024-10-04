@@ -1,0 +1,12 @@
+.page-layout {
+    width: 1440px; /* Common width for MacBook Pro */
+    height: 900px;  /* Maintain aspect ratio */
+    background-color: #2E4265; /* background color*/
+    border-radius: 10px; /* Rounded corners, optional */
+    box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); /* Slight shadow effect */
+    margin: 100px auto; /* Center alignment */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}

@@ -21,8 +21,9 @@ function createWebSocketServer(server) {
       if (data.username) {
         clients.set(data.username, ws); 
         console.log(`Client connected: ${data.username}`);
+        console.log(`ws: ${ws}`);
+        console.log(`========`);
       }
-      console.log("aaaa: "+Array.from(clients));
     });
   
     ws.on('close', () => {
@@ -32,7 +33,6 @@ function createWebSocketServer(server) {
           console.log(`Client disconnected: ${username}`);
         }
       }
-      console.log("bbbb:"+Array.from(clients));
     });
   });
   
