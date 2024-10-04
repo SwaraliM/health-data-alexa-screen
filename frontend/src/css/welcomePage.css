@@ -1,6 +1,6 @@
 .title {
   font-size: var(--font-size-h1); /* Use the global h1 font size */
-  color: #f3f3f3; /* White color for visibility against the dark background */
+  color: var(--main-light-text-color); /* White color for visibility against the dark background */
   margin-bottom: 20px; /* Add some space below the title */
 }
 
@@ -10,7 +10,7 @@ form {
   flex-direction: column;
   align-items: center;
   padding: 10px;
-  color: #f3f3f3;
+  color: var(--main-light-text-color);
 }
 
 label {
@@ -37,8 +37,8 @@ input {
     width: auto;
     padding: 10px 70px;
     margin-top: 20px;
-    background-color: #ff920d;
-    color: #202020;
+    background-color: var(--dark-orange-color);
+    color: var(--main-dark-text-color);
     font-size: var(--font-size-h2);
     border: none;
     border-radius: 5px;
@@ -47,5 +47,5 @@ input {
   }
   
   button:hover {
-    background-color: #ffad4a; /* Darker shade on hover */
+    background-color: var(--light-orange-color);
   }

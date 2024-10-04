@@ -5,6 +5,7 @@ import AuthCallback from "./pages/AuthCallback";
 import DashboardPage from "./pages/Dashboard";
 import "./App.css"
 import "./css/fonts.css";
+import "./css/colors.css";
 
 function App() {
   return (
