@@ -2,6 +2,7 @@ const express = require("express");
 const WebSocket = require("ws");
 const connectDB = require('./dbConnect');
 const loginRouter = require('./routers/loginRouter');
+const fitbitRouter = require('./routers/fitbitRouter');
 const app = express();
 
 
@@ -43,6 +44,7 @@ connectDB();
 
 const router = express.Router();
 router.use('/login', loginRouter);
+router.use('/fitbit', fitbitRouter);
 app.use('/', router);
 
 module.exports = {
