@@ -84,7 +84,7 @@ const AuthCallback = () => {
 
   return (
     <PageLayout>
-      <div>Processing, Please Wait...</div>
+      <div className="auth-info">Processing, Please Wait...</div>
     </PageLayout>
   );
 };

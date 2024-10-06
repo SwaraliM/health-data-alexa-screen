@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const http = require('http');
 
 const app = express();
+const cors = require('cors');
 const server = http.createServer(app); // Create http server and bind Express app
 
 // Import the backend module with the WebSocket server function
@@ -13,6 +14,7 @@ const backend = require('./backend/index');
 backend.createWebSocketServer(server);
 
 // Serve Backend APIs
+app.use(cors());
 app.use(express.json());
 app.use('/api', backend.router);
 

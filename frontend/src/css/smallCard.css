@@ -1,0 +1,46 @@
+.small-card-content{
+    /* background-color: red; */
+    width: 100%;
+    height: 100%;
+}
+
+.small-card-title-row{
+    height: 50%;
+    /* background-color: red; */
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.small-card-title{
+    /* background-color: green; */
+    width: 80%;
+    height: 100%;
+    font-size: var(--font-size-h2);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.small-card-icon{
+    /* background-color: yellow; */
+    margin-left: 25px;
+    width: 20%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: var(--font-size-h1);
+    
+}
+
+.small-card-value{
+    /* background-color: darkgoldenrod; */
+    width: 100%;
+    height: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: var(--font-size-h1);
+}

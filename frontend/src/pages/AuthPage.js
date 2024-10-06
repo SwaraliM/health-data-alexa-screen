@@ -12,7 +12,7 @@ const AuthPage = () => {
 
   return (
     <PageLayout>
-      <div>Redirecting to Fitbit Authentication Page, Please Wait...</div>
+      <div className="auth-info">Redirecting to Fitbit Authentication Page, Please Wait...</div>
     </PageLayout>
   );
 };

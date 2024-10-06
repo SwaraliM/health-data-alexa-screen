@@ -1,4 +1,4 @@
-div {
+.auth-info {
     font-size: var(--font-size-h1); /* Use the global h1 font size */
     color: var(--main-light-text-color); /* White color for visibility against the dark background */
   }
