@@ -1,7 +1,7 @@
 const express = require("express");
 const WebSocket = require("ws");
 const connectDB = require('./dbConnect');
-const router = require('./routes');
+const loginRouter = require('./routers/loginRouter');
 const app = express();
 
 
@@ -39,9 +39,10 @@ function createWebSocketServer(server) {
   
 };
 
-
 connectDB();
 
+const router = express.Router();
+router.use('/login', loginRouter);
 app.use('/', router);
 
 module.exports = {

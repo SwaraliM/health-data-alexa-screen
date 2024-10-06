@@ -24,7 +24,7 @@ const fetchFitbitData = async (user) => {
     const fitbitData = await response.json();
     console.log('Fitbit data for user:', user.username, fitbitData);
 
-    // 将获取的数据保存到数据库（下一步实现）
+    // saving data to db（TODO）
     // await saveFitbitDataToDB(user, fitbitData);
 
   } catch (error) {
@@ -36,7 +36,7 @@ const fetchFitbitData = async (user) => {
 // fetch data every hour
 cron.schedule('*/1 * * * *', async () => {
   try {
-    const response = await fetch('http://localhost:5000/api/authorized-users');
+    const response = await fetch('http://localhost:5000/api/login/authorized-users');
     const users = await response.json();
 
     if (!response.ok) {

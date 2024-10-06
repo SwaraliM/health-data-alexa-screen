@@ -42,7 +42,7 @@ const AuthCallback = () => {
 
         //save token
         const saveTokenResponse = await fetch(
-          "http://localhost:5000/api/save-token",
+          "http://localhost:5000/api/login/save-token",
           {
             method: "POST",
             headers: {
