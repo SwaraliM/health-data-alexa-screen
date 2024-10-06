@@ -1,6 +1,7 @@
 import React from 'react';
 import { useParams } from 'react-router-dom';
 import PageLayout from '../components/PageLayout';
+import '../css/dashboard.css';
 
 function DashboardPage() {
   // get username from url
@@ -8,8 +9,13 @@ function DashboardPage() {
 
   return (
     <PageLayout>
-      <h1>{username}'s Dashboard</h1>
-      <p>Welcome to your personalized dashboard, {username}!</p>
+       <div className="header">
+          <div className='title'>Dashboard</div>
+          <div className='welcome'>Welcome, {username}!</div>
+        </div>
+        <div className="body">
+          <p>Here is your Fitbit data and other health statistics.</p>
+        </div>
     </PageLayout>
   );
 }

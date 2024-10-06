@@ -7,7 +7,7 @@ fitbitRouter.get("/:username/activities/today", async (req, res) => {
   const { username } = req.params;
 
   try {
-    // 查找用户的 access token
+    // searching access token
     const user = await User.findOne({ username });
 
     if (!user) {
