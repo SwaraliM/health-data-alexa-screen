@@ -6,6 +6,7 @@ import DashboardPage from "./pages/Dashboard";
 import "./App.css"
 import "./css/fonts.css";
 import "./css/colors.css";
+import MedicationPage from "./pages/MedicationPage";
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="/auth" element={<AuthPage />} />
           <Route path="/auth-callback" element={<AuthCallback />} />
           <Route path="/dashboard/:username" element={<DashboardPage />} />
+          <Route path="/medication/:username" element={<MedicationPage />} />
         </Routes>
       </Router>
     </div>

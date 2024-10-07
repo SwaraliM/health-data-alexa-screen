@@ -6,7 +6,7 @@ import { FaPills, FaCapsules, FaSyringe, FaTint } from 'react-icons/fa';
 
 const MedicationCard = ({ medicationSections, backgroundColor }) => {
 
-    medicationSections = [
+    medicationSections = medicationSections == null? [
         {
           subtitle: "Morning",
           list: [
@@ -52,7 +52,7 @@ const MedicationCard = ({ medicationSections, backgroundColor }) => {
             },
           ],
         },
-      ];
+      ] : medicationSections;
 
 
   return (
@@ -66,8 +66,8 @@ const MedicationCard = ({ medicationSections, backgroundColor }) => {
                 <div key={medIndex} className="medication-item">
                   <div className="medication-icon">{medication.icon}</div>
                   <div className="medication-info">
-                    <div className="medication-name">{medication.name}</div>
-                    <div className="medication-note">{medication.note}</div>
+                    <div className="med-card-medication-name">{medication.name}</div>
+                    <div className="med-card-medication-note">{medication.note}</div>
                   </div>
                   <div className="medication-status">
                     {medication.taken ? (

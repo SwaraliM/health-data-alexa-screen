@@ -3,6 +3,7 @@ const WebSocket = require("ws");
 const connectDB = require('./dbConnect');
 const loginRouter = require('./routers/loginRouter');
 const fitbitRouter = require('./routers/fitbitRouter');
+const medicationRouter = require('./routers/medicationRouter');
 const app = express();
 const cors = require('cors');
 
@@ -46,6 +47,7 @@ connectDB();
 const router = express.Router();
 router.use('/login', loginRouter);
 router.use('/fitbit', fitbitRouter);
+router.use('/med',medicationRouter);
 app.use(cors());
 app.use('/', router);
 
