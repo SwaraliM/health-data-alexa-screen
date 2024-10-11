@@ -19,12 +19,63 @@ function DashboardPage() {
         const response = await fetch(
           `http://localhost:5000/api/fitbit/${username}/activities/today`
         );
+        let data;
         if (!response.ok) {
-          throw new Error("Failed to fetch Fitbit data");
+          // throw new Error("Failed to fetch Fitbit data");
+          data = {
+            "activities": [],
+            "goals": {
+                "activeMinutes": 30,
+                "caloriesOut": 2588,
+                "distance": 8.05,
+                "steps": 10000
+            },
+            "summary": {
+                "activeScore": -1,
+                "activityCalories": 0,
+                "caloriesBMR": 1196,
+                "caloriesOut": 1196,
+                "distances": [
+                    {
+                        "activity": "total",
+                        "distance": 0
+                    },
+                    {
+                        "activity": "tracker",
+                        "distance": 0
+                    },
+                    {
+                        "activity": "loggedActivities",
+                        "distance": 0
+                    },
+                    {
+                        "activity": "veryActive",
+                        "distance": 0
+                    },
+                    {
+                        "activity": "moderatelyActive",
+                        "distance": 0
+                    },
+                    {
+                        "activity": "lightlyActive",
+                        "distance": 0
+                    },
+                    {
+                        "activity": "sedentaryActive",
+                        "distance": 0
+                    }
+                ],
+                "fairlyActiveMinutes": 0,
+                "lightlyActiveMinutes": 0,
+                "marginalCalories": 0,
+                "sedentaryMinutes": 928,
+                "steps": 0,
+                "veryActiveMinutes": 0
+            }
+        };
+        }else{
+          data = await response.json();
         }
-        const data = await response.json();
-        console.log("data: " + JSON.stringify(data, null, 2));
-        console.log("data-summary: " + JSON.stringify(data.summary, null, 2));
         setFitbitData(data);
       } catch (error) {
         console.error("Error fetching Fitbit data:", error);
