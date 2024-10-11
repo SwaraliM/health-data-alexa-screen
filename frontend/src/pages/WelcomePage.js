@@ -26,7 +26,7 @@ function WelcomePage() {
           localStorage.setItem('username', username);
           //establish websocket
           const socket = new WebSocket(
-            process.env.REACT_APP_BACKEND_WEBSOCKET_URL
+            process.env.REACT_APP_BACKEND_URL
           );
 
           socket.onopen = () => {
