@@ -27,9 +27,9 @@ fitbitRouter.get("/:username/activities/today", async (req, res) => {
       }
     );
 
-    if (!response.ok) {
-      throw new Error("Error fetching Fitbit data");
-    }
+    // if (!response.ok) {
+    //   throw new Error("Error fetching Fitbit data");
+    // }
 
     const fitbitData = await response.json();
     res.status(200).json(fitbitData);
