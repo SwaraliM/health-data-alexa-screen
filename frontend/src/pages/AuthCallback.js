@@ -67,7 +67,7 @@ const AuthCallback = () => {
         );
 
         socket.onopen = () => {
-          socket.send(JSON.stringify({ username }));
+          socket.send(JSON.stringify({ "username": username }));
           console.log(`WebSocket connection established for user: ${username}`);
         };
 
