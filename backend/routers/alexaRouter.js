@@ -4,7 +4,10 @@ const {getClients} = require('../websocket');
 
 
 alexaRouter.post("/command", (req, res) => {
-    const { command, options, username } = req.body;
+    let { command, options, username } = req.body;
+    username = username.toLowerCase();
+
+    console.log(username);
 
     console.log(JSON.stringify(req.body));
 
