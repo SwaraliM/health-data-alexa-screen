@@ -6,6 +6,8 @@ const {getClients} = require('../websocket');
 alexaRouter.post("/command", (req, res) => {
     const { command, options, username } = req.body;
 
+    const clients = getClients();
+
     if (!username || !clients.has(username)) {
         return res.status(400).json({ message: "No client connected with the given username." });
     }

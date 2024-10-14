@@ -61,16 +61,6 @@ const AuthCallback = () => {
           throw new Error("error in saving token");
         }
 
-        //establish websocket
-        const socket = new WebSocket(
-          process.env.REACT_APP_BACKEND_WEBSOCKET_URL
-        );
-
-        socket.onopen = () => {
-          socket.send(JSON.stringify({ "username": username }));
-          console.log(`WebSocket connection established for user: ${username}`);
-        };
-
         navigate(`/dashboard/${username}`);
       } catch (error) {
         console.error("error:", error);

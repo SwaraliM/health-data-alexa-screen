@@ -24,20 +24,7 @@ function WelcomePage() {
       .then((data) => {
         if (data.message == LOGIN_SUCCESS && data.isAuthorized) {
           localStorage.setItem('username', username);
-          //establish websocket
-          const socket = new WebSocket(
-            process.env.REACT_APP_BACKEND_URL
-          );
-
-          socket.onopen = () => {
-            socket.send(JSON.stringify({ "username": username }));
-            console.log(
-              `WebSocket connection established for user: ${username}`
-            );
-
-            // nav to dashboard
-            navigate(`/dashboard/${username}`);
-          };
+          navigate(`/dashboard/${username}`);
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
           localStorage.setItem('username', username);
           navigate("/auth");
