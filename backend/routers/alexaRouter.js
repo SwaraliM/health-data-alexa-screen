@@ -6,6 +6,8 @@ const {getClients} = require('../websocket');
 alexaRouter.post("/command", (req, res) => {
     const { command, options, username } = req.body;
 
+    console.log(JSON.stringify(req.body));
+
     const clients = getClients();
 
     if (!username || !clients.has(username)) {
