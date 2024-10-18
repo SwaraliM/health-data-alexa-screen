@@ -24,7 +24,7 @@ function WelcomePage() {
       .then((data) => {
         if (data.message == LOGIN_SUCCESS && data.isAuthorized) {
           localStorage.setItem('username', username);
-          navigate(`/dashboard/${username}`);
+          navigate(`/activity/${username}`);
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
           localStorage.setItem('username', username);
           navigate("/auth");

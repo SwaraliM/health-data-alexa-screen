@@ -61,7 +61,7 @@ const AuthCallback = () => {
           throw new Error("error in saving token");
         }
 
-        navigate(`/dashboard/${username}`);
+        navigate(`/activity/${username}`);
       } catch (error) {
         console.error("error:", error);
       }

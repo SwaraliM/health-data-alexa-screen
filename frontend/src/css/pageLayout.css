@@ -1,6 +1,6 @@
 .page-layout {
-    width: 1440px; /* Common width for MacBook Pro */
-    height: 900px;  /* Maintain aspect ratio */
+    width: 2000px; /* for Amazon Fire Max 11 tablet */
+    height: 1200px;  /* Maintain aspect ratio */
     background-image: url(../../public/welcomeBackground.jpg);
     background-size: 100% 100%;
     border-radius: 10px; /* Rounded corners, optional */
