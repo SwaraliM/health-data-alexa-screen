@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import PageLayout from "../components/PageLayout";
 import '../css/authCallback.css';
+import { getCurrentDate } from '../utils/getCurrentDate';
 
 const AuthCallback = () => {
   const navigate = useNavigate();
@@ -61,7 +62,9 @@ const AuthCallback = () => {
           throw new Error("error in saving token");
         }
 
-        navigate(`/activity/${username}`);
+
+        const todayDate = getCurrentDate();
+        navigate(`/activity/${todayDate}/${username}`);
       } catch (error) {
         console.error("error:", error);
       }

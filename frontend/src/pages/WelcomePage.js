@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { LOGIN_SUCCESS } from "../utils/constants";
 import PageLayout from "../components/PageLayout";
 import '../css/welcomePage.css';
+import { getCurrentDate } from '../utils/getCurrentDate';
 
 function WelcomePage() {
   const [username, setUsername] = useState("");
@@ -24,7 +25,8 @@ function WelcomePage() {
       .then((data) => {
         if (data.message == LOGIN_SUCCESS && data.isAuthorized) {
           localStorage.setItem('username', username);
-          navigate(`/activity/${username}`);
+          const todayDate = getCurrentDate();
+          navigate(`/activity/${todayDate}/${username}`);
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
           localStorage.setItem('username', username);
           navigate("/auth");

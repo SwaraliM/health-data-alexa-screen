@@ -10,6 +10,7 @@ import MedicationCard from "../components/MedicationCard";
 function ActivityPage() {
   // get username from url
   const { username } = useParams();
+  const { date } = useParams();
 
   const [fitbitData, setFitbitData] = useState(null);
 
@@ -80,7 +81,7 @@ function ActivityPage() {
   return (
     <PageLayout>
       <div className="header">
-        <div className="title">Activity</div>
+        <div className="title">ACTIVITY - {date}</div>
         <div className="welcome">Welcome, {username}!</div>
       </div>
       {fitbitData ? (

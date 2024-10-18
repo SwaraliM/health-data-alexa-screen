@@ -41,7 +41,7 @@ function Root() {
       <Route path="/" element={<WelcomePage />} />
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/auth-callback" element={<AuthCallback />} />
-      <Route path="/activity/:username" element={<ActivityPage />} />
+      <Route path="/activity/:date/:username" element={<ActivityPage />} />
       <Route path="/medication/:username" element={<MedicationPage />} />
     </Routes>
   );
