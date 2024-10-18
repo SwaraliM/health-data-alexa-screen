@@ -6,7 +6,6 @@ import ActivityPage from "./pages/ActivityPage";
 import "./App.css";
 import "./css/fonts.css";
 import "./css/colors.css";
-import MedicationPage from "./pages/MedicationPage";
 import { connectWebSocket } from "./utils/websocket";
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -42,7 +41,6 @@ function Root() {
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/auth-callback" element={<AuthCallback />} />
       <Route path="/activity/:date/:username" element={<ActivityPage />} />
-      <Route path="/medication/:username" element={<MedicationPage />} />
     </Routes>
   );
 }
