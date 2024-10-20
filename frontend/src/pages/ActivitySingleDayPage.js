@@ -9,6 +9,7 @@ import {
   CloseCircleOutlined,
   ClockCircleOutlined,
   ThunderboltOutlined,
+  FlagOutlined,
   SmileOutlined,
   FrownOutlined,
 } from "@ant-design/icons";
@@ -134,6 +135,66 @@ function ActivityPage() {
         },
       ],
     },
+    {
+      name: "Run",
+      detail: [
+        {
+          title: "Calorie - 137",
+          icon: <FireOutlined style={{ color: 'red' }} />,
+        },
+        {
+          title: "Steps - 2537",
+          icon: <CheckCircleOutlined style={{ color: 'green' }} />,
+        },
+        {
+          title: "Distance - 1.7372 miles",
+          icon: <FlagOutlined />,
+        },
+        {
+          title: "Duration - 31 minutes 50 seconds",
+          icon: <ClockCircleOutlined />,
+        },
+        {
+          title: "Start Time - 16:44",
+          icon: <ClockCircleOutlined />,
+        },
+        {
+          title: "Evaluation - Excellent",
+          description: "Your run was intense, with a great distance and calorie burn. Keep up the good work!",
+          icon: <SmileOutlined style={{ color: 'green' }} />,
+        }
+      ]
+    },
+    {
+      name: "Run",
+      detail: [
+        {
+          title: "Calorie - 114",
+          icon: <FireOutlined style={{ color: 'red' }} />,
+        },
+        {
+          title: "Steps - 2330",
+          icon: <CheckCircleOutlined style={{ color: 'green' }} />,
+        },
+        {
+          title: "Distance - 1.77164 miles",
+          icon: <FlagOutlined />,
+        },
+        {
+          title: "Duration - 26 minutes 42 seconds",
+          icon: <ClockCircleOutlined />,
+        },
+        {
+          title: "Start Time - 17:58",
+          icon: <ClockCircleOutlined />,
+        },
+        {
+          title: "Evaluation - Good",
+          description: "Solid run with good distance and calorie burn. Keep it up for even better performance.",
+          icon: <SmileOutlined style={{ color: 'green' }} />,
+        }
+      ]
+    }
   ];
 
   const singleValueData = [
@@ -359,7 +420,7 @@ function ActivityPage() {
                     itemLayout="horizontal"
                     dataSource={activity.detail}
                     renderItem={(item) => (
-                      <List.Item>
+                      <List.Item style={{ padding: '2px 0' }}>
                         <List.Item.Meta
                           avatar={item.icon}
                           title={<Text strong>{item.title}</Text>}
