@@ -26,7 +26,7 @@ function WelcomePage() {
         if (data.message == LOGIN_SUCCESS && data.isAuthorized) {
           localStorage.setItem('username', username);
           const todayDate = getCurrentDate();
-          navigate(`/activity/${todayDate}/${username}`);
+          navigate(`/activity/single-day/${todayDate}/${username}`);
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
           localStorage.setItem('username', username);
           navigate("/auth");
@@ -39,7 +39,7 @@ function WelcomePage() {
 
   return (
     <PageLayout>
-      <div className="title">Welcome to Voice Assistant Applicaiton</div>
+      <div className="welcome-title">Welcome to Voice Assistant Applicaiton</div>
       <form onSubmit={handleSubmit}>
         <div>
           <label>
