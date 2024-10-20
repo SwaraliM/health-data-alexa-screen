@@ -1,14 +1,9 @@
-.page-layout {
+.page-layout-clean {
     width: 2000px; /* for Amazon Fire Max 11 tablet */
     height: 1200px;  /* Maintain aspect ratio */
     background-image: url(../../public/welcomeBackground.jpg);
     background-size: 100% 100%;
     border-radius: 10px; /* Rounded corners, optional */
     box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); /* Slight shadow effect */
-    margin: 100px auto; /* Center alignment */
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    
+    margin: 100px auto; /* Center alignment */  
 }
