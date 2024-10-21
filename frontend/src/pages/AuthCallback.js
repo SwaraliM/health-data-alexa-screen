@@ -64,7 +64,7 @@ const AuthCallback = () => {
 
 
         const todayDate = getCurrentDate();
-        navigate(`/activity/${todayDate}/${username}`);
+        navigate(`/activity/single-day/${todayDate}/${username}`);
       } catch (error) {
         console.error("error:", error);
       }
