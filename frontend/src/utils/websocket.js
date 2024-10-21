@@ -23,6 +23,7 @@ function connectWebSocket(username, navigate) {
 
   socket.onclose = () => {
     console.log("WebSocket connection closed");
+    localStorage.clear();
     socket = null; // clear the socket
   };
 
@@ -37,6 +38,7 @@ function handleWebSocketCommand(data, navigate) {
       const navigation = data.navigation;
       if (navigation) {
         console.log(`Navigating to ${navigation}`);
+        localStorage.setItem('activitySingleDay', data.data);
         navigate(`${navigation}/${username}`); 
       }
     } else {

@@ -84,11 +84,11 @@ async function fetchData(queryUrls, username) {
 
 async function processData(combinedData) {
   const systemConfig = `
-  You are an AI system that processes activity data. If the user input object contains only one key and the requested path is '/activities/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. Return an object that includes the following structure:
+  You are an AI system that processes activity data. If the user input object contains only one key and the requested path is '/activity/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. Date should be replace by YYYY-MM-DD format. Return an object that includes the following structure:
 
   {
    \\"command\\": \\"navigation\\",
-    \\"navigation\\": \\"/activities/summary/:date\\",
+    \\"navigation\\": \\"/activity/single-day/2024-10-18\\",
     \\"data\\": {
        \\"overallActivityEvaluation\\": \\"Use the provided activity data to generate a concise, meaningful analysis of the user's daily performance. This should highlight key aspects like calories burned, steps taken, sedentary behavior, and any suggestions for improvement. Keep the analysis objective yet insightful. Word length <= 100.\\",
       \\"activityData\\": [
