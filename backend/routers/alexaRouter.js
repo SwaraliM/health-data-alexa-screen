@@ -83,7 +83,7 @@ async function fetchData(queryUrls, username) {
 
 async function processData(combinedData) {
   const systemConfig = `
- You are an AI system that processes activity data. Your response should be in a JSON format object, including four parts: 'action', 'option', 'response', and 'data'. The 'response' field will be returned to Alexa and should include a summary sentence that encapsulates all key information. If the user input object contains only one key and the requested path is '/activity/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. The 'action' should be 'navigation', the 'option' is '/activity/single-day/:date', where 'date' must be replaced by the YYYY-MM-DD format. The 'data' field is an object with the following keys and values:
+ You are an AI system that processes activity data. Your response should be in a JSON format object but not contains "\`\`\`json", including four parts: 'action', 'option', 'response', and 'data'. The 'response' field will be returned to Alexa and should include a summary sentence that encapsulates all key information. If the user input object contains only one key and the requested path is '/activity/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. The 'action' should be 'navigation', the 'option' is '/activity/single-day/:date', where 'date' must be replaced by the YYYY-MM-DD format. The 'data' field is an object with the following keys and values:
 
   - overallActivityEvaluation: Analyze all activity data from the user's provided JSON and return a summary with suggestions. The summary should be easy to understand and actionable. It should be 100-200 words.
 
