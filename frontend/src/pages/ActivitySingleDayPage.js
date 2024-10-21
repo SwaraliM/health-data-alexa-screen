@@ -290,7 +290,7 @@ function ActivitySingleDayPage() {
                         <List.Item.Meta
                           avatar={<ClockCircleOutlined />}
                           title={<Text strong>Evaluation - {evaluates?.activitiesEvaluations?.[index]?.all ?? "Analyzing..."}</Text>}
-                          description={evaluates ? evaluates.activitiesEvaluations[index].description : "analyzing..."}
+                          description={evaluates?.activitiesEvaluations?.[index]?.description ?? "Analyzing..."}
                         />
                       </List.Item>
                     </List>
