@@ -29,7 +29,7 @@ async function analyzeQuestion(question) {
 
   // OpenAI request payload
   const requestBody = {
-    model: "gpt-4o", // model
+    model: "gpt-4o-mini", // model
     messages: [systemMessage, userMessage],
     max_tokens: 150, // reply max length
   };
@@ -125,7 +125,7 @@ async function processData(combinedData) {
 
   // OpenAI request payload
   const requestBody = {
-    model: "gpt-4o", // model
+    model: "gpt-4o-mini", // model
     messages: [systemMessage, userMessage],
     max_tokens: 2000, // reply max length
   };
