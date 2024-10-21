@@ -17,185 +17,62 @@ import { Pie, Tiny, Column } from "@ant-design/plots";
 
 const { Title, Text } = Typography;
 
-function ActivityPage() {
+function ActivitySingleDayPage() {
   // Get username from the URL
   const { username } = useParams();
   const { date } = useParams();
 
-  const overallActivityEvaluation = 
-  "Today, you burned a total of 1656 calories, including 373 calories from activities. While you completed several workouts and runs, your overall activity level was low, as you spent 1340 minutes sedentary. You logged 5351 steps, which is just over half of your step goal. Your run sessions were the most effective in terms of calorie burn, but activities like biking and interval workouts recorded minimal progress. To meet your goals, consider incorporating more active minutes, focusing on high-calorie-burning activities, and reducing sedentary time.";
+  const [data, setData] = useState(null);
 
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        console.log(
+          `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit/${username}/activities/summary/${date}`
+        );
+        const response = await fetch(
+          `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit//${username}/activities/summary/${date}`
+        );
+        if (!response.ok) {
+          throw new Error("Network response was not ok");
+        }
+        const result = await response.json();
+        console.log("Setting data:", result);
+        setData(result);
+      } catch (error) {
+        throw new Error("error");
+      }
+    };
 
-  const activityData = [
-    {
-      name: "Interval Workout",
-      detail: [
-        {
-          title: "Calorie - 10",
-          icon: <FireOutlined style={{ color: "red" }} />,
-        },
-        {
-          title: "Steps - 0",
-          icon: <CheckCircleOutlined style={{ color: "green" }} />,
-        },
-        {
-          title: "Duration - 10 minutes 37 seconds",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Start Time - 14:56",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Evaluation - Bad",
-          description:
-            "Your Interval Workout was low in intensity with minimal calorie burn and no recorded steps. Consider increasing the intensity or duration next time for better results.",
-          icon: <FrownOutlined style={{ color: "red" }} />,
-        },
-      ],
-    },
-    {
-      name: "Workout",
-      detail: [
-        {
-          title: "Calorie - 27",
-          icon: <FireOutlined style={{ color: "red" }} />,
-        },
-        {
-          title: "Steps - 12",
-          icon: <CheckCircleOutlined style={{ color: "green" }} />,
-        },
-        {
-          title: "Duration - 21 minutes 10 seconds",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Start Time - 15:07",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Evaluation - Average",
-          description:
-            "Your workout was moderate in intensity. Increasing either the duration or intensity could help you achieve better results.",
-          icon: <ThunderboltOutlined style={{ color: "orange" }} />,
-        },
-      ],
-    },
-    {
-      name: "Bike",
-      detail: [
-        {
-          title: "Calorie - 0",
-          icon: <FireOutlined style={{ color: "red" }} />,
-        },
-        {
-          title: "Steps - 0",
-          icon: <CloseCircleOutlined style={{ color: "red" }} />,
-        },
-        {
-          title: "Duration - 6 seconds",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Start Time - 15:28",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Evaluation - Poor",
-          description:
-            "The bike session recorded minimal activity. For better results, aim for a longer, more intense ride next time.",
-          icon: <FrownOutlined style={{ color: "red" }} />,
-        },
-      ],
-    },
-    {
-      name: "Workout",
-      detail: [
-        {
-          title: "Calorie - 49",
-          icon: <FireOutlined style={{ color: "red" }} />,
-        },
-        {
-          title: "Steps - 15",
-          icon: <CheckCircleOutlined style={{ color: "green" }} />,
-        },
-        {
-          title: "Duration - 38 minutes 7 seconds",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Start Time - 15:28",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Evaluation - Good",
-          description:
-            "Great workout! You burned a good amount of calories and had consistent movement.",
-          icon: <SmileOutlined style={{ color: "green" }} />,
-        },
-      ],
-    },
-    {
-      name: "Run",
-      detail: [
-        {
-          title: "Calorie - 137",
-          icon: <FireOutlined style={{ color: 'red' }} />,
-        },
-        {
-          title: "Steps - 2537",
-          icon: <CheckCircleOutlined style={{ color: 'green' }} />,
-        },
-        {
-          title: "Distance - 1.7372 miles",
-          icon: <FlagOutlined />,
-        },
-        {
-          title: "Duration - 31 minutes 50 seconds",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Start Time - 16:44",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Evaluation - Excellent",
-          description: "Your run was intense, with a great distance and calorie burn. Keep up the good work!",
-          icon: <SmileOutlined style={{ color: 'green' }} />,
-        }
-      ]
-    },
-    {
-      name: "Run",
-      detail: [
-        {
-          title: "Calorie - 114",
-          icon: <FireOutlined style={{ color: 'red' }} />,
-        },
-        {
-          title: "Steps - 2330",
-          icon: <CheckCircleOutlined style={{ color: 'green' }} />,
-        },
-        {
-          title: "Distance - 1.77164 miles",
-          icon: <FlagOutlined />,
-        },
-        {
-          title: "Duration - 26 minutes 42 seconds",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Start Time - 17:58",
-          icon: <ClockCircleOutlined />,
-        },
-        {
-          title: "Evaluation - Good",
-          description: "Solid run with good distance and calorie burn. Keep it up for even better performance.",
-          icon: <SmileOutlined style={{ color: 'green' }} />,
-        }
-      ]
+    fetchData();
+  }, []);
+
+  function convertTime(duration) {
+    // 将毫秒转换为秒
+    let seconds = Math.floor((duration / 1000) % 60);
+    let minutes = Math.floor((duration / (1000 * 60)) % 60);
+    let hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
+    
+    let result = [];
+  
+    // 判断是否有小时、分钟、秒，依次加入结果字符串
+    if (hours > 0) {
+      result.push(`${hours} hour${hours > 1 ? 's' : ''}`);
     }
-  ];
+    if (minutes > 0) {
+      result.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
+    }
+    if (seconds > 0) {
+      result.push(`${seconds} second${seconds > 1 ? 's' : ''}`);
+    }
+  
+    // 返回可读的时间字符串
+    return result.join(' ');
+  }
+  
+
+  const overallActivityEvaluation =
+    "Today, you burned a total of 1656 calories, including 373 calories from activities. While you completed several workouts and runs, your overall activity level was low, as you spent 1340 minutes sedentary. You logged 5351 steps, which is just over half of your step goal. Your run sessions were the most effective in terms of calorie burn, but activities like biking and interval workouts recorded minimal progress. To meet your goals, consider incorporating more active minutes, focusing on high-calorie-burning activities, and reducing sedentary time.";
 
   const singleValueData = [
     {
@@ -402,7 +279,9 @@ function ActivityPage() {
         </Col>
       </Row>
       <Row justify="space-around">
-        <Col span={20}><Text strong>{overallActivityEvaluation}</Text></Col>
+        <Col span={20}>
+          <Text strong>{overallActivityEvaluation}</Text>
+        </Col>
       </Row>
       <Divider
         variant="dashed"
@@ -410,67 +289,101 @@ function ActivityPage() {
           borderColor: "#2E4265",
         }}
       />
-      <Row justify="space-around">
-        <Col span={7}>
-          <Row gutter={[10, 10]}>
-            {activityData.map((activity) => (
-              <Col span={12} key={activity.name}>
-                <Card title={activity.name} bordered={false} size="small">
-                  <List
-                    itemLayout="horizontal"
-                    dataSource={activity.detail}
-                    renderItem={(item) => (
-                      <List.Item style={{ padding: '2px 0' }}>
+      {data !== null ? (
+        <Row justify="space-around">
+          <Col span={7}>
+            <Row gutter={[10, 10]}>
+              {data.activities.map((activity) => (
+                <Col span={12} key={activity.activityId}>
+                  <Card title={activity.name} bordered={false} size="small">
+                    <List itemLayout="horizontal">
+                      <List.Item style={{ padding: "2px 0" }}>
                         <List.Item.Meta
-                          avatar={item.icon}
-                          title={<Text strong>{item.title}</Text>}
-                          description={item.description || ""}
+                          avatar={
+                            <FireOutlined style={{ color: "red" }} />
+                          }
+                          title={<Text strong>Calorie - {activity.calories}</Text>}
                         />
                       </List.Item>
-                    )}
-                  />
+                      <List.Item style={{ padding: "2px 0" }}>
+                        <List.Item.Meta
+                          avatar={
+                            <CheckCircleOutlined style={{ color: "green" }}/>
+                          }
+                          title={<Text strong>Steps - {activity.steps}</Text>}
+                        />
+                      </List.Item>
+                      <List.Item style={{ padding: "2px 0" }}>
+                        <List.Item.Meta
+                          avatar={
+                            <ClockCircleOutlined />
+                          }
+                          title={<Text strong>Duration - {convertTime(activity.duration)}</Text>}
+                        />
+                      </List.Item>
+                      <List.Item style={{ padding: "2px 0" }}>
+                        <List.Item.Meta
+                          avatar={
+                            <ClockCircleOutlined />
+                          }
+                          title={<Text strong>Start Time - {activity.startTime}</Text>}
+                        />
+                      </List.Item>
+                      <List.Item style={{ padding: "2px 0" }}>
+                        <List.Item.Meta
+                          avatar={
+                            <ClockCircleOutlined />
+                          }
+                          title={<Text strong>Evaluation - Analyzing</Text>}
+                          description = {"analyzing..."}
+                        />
+                      </List.Item>
+                    </List>
+                  </Card>
+                </Col>
+              ))}
+            </Row>
+          </Col>
+          <Col span={15}>
+            <Row gutter={[10, 10]}>
+              {singleValueData.map((item, index) => (
+                <Col span={5} key={index}>
+                  <Card title={item.key} bordered={false} size="small">
+                    Value: {item.value}
+                    <br />
+                    Note: {item.description}
+                  </Card>
+                </Col>
+              ))}
+              {goalPercentage.map((item, index) => (
+                <Col span={5} key={index}>
+                  <Card title={item.name} bordered={false} size="small">
+                    Goal: {item.goal}; Current: {item.current}
+                    <Tiny.Ring {...goalPercentageConfigs[index]} />
+                    Note: {item.description}
+                  </Card>
+                </Col>
+              ))}
+              <Col span={8}>
+                <Card size="small">
+                  <Pie {...pieConfig} />
+                  <Text strong>{activityTimeEvaluation}</Text>
                 </Card>
               </Col>
-            ))}
-          </Row>
-        </Col>
-        <Col span={15}>
-          <Row gutter={[10, 10]}>
-            {singleValueData.map((item, index) => (
-              <Col span={5} key={index}>
-                <Card title={item.key} bordered={false} size="small">
-                  Value: {item.value}
-                  <br />
-                  Note: {item.description}
+              <Col span={8}>
+                <Card size="small">
+                  <Column {...activityCaloriesConfig} />
+                  <Text strong>{activityCaloriesEvaluation}</Text>
                 </Card>
               </Col>
-            ))}
-            {goalPercentage.map((item, index) => (
-              <Col span={5} key={index}>
-                <Card title={item.name} bordered={false} size="small">
-                  Goal: {item.goal}; Current: {item.current}
-                  <Tiny.Ring {...goalPercentageConfigs[index]} />
-                  Note: {item.description}
-                </Card>
-              </Col>
-            ))}
-            <Col span={8}>
-              <Card size="small">
-                <Pie {...pieConfig} />
-                <Text strong>{activityTimeEvaluation}</Text>
-              </Card>
-            </Col>
-            <Col span={8}>
-              <Card size="small">
-                <Column {...activityCaloriesConfig} />
-                <Text strong>{activityCaloriesEvaluation}</Text>
-              </Card>
-            </Col>
-          </Row>
-        </Col>
-      </Row>
+            </Row>
+          </Col>
+        </Row>
+      ) : (
+        <div>loading...</div>
+      )}
     </PageLayoutClean>
   );
 }
 
-export default ActivityPage;
+export default ActivitySingleDayPage;
