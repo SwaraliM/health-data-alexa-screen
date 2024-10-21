@@ -34,10 +34,10 @@ function connectWebSocket(username, navigate) {
 function handleWebSocketCommand(data, navigate) {
     const username = localStorage.getItem('username');
     if (data.command === "navigation") {
-      const { page } = data.options;
-      if (page) {
-        console.log(`Navigating to ${page}`);
-        navigate(`/${page}/${username}`); 
+      const navigation = data.navigation;
+      if (navigation) {
+        console.log(`Navigating to ${navigation}`);
+        navigate(`${navigation}/${username}`); 
       }
     } else {
       console.log("Unknown command received:", data.command);
