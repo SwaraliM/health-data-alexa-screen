@@ -146,6 +146,45 @@ async function processData(combinedData) {
   return processedData;
 }
 
+
+
+async function getAlexaResponse(combinedData) {
+    const systemConfig = `
+   You are an AI system that processes activity data. The response should be a string that contains the overall evaluation and some insightful suggestion to user. The answser should not be too long. The length should be reasonable to speak out back to user.
+    The last sentence of response should tell the user detailed anaysis will present in the screen in about 15 seconds.
+   `;
+  
+    const systemMessage = {
+      role: "system",
+      content: systemConfig,
+    };
+    // question the user raise
+    const userMessage = {
+      role: "user",
+      content: JSON.stringify(combinedData),
+    };
+  
+    // OpenAI request payload
+    const requestBody = {
+      model: "gpt-4o", // model
+      messages: [systemMessage, userMessage],
+      max_tokens: 2000, // reply max length
+    };
+  
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+  
+    const data = await response.json();
+    const speakOutput = data.choices[0].message.content.trim();
+    return speakOutput;
+  }
+
 alexaRouter.post("/", async (req, res) => {
   let { question, username } = req.body;
   username = username.toLowerCase();
@@ -165,7 +204,9 @@ alexaRouter.post("/", async (req, res) => {
     console.log("combined data len: ", Object.keys(combinedData).length);
 
     // Step3: analyze combined data, return analysis, stuctured display data
-    const processedData = await processData(combinedData);
+    const alexaResponse = await getAlexaResponse(combinedData);
+    res.status(200).json({ message: alexaResponse });
+
 
     //Step4: send stuctured display data and analysis to frontend using websocket
 
@@ -177,6 +218,8 @@ alexaRouter.post("/", async (req, res) => {
         .json({ message: "No client connected with the given username." });
     }
 
+    const processedData = await processData(combinedData);
+
     const clientSocket = clients.get(username);
     if (clientSocket) {
       const message = processedData;
@@ -186,7 +229,7 @@ alexaRouter.post("/", async (req, res) => {
       console.log(`Sent message to ${username}:`, JSON.stringify(message));
 
       //Step5: send back analysis to alexa to speak out
-      return res.status(200).json({ message: processedData.response });
+    return;
   } else {
       return res.status(500).json({ message: "Failed to send command to client." });
   }
