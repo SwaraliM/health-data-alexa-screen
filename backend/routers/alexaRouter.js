@@ -87,7 +87,7 @@ async function processData(combinedData) {
 
   - overallActivityEvaluation: Analyze all activity data from the user's provided JSON and return a summary with suggestions. The summary should be easy to understand and actionable. It should be 100-200 words.
 
-  - activitiesEvaluations: A list that evaluates each segment of activity in 'data.activities'. Make sure that the length of this equals to the length of activities. Each item in the list is an object containing:
+  - activitiesEvaluations: A list that evaluates each segment of activity in 'data.activities'. Make sure that the length of this perfectly equals to the length of activities.(Important!) Each item in the list is an object containing:
     - 'all': Overall evaluation of the activity as either 'good', 'fair', or 'bad'.
     - 'description': A brief text evaluating the specific activity.
 
@@ -109,7 +109,7 @@ async function processData(combinedData) {
 
   - activityCaloriesEvaluation: A string evaluating the user's total physical activities for the day.
 
-  Note: return should not contains other irrelevant characters, such as "json".
+  Note: return should not contains other irrelevant characters, such as "\`\`\`json".
   Evaluations should be less than 100 words.
   `;
 
