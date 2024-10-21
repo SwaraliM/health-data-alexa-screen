@@ -21,8 +21,13 @@ function ActivitySingleDayPage() {
   // Get username from the URL
   const { username } = useParams();
   const { date } = useParams();
+  const { random } = useParams();
 
   const [data, setData] = useState(null);
+  const [goalPercentageConfigs, setGoalPercentageConfigs] = useState(null);
+  const [pieConfig, setPieConfig] = useState(null);
+  const [activityCaloriesConfig, setActivityCaloriesConfig] = useState(null);
+  const [evaluates, setEvaluates] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -45,225 +50,171 @@ function ActivitySingleDayPage() {
     };
 
     fetchData();
-  }, []);
+
+    const activitySingleDayEvaluation = localStorage.getItem("activitySingleDayEvaluation");
+    localStorage.removeItem('activitySingleDayEvaluation');
+    console.log("ddddd" + activitySingleDayEvaluation);
+    if (activitySingleDayEvaluation) {
+      setEvaluates(JSON.parse(activitySingleDayEvaluation));
+    }
+
+
+  }, [random]);
+  
 
   function convertTime(duration) {
     // 将毫秒转换为秒
     let seconds = Math.floor((duration / 1000) % 60);
     let minutes = Math.floor((duration / (1000 * 60)) % 60);
     let hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
-    
+
     let result = [];
-  
+
     // 判断是否有小时、分钟、秒，依次加入结果字符串
     if (hours > 0) {
-      result.push(`${hours} hour${hours > 1 ? 's' : ''}`);
+      result.push(`${hours} hour${hours > 1 ? "s" : ""}`);
     }
     if (minutes > 0) {
-      result.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
+      result.push(`${minutes} minute${minutes > 1 ? "s" : ""}`);
     }
     if (seconds > 0) {
-      result.push(`${seconds} second${seconds > 1 ? 's' : ''}`);
+      result.push(`${seconds} second${seconds > 1 ? "s" : ""}`);
     }
-  
+
     // 返回可读的时间字符串
-    return result.join(' ');
+    return result.join(" ");
   }
-  
-
-  const overallActivityEvaluation =
-    "Today, you burned a total of 1656 calories, including 373 calories from activities. While you completed several workouts and runs, your overall activity level was low, as you spent 1340 minutes sedentary. You logged 5351 steps, which is just over half of your step goal. Your run sessions were the most effective in terms of calorie burn, but activities like biking and interval workouts recorded minimal progress. To meet your goals, consider incorporating more active minutes, focusing on high-calorie-burning activities, and reducing sedentary time.";
-
-  const singleValueData = [
-    {
-      key: "Basal Metabolic Rate Calories",
-      value: 1288,
-      description:
-        "Your basal metabolic rate is within a typical range. Keep a balanced diet to support this rate.",
-    },
-    {
-      key: "Today's Steps",
-      value: 5351,
-      description:
-        "You've made some progress today, but you're still far from reaching your step goal.",
-    },
-    {
-      key: "Elevation Gained (Meters)",
-      value: 9.144,
-      description:
-        "You have gained a small elevation today. Try increasing activity for more elevation gain.",
-    },
-    {
-      key: "Resting Heart Rate",
-      value: 82,
-      description:
-        "Your resting heart rate is slightly elevated. Consider relaxing and monitoring your heart rate.",
-    },
-  ];
-
-  const activityTimeData = [
-    {
-      type: "Sedentary Minutes",
-      value: 1340,
-    },
-    {
-      type: "Lightly Active Minutes",
-      value: 50,
-    },
-    {
-      type: "Fairly Active Minutes",
-      value: 42,
-    },
-    {
-      type: "Very Active Minutes",
-      value: 8,
-    },
-  ];
 
   const activityTimeEvaluation =
     "You have been sedentary for most of the day with minimal active minutes. Consider increasing your activity levels to improve your overall health.";
 
-  const pieConfig = {
-    data: activityTimeData,
-    radius: 1,
-    angleField: "value",
-    colorField: "type",
-    label: {
-      text: "value",
-      position: "outside",
-      style: {
-        fontSize: 13, // Increase font size
-        fontWeight: "bold",
-      },
-    },
-    legend: {
-      color: {
-        title: false,
-        position: "right",
-        rowPadding: 5,
-      },
-    },
-    width: 350, // Set chart width
-    height: 350, // Set chart height
-  };
+  useEffect(() => {
+    let newConfig = [];
+    if (data) {
+      const keyList = [
+        "steps",
+        "floors",
+        "distance",
+        "caloriesOut",
+        "activeMinutes",
+      ];
+      newConfig = [];
+      for (let i = 0; i < keyList.length; i++) {
+        let percent = data.summary[keyList[i]] / data.goals[keyList[i]];
+        if (keyList[i] === "distance") {
+          percent = data.summary.distances[0].distance / data.goals[keyList[i]];
+        }
+        if (keyList[i] === "activeMinutes") {
+          percent =
+            (data.summary.fairlyActiveMinutes +
+              data.summary.veryActiveMinutes) /
+            data.goals[keyList[i]];
+        }
+        let color = "#FF4D4F"; // Default to red
 
-  const goalPercentage = [
-    {
-      name: "Steps",
-      goal: 10000,
-      current: 6351,
-      description:
-        "You are making good progress, but there's room to reach your step goal.",
-    },
-    {
-      name: "Floors",
-      goal: 10,
-      current: 2,
-      description:
-        "You have climbed some floors today, but more effort is needed to reach your goal.",
-    },
-    {
-      name: "Distance (km)",
-      goal: 8.05,
-      current: 2.7632,
-      description:
-        "You have covered some distance today, but you are far from the target.",
-    },
-    {
-      name: "Calories Burned",
-      goal: 2588,
-      current: 1656,
-      description:
-        "Good job! You're over halfway to your calorie-burning goal.",
-    },
-    {
-      name: "Active Minutes",
-      goal: 30,
-      current: 100,
-      description:
-        "Amazing! You have surpassed your active minutes goal for the day.",
-    },
-  ];
+        if (percent >= 0.8) {
+          percent = 1; // Set to 1 if greater than or equal to 100%
+          color = "#52C41A"; // Green
+        } else if (percent >= 0.4) {
+          color = "#FAAD14"; // Yellow
+        }
 
-  const goalPercentageConfigs = [];
+        percent = percent.toFixed(1); // Round to one decimal place
 
-  for (let i = 0; i < goalPercentage.length; i++) {
-    let percent = goalPercentage[i].current / goalPercentage[i].goal;
-    let color = "#FF4D4F"; // Default to red
+        newConfig.push({
+          percent,
+          width: 120,
+          height: 120,
+          color: ["#E8EFF5", color],
+          annotations: [
+            {
+              type: "text",
+              style: {
+                text: `${(percent * 100).toFixed(0)}%`, // Display as integer percentage
+                x: "50%",
+                y: "50%",
+                textAlign: "center",
+                fontSize: 16,
+                fontStyle: "bold",
+              },
+            },
+          ],
+        });
+      }
+      setGoalPercentageConfigs(newConfig);
 
-    if (percent >= 1) {
-      percent = 1; // Set to 1 if greater than or equal to 100%
-      color = "#52C41A"; // Green
-    } else if (percent >= 0.5) {
-      color = "#FAAD14"; // Yellow
-    }
-
-    percent = percent.toFixed(1); // Round to one decimal place
-
-    goalPercentageConfigs.push({
-      percent,
-      width: 120,
-      height: 120,
-      color: ["#E8EFF5", color],
-      annotations: [
+      /////////
+      const activityTimeData = [
         {
-          type: "text",
+          type: "Sedentary Minutes",
+          value: data.summary.sedentaryMinutes,
+        },
+        {
+          type: "Lightly Active Minutes",
+          value: data.summary.lightlyActiveMinutes,
+        },
+        {
+          type: "Fairly Active Minutes",
+          value: data.summary.fairlyActiveMinutes,
+        },
+        {
+          type: "Very Active Minutes",
+          value: data.summary.veryActiveMinutes,
+        },
+      ];
+      setPieConfig({
+        data: activityTimeData,
+        radius: 1,
+        angleField: "value",
+        colorField: "type",
+        label: {
+          text: "value",
+          position: "outside",
           style: {
-            text: `${(percent * 100).toFixed(0)}%`, // Display as integer percentage
-            x: "50%",
-            y: "50%",
-            textAlign: "center",
-            fontSize: 16,
-            fontStyle: "bold",
+            fontSize: 13, // Increase font size
+            fontWeight: "bold",
           },
         },
-      ],
-    });
-  }
+        legend: {
+          color: {
+            title: false,
+            position: "right",
+            rowPadding: 5,
+          },
+        },
+        width: 350, // Set chart width
+        height: 350, // Set chart height
+      });
+      /////////
+      let activityCalories = [];
 
-  const activityCalories = [
-    {
-      name: "Interval Workout",
-      calories: 10,
-    },
-    {
-      name: "Workout (Session 1)",
-      calories: 27,
-    },
-    {
-      name: "Bike",
-      calories: 70,
-    },
-    {
-      name: "Workout (Session 2)",
-      calories: 49,
-    },
-    {
-      name: "Run (Session 1)",
-      calories: 137,
-    },
-    {
-      name: "Run (Session 2)",
-      calories: 114,
-    },
-  ];
+      for (let i = 0; i < data.activities.length; i++) {
+        activityCalories.push({
+          name: data.activities[i].name,
+          calories: data.activities[i].calories,
+        });
+      }
 
-  const activityCaloriesConfig = {
-    data: activityCalories,
-    xField: "name",
-    yField: "calories",
-    label: {
-      text: (d) => `${d.calories}`,
-      textBaseline: "bottom",
-    },
-    style: {
-      // Rounded corner style
-      radiusTopLeft: 10,
-      radiusTopRight: 10,
-    },
-    width: 350,
-    height: 350,
-  };
+      setActivityCaloriesConfig({
+        data: activityCalories,
+        xField: "name",
+        yField: "calories",
+        label: {
+          text: (d) => `${d.calories}`,
+          textBaseline: "bottom",
+        },
+        style: {
+          // Rounded corner style
+          radiusTopLeft: 10,
+          radiusTopRight: 10,
+        },
+        width: 350,
+        height: 350,
+      });
+    }
+  }, [data]);
+
+  
 
   const activityCaloriesEvaluation =
     "Today, you burned a total of 337 calories across various activities, including interval workouts, running, and workouts. Your highest calorie-burning activity was running, contributing significantly to your overall calorie expenditure. However, there were some activities like biking that recorded minimal or no calorie burn. ";
@@ -280,7 +231,9 @@ function ActivitySingleDayPage() {
       </Row>
       <Row justify="space-around">
         <Col span={20}>
-          <Text strong>{overallActivityEvaluation}</Text>
+          <Text strong>
+            {evaluates ? evaluates.overallActivityEvaluation : "loading..."}
+          </Text>
         </Col>
       </Row>
       <Divider
@@ -293,49 +246,51 @@ function ActivitySingleDayPage() {
         <Row justify="space-around">
           <Col span={7}>
             <Row gutter={[10, 10]}>
-              {data.activities.map((activity) => (
+              {data.activities.map((activity, index) => (
                 <Col span={12} key={activity.activityId}>
                   <Card title={activity.name} bordered={false} size="small">
                     <List itemLayout="horizontal">
                       <List.Item style={{ padding: "2px 0" }}>
                         <List.Item.Meta
-                          avatar={
-                            <FireOutlined style={{ color: "red" }} />
+                          avatar={<FireOutlined style={{ color: "red" }} />}
+                          title={
+                            <Text strong>Calorie - {activity.calories}</Text>
                           }
-                          title={<Text strong>Calorie - {activity.calories}</Text>}
                         />
                       </List.Item>
                       <List.Item style={{ padding: "2px 0" }}>
                         <List.Item.Meta
                           avatar={
-                            <CheckCircleOutlined style={{ color: "green" }}/>
+                            <CheckCircleOutlined style={{ color: "green" }} />
                           }
                           title={<Text strong>Steps - {activity.steps}</Text>}
                         />
                       </List.Item>
                       <List.Item style={{ padding: "2px 0" }}>
                         <List.Item.Meta
-                          avatar={
-                            <ClockCircleOutlined />
+                          avatar={<ClockCircleOutlined />}
+                          title={
+                            <Text strong>
+                              Duration - {convertTime(activity.duration)}
+                            </Text>
                           }
-                          title={<Text strong>Duration - {convertTime(activity.duration)}</Text>}
                         />
                       </List.Item>
                       <List.Item style={{ padding: "2px 0" }}>
                         <List.Item.Meta
-                          avatar={
-                            <ClockCircleOutlined />
+                          avatar={<ClockCircleOutlined />}
+                          title={
+                            <Text strong>
+                              Start Time - {activity.startTime}
+                            </Text>
                           }
-                          title={<Text strong>Start Time - {activity.startTime}</Text>}
                         />
                       </List.Item>
                       <List.Item style={{ padding: "2px 0" }}>
                         <List.Item.Meta
-                          avatar={
-                            <ClockCircleOutlined />
-                          }
-                          title={<Text strong>Evaluation - Analyzing</Text>}
-                          description = {"analyzing..."}
+                          avatar={<ClockCircleOutlined />}
+                          title={<Text strong>Evaluation - {evaluates ? evaluates.activitiesEvaluations[index].all : "Analyzing..."}</Text>}
+                          description={evaluates ? evaluates.activitiesEvaluations[index].description : "analyzing..."}
                         />
                       </List.Item>
                     </List>
@@ -346,41 +301,121 @@ function ActivitySingleDayPage() {
           </Col>
           <Col span={15}>
             <Row gutter={[10, 10]}>
-              {singleValueData.map((item, index) => (
-                <Col span={5} key={index}>
-                  <Card title={item.key} bordered={false} size="small">
-                    Value: {item.value}
-                    <br />
-                    Note: {item.description}
-                  </Card>
-                </Col>
-              ))}
-              {goalPercentage.map((item, index) => (
-                <Col span={5} key={index}>
-                  <Card title={item.name} bordered={false} size="small">
-                    Goal: {item.goal}; Current: {item.current}
-                    <Tiny.Ring {...goalPercentageConfigs[index]} />
-                    Note: {item.description}
-                  </Card>
-                </Col>
-              ))}
+              <Col span={6}>
+                <Card
+                  title="Basal Metabolic Rate Calories"
+                  bordered={false}
+                  size="small"
+                >
+                  Value: {data.summary.caloriesBMR}
+                  <br />
+                  Note: {evaluates ? evaluates.singleValueDataEvaluation[0] : "analyzing..."}
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card title="Today's Steps" bordered={false} size="small">
+                  Value: {data.summary.steps}
+                  <br />
+                  Note: {evaluates ? evaluates.singleValueDataEvaluation[1] : "analyzing..."}
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card
+                  title="Elevation Gained (Meters)"
+                  bordered={false}
+                  size="small"
+                >
+                  Value: {data.summary.elevation}
+                  <br />
+                  Note: {evaluates ? evaluates.singleValueDataEvaluation[2] : "analyzing..."}
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card title="Resting Heart Rate" bordered={false} size="small">
+                  Value: {data.summary.restingHeartRate}
+                  <br />
+                  Note: {evaluates ? evaluates.singleValueDataEvaluation[3] : "analyzing..."}
+                </Card>
+              </Col>
+
+              <Col span={6}>
+                <Card title="Steps" bordered={false} size="small">
+                  Goal: {data.goals.steps}; Current: {data.summary.steps}
+                  {goalPercentageConfigs !== null ? (
+                    <Tiny.Ring {...goalPercentageConfigs[0]} />
+                  ) : (
+                    "Loading..."
+                  )}
+                  Note: {evaluates ? evaluates.goalsPercentageEvaluation[0] : "analyzing..."}
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card title="Floors" bordered={false} size="small">
+                  Goal: {data.goals.floors}; Current: {data.summary.florrs}
+                  {goalPercentageConfigs !== null ? (
+                    <Tiny.Ring {...goalPercentageConfigs[1]} />
+                  ) : (
+                    "Loading..."
+                  )}
+                  Note: {evaluates ? evaluates.goalsPercentageEvaluation[1] : "analyzing..."}
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card title="Distance (km)" bordered={false} size="small">
+                  Goal: {data.goals.distance}; Current:{" "}
+                  {data.summary.distances[0].distance}
+                  {goalPercentageConfigs !== null ? (
+                    <Tiny.Ring {...goalPercentageConfigs[2]} />
+                  ) : (
+                    "Loading..."
+                  )}
+                  Note: {evaluates ? evaluates.goalsPercentageEvaluation[2] : "analyzing..."}
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card title="Calories Burned" bordered={false} size="small">
+                  Goal: {data.goals.caloriesOut}; Current:{" "}
+                  {data.summary.caloriesOut}
+                  {goalPercentageConfigs !== null ? (
+                    <Tiny.Ring {...goalPercentageConfigs[3]} />
+                  ) : (
+                    "Loading..."
+                  )}
+                  Note: {evaluates ? evaluates.goalsPercentageEvaluation[3] : "analyzing..."}
+                </Card>
+              </Col>
+
+              <Col span={6}>
+                <Card title="Active Minutes" bordered={false} size="small">
+                  Goal: {data.goals.activeMinutes}; Current:{" "}
+                  {data.summary.fairlyActiveMinutes +
+                    data.summary.veryActiveMinutes}
+                  {goalPercentageConfigs !== null ? (
+                    <Tiny.Ring {...goalPercentageConfigs[4]} />
+                  ) : (
+                    "Loading..."
+                  )}
+                  Note: {evaluates ? evaluates.goalsPercentageEvaluation[4] : "analyzing..."}
+                </Card>
+              </Col>
+
               <Col span={8}>
                 <Card size="small">
                   <Pie {...pieConfig} />
-                  <Text strong>{activityTimeEvaluation}</Text>
+                  <Text strong>{evaluates ? evaluates.activityTimeDataEvaluation : "analyzing..."}</Text>
                 </Card>
               </Col>
               <Col span={8}>
                 <Card size="small">
                   <Column {...activityCaloriesConfig} />
-                  <Text strong>{activityCaloriesEvaluation}</Text>
+                  <Text strong>{evaluates ? evaluates.activityCaloriesEvaluation : "analyzing..."}</Text>
                 </Card>
               </Col>
             </Row>
           </Col>
         </Row>
       ) : (
-        <div>loading...</div>
+        <div>Loading...</div>
       )}
     </PageLayoutClean>
   );

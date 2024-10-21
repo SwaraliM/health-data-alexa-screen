@@ -34,15 +34,15 @@ function connectWebSocket(username, navigate) {
 
 function handleWebSocketCommand(data, navigate) {
     const username = localStorage.getItem('username');
-    if (data.command === "navigation") {
-      const navigation = data.navigation;
+    if (data.action === "navigation") {
+      const navigation = data.option;
       if (navigation) {
         console.log(`Navigating to ${navigation}`);
-        localStorage.setItem('activitySingleDay', data.data);
-        navigate(`${navigation}/${username}`); 
+        localStorage.setItem('activitySingleDayEvaluation', JSON.stringify(data.data));
+        navigate(`${navigation}/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`); 
       }
     } else {
-      console.log("Unknown command received:", data.command);
+      console.log("Unknown command received:", data.action);
     }
   }
 

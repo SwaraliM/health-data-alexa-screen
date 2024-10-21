@@ -40,7 +40,7 @@ function Root() {
       <Route path="/" element={<WelcomePage />} />
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/auth-callback" element={<AuthCallback />} />
-      <Route path="/activity/single-day/:date/:username" element={<ActivitySingleDayPage />} />
+      <Route path="/activity/single-day/:date/:username/:random" element={<ActivitySingleDayPage />} />
     </Routes>
   );
 }

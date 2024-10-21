@@ -45,7 +45,6 @@ async function analyzeQuestion(question) {
 
   const data = await response.json();
   const dataContentString = data.choices[0].message.content.trim();
-  console.log("=====analysis=======" + dataContentString);
   const queries = JSON.parse(dataContentString);
   return queries;
 }
@@ -84,84 +83,34 @@ async function fetchData(queryUrls, username) {
 
 async function processData(combinedData) {
   const systemConfig = `
-  You are an AI system that processes activity data. If the user input object contains only one key and the requested path is '/activity/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. Date should be replace by YYYY-MM-DD format. Return an object that includes the following structure:
+ You are an AI system that processes activity data. Your response should be in a JSON format object, including four parts: 'action', 'option', 'response', and 'data'. The 'response' field will be returned to Alexa and should include a summary sentence that encapsulates all key information. If the user input object contains only one key and the requested path is '/activity/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. The 'action' should be 'navigation', the 'option' is '/activity/single-day/:date', where 'date' must be replaced by the YYYY-MM-DD format. The 'data' field is an object with the following keys and values:
 
-  {
-   \\"command\\": \\"navigation\\",
-    \\"navigation\\": \\"/activity/single-day/2024-10-18\\",
-    \\"data\\": {
-       \\"overallActivityEvaluation\\": \\"Use the provided activity data to generate a concise, meaningful analysis of the user's daily performance. This should highlight key aspects like calories burned, steps taken, sedentary behavior, and any suggestions for improvement. Keep the analysis objective yet insightful. Word length <= 100.\\",
-      \\"activityData\\": [
-        {
-          \\"name\\": \\"Interval Workout\\",
-          \\"detail\\": [
-            {\\"title\\": \\"Calorie - 10\\", \\"icon\\": \\"<FireOutlined style={{ color: 'red' }} />\\"},
-            {\\"title\\": \\"Steps - 0\\", \\"icon\\": \\"<CheckCircleOutlined style={{ color: 'green' }} />\\"},
-            {\\"title\\": \\"Duration - 10 minutes 37 seconds\\", \\"icon\\": \\"<ClockCircleOutlined />\\"},
-            {\\"title\\": \\"Start Time - 14:56\\", \\"icon\\": \\"<ClockCircleOutlined />\\"},
-            {
-              \\"title\\": \\"Evaluation - Bad\\",
-              \\"description\\": \\"Your Interval Workout was low in intensity with minimal calorie burn and no recorded steps. Consider increasing intensity or duration next time for better results.\\",
-              \\"icon\\": \\"<FrownOutlined style={{ color: 'red' }} />\\"
-            }
-          ]
-        }
-      ],
-      \\"singleValueData\\": [
-        {\\"key\\": \\"Basal Metabolic Rate Calories\\", \\"value\\": \\"1288\\", \\"description\\": \\"Your basal metabolic rate indicates how much energy you burn at rest. To maintain this, balance your diet and activity level.\\"},
-        {\\"key\\": \\"Today's Steps\\", \\"value\\": \\"5351\\", \\"description\\": \\"You've made some progress today, but you are still far from your step goal. Try adding more walking to your routine.\\"},
-        {\\"key\\": \\"Elevation Gained (Meters)\\", \\"value\\": \\"9.144\\", \\"description\\": \\"You gained a small elevation today. Incorporating more uphill activities can boost your cardiovascular health.\\"},
-        {\\"key\\": \\"Resting Heart Rate\\", \\"value\\": \\"82\\", \\"description\\": \\"Your resting heart rate is slightly elevated. Consider relaxation techniques to help lower it.\\}
-      ],
-      \\"activityTimeData\\": [
-        {\\"type\\": \\"Sedentary Minutes\\", \\"value\\": \\"1340\\"},
-        {\\"type\\": \\"Lightly Active Minutes\\", \\"value\\": \\"50\\"},
-        {\\"type\\": \\"Fairly Active Minutes\\", \\"value\\": \\"42\\"},
-        {\\"type\\": \\"Very Active Minutes\\", \\"value\\": \\"8\\"}
-      ],
-      \\"activityTimeEvaluation\\": \\"You have spent most of the day sedentary with minimal active minutes. Increasing physical activity, even light movement, can significantly improve your health.\\",
-      \\"goalPercentage\\": [
-        {\\"name\\": \\"Steps\\", \\"goal\\": 10000, \\"current\\": 6351, \\"description\\": \\"You are making progress, but you're still short of your goal. Aim for a brisk walk or an evening workout to close the gap.\\"},
-        {\\"name\\": \\"Floors\\", \\"goal\\": 10, \\"current\\": 2, \\"description\\": \\"You've climbed a few floors, but there's room to push further to meet your goal.\\"},
-        {\\"name\\": \\"Distance (km)\\", \\"goal\\": 8.05, \\"current\\": 2.7632, \\"description\\": \\"You covered some ground today, but you are still far from your target. Consider incorporating more physical activities.\\},
-        {\\"name\\": \\"Calories Burned\\", \\"goal\\": 2588, \\"current\\": 1656, \\"description\\": \\"Good progress! You are over halfway to your calorie-burning goal, keep it up!\\"},
-        {\\"name\\": \\"Active Minutes\\", \\"goal\\": 30, \\"current\\": 100, \\"description\\": \\"Great job! You've exceeded your active minutes goal for the day. Keep maintaining this level of activity.\\}
-      ],
-      \\"activityCalories\\": [
-        {\\"name\\": \\"Interval Workout\\", \\"calories\\": 10},
-        {\\"name\\": \\"Workout (Session 1)\\", \\"calories\\": 27},
-        {\\"name\\": \\"Bike\\", \\"calories\\": 70},
-        {\\"name\\": \\"Workout (Session 2)\\", \\"calories\\": 49},
-        {\\"name\\": \\"Run (Session 1)\\", \\"calories\\": 137},
-        {\\"name\\": \\"Run (Session 2)\\", \\"calories\\": 114}
-      ],
-      \\"activityCaloriesEvaluation\\": \\"Today, you burned a total of 337 calories through a mix of interval workouts, running, and biking. Running was your most effective activity, while other activities showed less intensity. Consider increasing the duration or intensity of those workouts to enhance your results.\\"
-    }
-      "response": "Activity page is opened. Make sure to keep a balanced routine by reducing sedentary time and increasing higher-intensity activities."
-}
-1. overallActivityEvaluation: This provides an overall evaluation for all the activity data of the user for the specific day. The evaluation aims to give the user an understanding of their activity patterns and where they can make adjustments to meet their fitness goals.
+  - overallActivityEvaluation: Analyze all activity data from the user's provided JSON and return a summary with suggestions. The summary should be easy to understand and actionable. It should be 100-200 words.
 
-2. activityData: This contains detailed information about specific workouts or activities the user has performed. For each activity, there are key metrics such as calories burned, steps taken, duration, and evaluation of the workout’s effectiveness. This helps the user see how each activity contributes to their overall fitness. The structure of detail should not be changed but specific values. If user has more than one activity in a day, display them all with the structure.
+  - activitiesEvaluations: A list that evaluates each segment of activity in 'data.activities'. Make sure that the length of this equals to the length of activities. Each item in the list is an object containing:
+    - 'all': Overall evaluation of the activity as either 'good', 'fair', or 'bad'.
+    - 'description': A brief text evaluating the specific activity.
 
-3. singleValueData: This section highlights single metrics related to the user’s overall activity. Examples include Basal Metabolic Rate (BMR) calories, total steps taken for the day, elevation gained, and resting heart rate. Each metric is accompanied by a description that explains its significance and provides personalized advice for the user to maintain or improve their performance. This list length should not be changed.
+  - singleValueDataEvaluation: A list of strings evaluating the following metrics in this exact order:
+    - Basal Metabolic Rate Calories
+    - Today's Steps
+    - Elevation Gained (Meters)
+    - Resting Heart Rate
 
-4. activityTimeData: This presents the time spent in various activity intensity levels throughout the day. Categories include Sedentary, Lightly Active, Fairly Active, and Very Active minutes. The data gives the user insights into how much time they spend moving versus being sedentary, helping them track their overall activity levels. This list length should not be changed.
+  - goalsPercentageEvaluation: A list of strings evaluating the following goals, in this exact order:
+    - 'steps'
+    - 'floors'
+    - 'distance'
+    - 'caloriesOut'
+    - 'activeMinutes'
+    The evaluation should be based on a comparison between the goals and the current values. Not just present percentage number but some insights or suggestion.
 
-5. activityTimeEvaluation: This provides a concise evaluation of the user’s activity time data. It highlights whether the user has spent too much time sedentary or has achieved a healthy balance between light and vigorous activities. The evaluation includes suggestions on how to increase activity levels if needed.
+  - activityTimeDataEvaluation: A string evaluating the proportion of Sedentary Minutes, Lightly Active Minutes, Fairly Active Minutes, and Very Active Minutes.
 
-6. goalPercentage: This section tracks progress towards specific fitness goals, such as steps, floors climbed, distance covered, calories burned, and active minutes. For each goal, the data shows both the target and the current achievement. Descriptions provide personalized feedback based on the user's performance relative to each goal, helping the user stay motivated and focused on meeting their targets.
+  - activityCaloriesEvaluation: A string evaluating the user's total physical activities for the day.
 
-7. activityCalories: This lists the calories burned during different activities throughout the day, such as workouts, biking, and running. Each activity is shown with its associated calorie expenditure, giving the user a breakdown of which activities contributed the most to their daily calorie burn.
-
-8. activityCaloriesEvaluation: This is an evaluation of the user’s overall calorie burn for the day, based on the activities they performed. It highlights which activities were most effective in terms of calorie expenditure and offers suggestions for improving less effective workouts to maximize overall fitness results."
-
-9. response: This indicates that the activity page is opened. The activity page provides a comprehensive overview of the user’s daily activity, helping the user understand key metrics such as steps, calories, and active minutes. It also offers actionable insights and suggestions for improving activity patterns, making it easier for the user to meet their fitness and health goals.
-
-
-Note: 
-All specific values should be replaced by the info in the combined data following the provided structure.
-return format should be JSON,
-Do not include the "\`\`\`json" in response.
+  Note: return should not contains other irrelevant characters, such as "json".
+  Evaluations should be less than 100 words.
   `;
 
   const systemMessage = {
@@ -178,7 +127,7 @@ Do not include the "\`\`\`json" in response.
   const requestBody = {
     model: "gpt-4o", // model
     messages: [systemMessage, userMessage],
-    max_tokens: 5000, // reply max length
+    max_tokens: 2000, // reply max length
   };
 
   const response = await fetch(apiUrl, {
@@ -212,6 +161,7 @@ alexaRouter.post("/", async (req, res) => {
 
     // // Step2: fetch data
     const combinedData = await fetchData(queryUrls, username);
+    console.log(JSON.stringify(combinedData));
     console.log("combined data len: ", Object.keys(combinedData).length);
 
     // Step3: analyze combined data, return analysis, stuctured display data
