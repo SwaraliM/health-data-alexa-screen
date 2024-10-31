@@ -37,7 +37,7 @@ function WelcomePage() {
           localStorage.setItem('username', username);
           const todayDate = getCurrentDate();
           getTodayAnalysis(todayDate, username);
-          navigate(`/activity/single-day/${todayDate}/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`);
+          navigate(`/today-activity/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`);
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
           localStorage.setItem('username', username);
           navigate("/auth");

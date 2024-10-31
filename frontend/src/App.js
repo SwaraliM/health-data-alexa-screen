@@ -3,6 +3,8 @@ import WelcomePage from "./pages/WelcomePage";
 import AuthPage from "./pages/AuthPage";
 import AuthCallback from "./pages/AuthCallback";
 import ActivitySingleDayPage from "./pages/ActivitySingleDayPage";
+import GeneralPage from "./pages/GeneralPage";
+import TodayActivityPage from "./pages/TodayActivityPage";
 import "./App.css";
 import "./css/fonts.css";
 import "./css/colors.css";
@@ -41,6 +43,8 @@ function Root() {
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/auth-callback" element={<AuthCallback />} />
       <Route path="/activity/single-day/:date/:username/:random" element={<ActivitySingleDayPage />} />
+      <Route path="/general/:username/:random" element={<GeneralPage />} />
+      <Route path="/today-activity/:username/:random" element={<TodayActivityPage />} />
     </Routes>
   );
 }

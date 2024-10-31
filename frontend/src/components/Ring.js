@@ -1,0 +1,56 @@
+import React from "react";
+import { Card } from "antd";
+import { Tiny } from "@ant-design/plots";
+import "../css/ring.css";
+
+const Ring = ({ height, width, title, goal, current, options }) => {
+  const percent = (current / goal).toFixed(1);
+  let color = "#FF4D4F"; // Default to red
+
+  if (percent >= 1) {
+    percent = 1; // Set to 1 if greater than or equal to 100%
+    color = "#52C41A"; // Green
+  } else if (percent >= 0.8) {
+    color = "#52C41A"; // Green
+  } else if (percent >= 0.4) {
+    color = "#FAAD14"; // Yellow
+  }
+  const ringWidth = parseInt(width, 10) * 0.4;
+
+  const config = {
+    percent,
+    width: ringWidth,
+    height: ringWidth,
+    color: ["#E8EFF5", color],
+    annotations: [
+      {
+        type: "text",
+        style: {
+          text: `${percent * 100}%`,
+          x: "50%",
+          y: "50%",
+          textAlign: "center",
+          fontSize: 16,
+          fontStyle: "bold",
+        },
+      },
+    ],
+  };
+  return (
+    <Card
+      title={title}
+      bordered={false}
+      size="small"
+      style={{ height: height, width: width, ...options }}
+      className="ring-card"
+    >
+      <div>
+        Goal: {goal}
+      </div>
+      <div className="ring-text">Current: {current}</div>
+      <Tiny.Ring {...config} />
+    </Card>
+  );
+};
+
+export default Ring;
