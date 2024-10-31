@@ -2,6 +2,10 @@ const express = require("express");
 const alexaRouter = express.Router();
 const { getClients } = require("../websocket");
 require("dotenv").config();
+const {
+  ANALYZE_QUESTION_SYSTEM_CONFIG,
+  ALEXA_RESPONSE_SYSTEM_CONFIG,
+} = require("../configs/openAiSystemConfigs");
 
 const apiUrl = "https://api.openai.com/v1/chat/completions";
 const apiKey =
@@ -9,13 +13,7 @@ const apiKey =
 
 async function analyzeQuestion(question) {
   // system information
-  const systemConfig = `You are an AI system designed to handle requests for activity data. 
-  If the user asks for activity data for a specific date, return the following endpoint: \"/activities/summary/:date\". 
-  Always ensure the date is in the YYYY-MM-DD format, and never use words like 'today' directly; instead, convert it to the current date.
-   If the user does not specify a date, infer it based on context or use common sense. 
-   Ensure the response is formatted as JSON (url(s) list), and only include the necessary values to process with JSON.parse. 
-   Do not include the "\`\`\`json" in response.
-   Do not include irrelevant data or extra information in the output.`;
+  const systemConfig = ANALYZE_QUESTION_SYSTEM_CONFIG;
 
   const systemMessage = {
     role: "system",
@@ -45,13 +43,14 @@ async function analyzeQuestion(question) {
 
   const data = await response.json();
   const dataContentString = data.choices[0].message.content.trim();
-  const queries = JSON.parse(dataContentString);
-  return queries;
+  console.log(dataContentString);
+  const analysis = JSON.parse(dataContentString);
+  return analysis;
 }
 
 async function fetchData(queryUrls, username) {
-  console.log("url number:&&&&& " + queryUrls.length);
-  const combinedData = {}; // 使用对象存储结果
+  console.log("url number: " + queryUrls.length);
+  const combinedData = {}; // using object to store return data
 
   for (const queryUrl of queryUrls) {
     const url = `${process.env.API_URL}/api/fitbit/${username}${queryUrl}`;
@@ -70,15 +69,15 @@ async function fetchData(queryUrls, username) {
 
       const data = await response.json();
 
-      combinedData[url] = data; // 将 URL 作为键，数据作为值存入对象
+      combinedData[url] = data; // URL as key, data as value
     } catch (error) {
       console.error("Fetch error:", error.message);
-      // 将错误信息记录到 combinedData 中，键为 URL
-      combinedData[url] = { error: error.message }; // 记录错误
+      // write error msg to object, url as key
+      combinedData[url] = { error: error.message }; // record error
     }
   }
 
-  return combinedData; // 返回所有请求的数据
+  return combinedData;
 }
 
 async function processData(combinedData) {
@@ -146,44 +145,39 @@ async function processData(combinedData) {
   return processedData;
 }
 
-
-
 async function getAlexaResponse(combinedData) {
-    const systemConfig = `
-   You are an AI system that processes activity data. The response should be a string that contains the overall evaluation and some insightful suggestion to user. The answser should not be too long. The length should be reasonable to speak out back to user.
-    The last sentence of response should tell the user detailed anaysis will present in the screen in about 15 seconds.
-   `;
-  
-    const systemMessage = {
-      role: "system",
-      content: systemConfig,
-    };
-    // question the user raise
-    const userMessage = {
-      role: "user",
-      content: JSON.stringify(combinedData),
-    };
-  
-    // OpenAI request payload
-    const requestBody = {
-      model: "gpt-4o", // model
-      messages: [systemMessage, userMessage],
-      max_tokens: 2000, // reply max length
-    };
-  
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-    });
-  
-    const data = await response.json();
-    const speakOutput = data.choices[0].message.content.trim();
-    return speakOutput;
-  }
+  const systemConfig = ALEXA_RESPONSE_SYSTEM_CONFIG;
+
+  const systemMessage = {
+    role: "system",
+    content: systemConfig,
+  };
+  // question the user raise
+  const userMessage = {
+    role: "user",
+    content: JSON.stringify(combinedData),
+  };
+
+  // OpenAI request payload
+  const requestBody = {
+    model: "gpt-4o", // model
+    messages: [systemMessage, userMessage],
+    max_tokens: 2000, // reply max length
+  };
+
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  const data = await response.json();
+  const speakOutput = data.choices[0].message.content.trim();
+  return speakOutput;
+}
 
 alexaRouter.post("/", async (req, res) => {
   let { question, username } = req.body;
@@ -196,17 +190,21 @@ alexaRouter.post("/", async (req, res) => {
   try {
     // Step1:analysis question, return list of endpoints
     //example of analysis: ["/activities/summary/2023-10-13","/hrv/range/date/2023-10-06/2023-10-13"]
-    const queryUrls = await analyzeQuestion(question);
+    const analysis = await analyzeQuestion(question);
+
+    if (analysis.completed == false) {
+      return res.status(200).json({ message: analysis.next });
+    }
 
     // // Step2: fetch data
-    const combinedData = await fetchData(queryUrls, username);
-    console.log(JSON.stringify(combinedData));
+    const combinedData = await fetchData(analysis.next, username);
+    console.log(JSON.stringify(combinedData, null, 2));
     console.log("combined data len: ", Object.keys(combinedData).length);
 
-    // Step3: analyze combined data, return analysis, stuctured display data
+    // Step3: Get General Response to alexa
     const alexaResponse = await getAlexaResponse(combinedData);
+    console.log("alexa Response: " + alexaResponse);
     res.status(200).json({ message: alexaResponse });
-
 
     //Step4: send stuctured display data and analysis to frontend using websocket
 
@@ -218,6 +216,7 @@ alexaRouter.post("/", async (req, res) => {
         .json({ message: "No client connected with the given username." });
     }
 
+    //TODO
     const processedData = await processData(combinedData);
 
     const clientSocket = clients.get(username);
@@ -228,14 +227,12 @@ alexaRouter.post("/", async (req, res) => {
 
       console.log(`Sent message to ${username}:`, JSON.stringify(message));
 
-      //Step5: send back analysis to alexa to speak out
-    return;
-  } else {
-      return res.status(500).json({ message: "Failed to send command to client." });
-  }
-
-
-
+      return;
+    } else {
+      return res
+        .status(500)
+        .json({ message: "Failed to send command to client." });
+    }
   } catch (error) {
     console.error(error);
     res

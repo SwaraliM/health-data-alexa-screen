@@ -4,9 +4,14 @@
   --dark-blue-color: #2E4265;
   --light-blue-color: #eaf0fb;
   --light-blue-transparent-color: #eaf0fbb9;
+  --extra-light-blue-transparent-color:#ffffffe4;
+  --dark-blue-transparent-color: #012a7623;
+  --extra-dark-blue-transparent-color: #01226162;
   --primary-orange-color:#ff920d;
   --light-orange-color:#facf9a;
+  --extra-light-orange-color:#f8e6d0;
   --dark-orange-color:#a65b00;
   --primary-green-color:#406934;
   --primary-red-color:#833535;
+  --extra-light-grey:#f2f1f1;
 }
