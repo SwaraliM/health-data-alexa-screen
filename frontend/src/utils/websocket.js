@@ -38,7 +38,7 @@ function handleWebSocketCommand(data, navigate) {
       const navigation = data.option;
       if (navigation) {
         console.log(`Navigating to ${navigation}`);
-        localStorage.setItem('activitySingleDayEvaluation', JSON.stringify(data.data));
+        localStorage.setItem('analysis', JSON.stringify(data.data));
         navigate(`${navigation}/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`); 
       }
     } else {

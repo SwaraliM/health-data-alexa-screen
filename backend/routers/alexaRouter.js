@@ -5,6 +5,7 @@ require("dotenv").config();
 const {
   ANALYZE_QUESTION_SYSTEM_CONFIG,
   ALEXA_RESPONSE_SYSTEM_CONFIG,
+  PROCESS_DATA_SYSTEM_CONFIG,
 } = require("../configs/openAiSystemConfigs");
 
 const apiUrl = "https://api.openai.com/v1/chat/completions";
@@ -81,36 +82,7 @@ async function fetchData(queryUrls, username) {
 }
 
 async function processData(combinedData) {
-  const systemConfig = `
- You are an AI system that processes activity data. Your response should be in a JSON format object but not contains "\`\`\`json", including four parts: 'action', 'option', 'response', and 'data'. The 'response' field will be returned to Alexa and should include a summary sentence that encapsulates all key information. If the user input object contains only one key and the requested path is '/activity/summary/single-day/:date', you should navigate to '/activity/single-day/:date'. The 'action' should be 'navigation', the 'option' is '/activity/single-day/:date', where 'date' must be replaced by the YYYY-MM-DD format. The 'data' field is an object with the following keys and values:
-
-  - overallActivityEvaluation: Analyze all activity data from the user's provided JSON and return a summary with suggestions. The summary should be easy to understand and actionable. It should be 100-200 words.
-
-  - activitiesEvaluations: A list that evaluates each segment of activity in 'data.activities'. Make sure that the length of this perfectly equals to the length of activities.(Important!) Each item in the list is an object containing:
-    - 'all': Overall evaluation of the activity as either 'good', 'fair', or 'bad'.
-    - 'description': A brief text evaluating the specific activity.
-
-  - singleValueDataEvaluation: A list of strings evaluating the following metrics in this exact order:
-    - Basal Metabolic Rate Calories
-    - Today's Steps
-    - Elevation Gained (Meters)
-    - Resting Heart Rate
-
-  - goalsPercentageEvaluation: A list of strings evaluating the following goals, in this exact order:
-    - 'steps'
-    - 'floors'
-    - 'distance'
-    - 'caloriesOut'
-    - 'activeMinutes'
-    The evaluation should be based on a comparison between the goals and the current values. Not just present percentage number but some insights or suggestion.
-
-  - activityTimeDataEvaluation: A string evaluating the proportion of Sedentary Minutes, Lightly Active Minutes, Fairly Active Minutes, and Very Active Minutes.
-
-  - activityCaloriesEvaluation: A string evaluating the user's total physical activities for the day.
-
-  Note: return should not contains other irrelevant characters, such as "\`\`\`json".
-  Evaluations should be less than 100 words.
-  `;
+  const systemConfig = PROCESS_DATA_SYSTEM_CONFIG;
 
   const systemMessage = {
     role: "system",
@@ -188,36 +160,60 @@ alexaRouter.post("/", async (req, res) => {
   /*************for test*********/
 
   try {
+    const clients = getClients();
     // Step1:analysis question, return list of endpoints
     //example of analysis: ["/activities/summary/2023-10-13","/hrv/range/date/2023-10-06/2023-10-13"]
     const analysis = await analyzeQuestion(question);
+    if (analysis === "back") {
+      const clientSocket = clients.get(username);
+      if (username && clients.has(username) && clientSocket) {
+        const message = {
+          action: "navigation",
+          option: "/today-activity",
+          data: {},
+        };
+
+        clientSocket.send(JSON.stringify(message));
+
+        console.log(`Sent message to ${username}:`, JSON.stringify(message));
+      }
+      return res.status(200).json({ message: "returned to the dashboard" });
+    }
 
     if (analysis.completed == false) {
       return res.status(200).json({ message: analysis.next });
     }
 
+    console.log("=======analysis completed===========");
+
     // // Step2: fetch data
     const combinedData = await fetchData(analysis.next, username);
-    console.log(JSON.stringify(combinedData, null, 2));
-    console.log("combined data len: ", Object.keys(combinedData).length);
+
+    console.log("=======fetch completed===========");
 
     // Step3: Get General Response to alexa
     const alexaResponse = await getAlexaResponse(combinedData);
     console.log("alexa Response: " + alexaResponse);
     res.status(200).json({ message: alexaResponse });
 
+    console.log("=======response returned===========");
+
     //Step4: send stuctured display data and analysis to frontend using websocket
 
-    const clients = getClients();
-
     if (!username || !clients.has(username)) {
-      return res
-        .status(400)
-        .json({ message: "No client connected with the given username." });
+      return;
     }
 
     //TODO
+    const fetchedDataWithQuestion = {
+      question: analysis.question,
+      data: combinedData,
+    };
+    console.log(JSON.stringify(fetchedDataWithQuestion, null, 2));
+
     const processedData = await processData(combinedData);
+
+    console.log("=======process completed===========");
 
     const clientSocket = clients.get(username);
     if (clientSocket) {
@@ -228,16 +224,9 @@ alexaRouter.post("/", async (req, res) => {
       console.log(`Sent message to ${username}:`, JSON.stringify(message));
 
       return;
-    } else {
-      return res
-        .status(500)
-        .json({ message: "Failed to send command to client." });
     }
   } catch (error) {
     console.error(error);
-    res
-      .status(500)
-      .json({ success: false, message: "Error processing the request." });
   }
 
   // const clients = getClients();
