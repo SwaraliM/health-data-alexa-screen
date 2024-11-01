@@ -4,7 +4,7 @@ import { Tiny } from "@ant-design/plots";
 import "../css/ring.css";
 
 const Ring = ({ height, width, title, goal, current, options }) => {
-  const percent = (current / goal);
+  let percent = (current / goal);
   let color = "#FF4D4F"; // Default to red
 
   if (percent >= 1) {
