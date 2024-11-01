@@ -6,16 +6,6 @@ import PageLayout from "../components/PageLayout";
 import '../css/welcomePage.css';
 import { getCurrentDate } from '../utils/getCurrentDate';
 
-async function getTodayAnalysis(todayDate, username){
-  const response = await fetch("/api/alexa", {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({question:`get activity data for ${todayDate}`, username: username})
-  });
-}
-
 function WelcomePage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -36,7 +26,6 @@ function WelcomePage() {
         if (data.message == LOGIN_SUCCESS && data.isAuthorized) {
           localStorage.setItem('username', username);
           const todayDate = getCurrentDate();
-          getTodayAnalysis(todayDate, username);
           navigate(`/today-activity/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`);
         } else if (data.message == LOGIN_SUCCESS && !data.isAuthorized) {
           localStorage.setItem('username', username);

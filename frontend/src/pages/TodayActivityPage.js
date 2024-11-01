@@ -2,41 +2,28 @@ import React, { useState, useEffect } from "react";
 import "../css/todayActivityPage.css";
 import { useParams } from "react-router-dom";
 import PageLayoutClean from "../components/PageLayoutClean";
-import { Col, Row, Typography, Card, List, Statistic } from "antd";
-import CountUp from "react-countup";
-import {
-  FireOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  ClockCircleOutlined,
-  ThunderboltOutlined,
-  FlagOutlined,
-  SmileOutlined,
-  FrownOutlined,
-} from "@ant-design/icons";
 import CustomList from "../components/CustomList";
 import SingleValue from "../components/SingleValue";
 import Ring from "../components/Ring";
+import CustomPie from "../components/CustomPie";
+import CustomLineChart from "../components/CustomLineChart";
 
 import { getCurrentDate } from "../utils/getCurrentDate";
+import { getCurrentTime } from "../utils/getCurrentTime";
 import convertTime from "../utils/convertTime";
-
-const { Text } = Typography;
-
-const formatter = (value) => <CountUp end={value} separator="," />;
 
 const TodayActivityPage = () => {
   const { username, random } = useParams();
 
-  const [data, setData] = useState(null);
+  const [todayData, setTodayData] = useState(null);
+  const [weeklyStepData, setWeeklyStepData] = useState(null);
   const [activitiesList, setActivitiesList] = useState([]);
+  const [pieList, setPieList] = useState([]);
+  const [currentTime, setCurrentTime] = useState(getCurrentTime());
 
-  const fetchData = async () => {
+  const fetchTodayData = async () => {
     try {
       const date = getCurrentDate();
-      console.log(
-        `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit/${username}/activities/summary/${date}`
-      );
       const response = await fetch(
         `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit//${username}/activities/summary/${date}`
       );
@@ -44,27 +31,50 @@ const TodayActivityPage = () => {
         throw new Error("Network response was not ok");
       }
       const result = await response.json();
-      console.log("Setting data:", result);
-      setData(result);
+      console.log(JSON.stringify(result, 2, null));
+      setTodayData(result);
+    } catch (error) {
+      throw new Error("error");
+    }
+  };
+
+  const fetchWeeklyStepData = async () => {
+    try {
+      const date = getCurrentDate();
+      const response = await fetch(
+        `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit//${username}/activities/period/steps/date/${date}/7d`
+      );
+      if (!response.ok) {
+        throw new Error("Network response was not ok");
+      }
+      const result = await response.json();
+      setWeeklyStepData(result);
     } catch (error) {
       throw new Error("error");
     }
   };
 
   useEffect(() => {
-    // Fetch data once when the component loads
-    fetchData();
+    // Fetch both today's data and weekly data when the component loads
+    fetchTodayData();
+    fetchWeeklyStepData();
 
-    // Set up an interval to fetch data every 5 minutes (300000 milliseconds)
-    const intervalId = setInterval(fetchData, 300000);
+    // Set up an interval to fetch today's data every 5 minutes
+    const todayIntervalId = setInterval(fetchTodayData, 300000);
 
-    // Clear the interval when the component unmounts
-    return () => clearInterval(intervalId);
+    // Set up an interval to fetch weekly data every 5 minutes
+    const weeklyIntervalId = setInterval(fetchWeeklyStepData, 300000);
+
+    // Clear intervals when the component unmounts
+    return () => {
+      clearInterval(todayIntervalId);
+      clearInterval(weeklyIntervalId);
+    };
   }, []); // Empty dependency array ensures it runs only on initial load
 
   useEffect(() => {
-    if (data) {
-      const newActivitiesList = data.activities.map((activity) => ({
+    if (todayData) {
+      const newActivitiesList = todayData.activities.map((activity) => ({
         title: activity.name,
         list: [
           `Calorie - ${activity.calories}`,
@@ -73,17 +83,45 @@ const TodayActivityPage = () => {
           `Start Time - ${activity.startTime}`,
         ],
       }));
+      const newPieList = [
+        {
+          type: "Sedentary Minutes",
+          value: todayData.summary.sedentaryMinutes,
+        },
+        {
+          type: "Lightly Active Minutes",
+          value: todayData.summary.lightlyActiveMinutes,
+        },
+        {
+          type: "Fairly Active Minutes",
+          value: todayData.summary.fairlyActiveMinutes,
+        },
+        {
+          type: "Very Active Minutes",
+          value: todayData.summary.veryActiveMinutes,
+        },
+      ];
       setActivitiesList(newActivitiesList);
+      setPieList(newPieList);
+      console.log(newPieList);
     }
-  }, [data]);
+  }, [todayData]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(getCurrentTime());
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <PageLayoutClean>
       <div className="a-header">
+      <h3>{getCurrentDate()} {currentTime}</h3>
         <h1>Today Activity Overview Dashboard</h1>
         <h1>Welcome, {username}!</h1>
       </div>
-      {data ? (
+      {todayData ? (
         <div className="a-body">
           <div className="a-activities-area">
             <div className="a-activities">
@@ -104,32 +142,32 @@ const TodayActivityPage = () => {
                 height="120px"
                 width="150px"
                 title="Calories Burned"
-                value={data.summary.caloriesOut}
+                value={todayData.summary.caloriesOut}
               />
               <SingleValue
                 height="120px"
                 width="150px"
                 title="Steps"
-                value={data.summary.steps}
+                value={todayData.summary.steps}
               />
               <SingleValue
                 height="120px"
                 width="150px"
                 title="Floors"
-                value={data.summary.floors}
+                value={todayData.summary.floors}
               />
               <SingleValue
                 height="120px"
                 width="150px"
                 title="Basal Metabolic Rate"
-                value={data.summary.caloriesBMR}
+                value={todayData.summary.caloriesBMR}
               />
               <SingleValue
                 height="120px"
                 width="150px"
                 title="Distance"
                 value={
-                  data.summary.distances.find(
+                  todayData.summary.distances.find(
                     (item) => item.activity === "total"
                   ).distance
                 }
@@ -139,9 +177,9 @@ const TodayActivityPage = () => {
                 width="150px"
                 title="Active Time"
                 value={
-                  data.summary.lightlyActiveMinutes +
-                  data.summary.fairlyActiveMinutes +
-                  data.summary.veryActiveMinutes
+                  todayData.summary.lightlyActiveMinutes +
+                  todayData.summary.fairlyActiveMinutes +
+                  todayData.summary.veryActiveMinutes
                 }
               />
             </div>
@@ -150,44 +188,66 @@ const TodayActivityPage = () => {
                 height="190px"
                 width="180px"
                 title="Calories Burned"
-                current={data.summary.caloriesOut}
-                goal={data.goals.caloriesOut}
+                current={todayData.summary.caloriesOut}
+                goal={todayData.goals.caloriesOut}
               />
               <Ring
                 height="190px"
                 width="180px"
                 title="Steps"
-                current={data.summary.steps}
-                goal={data.goals.steps}
+                current={todayData.summary.steps}
+                goal={todayData.goals.steps}
               />
               <Ring
                 height="190px"
                 width="180px"
                 title="Floors"
-                current={data.summary.floors}
-                goal={data.goals.floors}
+                current={todayData.summary.floors}
+                goal={todayData.goals.floors}
               />
               <Ring
                 height="190px"
                 width="180px"
                 title="Distance"
-                current={data.summary.distances.find(
+                current={
+                  todayData.summary.distances.find(
                     (item) => item.activity === "total"
-                  ).distance}
-                goal={data.goals.distance}
+                  ).distance
+                }
+                goal={todayData.goals.distance}
               />
               <Ring
                 height="190px"
                 width="180px"
                 title="Active Minutes"
-                current={ data.summary.lightlyActiveMinutes +
-                    data.summary.fairlyActiveMinutes +
-                    data.summary.veryActiveMinutes}
-                goal={data.goals.activeMinutes}
+                current={
+                  todayData.summary.lightlyActiveMinutes +
+                  todayData.summary.fairlyActiveMinutes +
+                  todayData.summary.veryActiveMinutes
+                }
+                goal={todayData.goals.activeMinutes}
               />
             </div>
 
-            <div className="a-chart-area"></div>
+            <div className="a-chart-area">
+              <CustomPie
+                height={300}
+                width={300}
+                title="Daily Activity Breakdown"
+                data={pieList}
+              />
+              {weeklyStepData && weeklyStepData["activities-steps"] && (
+                <CustomLineChart
+                  height={300}
+                  width={600}
+                  title="Weekly Steps"
+                  data={weeklyStepData["activities-steps"].map((item) => ({
+                    ...item,
+                    value: parseInt(item.value, 10),
+                  }))}
+                />
+              )}
+            </div>
           </div>
         </div>
       ) : (

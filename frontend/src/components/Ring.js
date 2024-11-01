@@ -4,7 +4,7 @@ import { Tiny } from "@ant-design/plots";
 import "../css/ring.css";
 
 const Ring = ({ height, width, title, goal, current, options }) => {
-  const percent = (current / goal).toFixed(1);
+  const percent = (current / goal);
   let color = "#FF4D4F"; // Default to red
 
   if (percent >= 1) {
@@ -18,15 +18,15 @@ const Ring = ({ height, width, title, goal, current, options }) => {
   const ringWidth = parseInt(width, 10) * 0.4;
 
   const config = {
-    percent,
+    percent: Math.max(percent, 0.0001),
     width: ringWidth,
     height: ringWidth,
-    color: ["#E8EFF5", color],
+    color: ["#EBF2FF", color],
     annotations: [
       {
         type: "text",
         style: {
-          text: `${percent * 100}%`,
+          text: `${(percent * 100).toFixed(1)}%`,
           x: "50%",
           y: "50%",
           textAlign: "center",
