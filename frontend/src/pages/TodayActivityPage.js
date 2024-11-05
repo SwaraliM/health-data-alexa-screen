@@ -25,7 +25,7 @@ const TodayActivityPage = () => {
     try {
       const date = getCurrentDate();
       const response = await fetch(
-        `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit//${username}/activities/summary/${date}`
+        `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit/${username}/activities/summary/${date}`
       );
       if (!response.ok) {
         throw new Error("Network response was not ok");
