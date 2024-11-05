@@ -30,7 +30,7 @@ async function analyzeQuestion(question) {
   const requestBody = {
     model: "gpt-4o", // model
     messages: [systemMessage, userMessage],
-    max_tokens: 150, // reply max length
+    max_tokens: 300, // reply max length
   };
 
   const response = await fetch(apiUrl, {
