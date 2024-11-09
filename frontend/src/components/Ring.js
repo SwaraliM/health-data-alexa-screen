@@ -30,26 +30,28 @@ const Ring = ({ height, width, title, goal, current, options }) => {
           x: "50%",
           y: "50%",
           textAlign: "center",
-          fontSize: 16,
+          fontSize: 20,
           fontStyle: "bold",
         },
       },
     ],
   };
   return (
-    <Card
-      title={title}
-      bordered={false}
-      size="small"
-      style={{ height: height, width: width, ...options }}
-      className="ring-card"
-    >
-      <div>
-        Goal: {goal}
-      </div>
-      <div className="ring-text">Current: {current}</div>
-      <Tiny.Ring {...config} />
-    </Card>
+    <div className="ring">
+      <Card
+        title={<h2>{title}</h2>}
+        bordered={false}
+        size="small"
+        style={{ height: height, width: width, ...options }}
+        className="ring-card"
+      >
+        <div className="ring-goal">
+          Goal: {goal}
+        </div>
+        <div className="ring-current">Current: {current}</div>
+        <Tiny.Ring {...config} />
+      </Card>
+    </div>
   );
 };
 

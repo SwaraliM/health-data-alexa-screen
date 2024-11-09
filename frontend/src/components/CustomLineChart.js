@@ -24,12 +24,16 @@ const CustomLineChart = ({ height, width, title, data, options }) => {
     style: {
       lineWidth: 2,
     },
+    axis:{
+      x: { labelFontSize: 15 },
+      y: { labelFontSize: 15 },
+    }
   };
 
   return (
     <Card
       className="line-card"
-      title={title}
+      title={<h2>{title}</h2>}
       size="small"
       style={{ height: height, width: width, ...options }}
     >

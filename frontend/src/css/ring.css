@@ -8,6 +8,11 @@
   align-items: center;
 }
 
-.ring-text{
-    margin-bottom: 10px;
+.ring-goal{
+  font-size: 20px;
+}
+
+.ring-current {
+  font-size: 20px;
+  margin-bottom: 10px;
 }

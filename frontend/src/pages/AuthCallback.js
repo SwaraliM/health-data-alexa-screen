@@ -29,7 +29,7 @@ const AuthCallback = () => {
           body: new URLSearchParams({
             client_id: clientId,
             grant_type: "authorization_code",
-            redirect_uri: "http://localhost:5000/auth-callback",
+            redirect_uri: "http://localhost:5001/auth-callback",
             code: code,
           }),
         });
@@ -43,7 +43,7 @@ const AuthCallback = () => {
 
         //save token
         const saveTokenResponse = await fetch(
-          "http://localhost:5000/api/login/save-token",
+          "http://localhost:5001/api/login/save-token",
           {
             method: "POST",
             headers: {
