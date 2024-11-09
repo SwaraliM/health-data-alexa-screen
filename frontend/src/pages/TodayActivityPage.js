@@ -117,7 +117,7 @@ const TodayActivityPage = () => {
   return (
     <PageLayoutClean>
       <div className="a-header">
-      <h3>{getCurrentDate()} {currentTime}</h3>
+        <h1>{getCurrentDate()} {currentTime}</h1>
         <h1>Today Activity Overview Dashboard</h1>
         <h1>Welcome, {username}!</h1>
       </div>
@@ -125,7 +125,7 @@ const TodayActivityPage = () => {
         <div className="a-body">
           <div className="a-activities-area">
             <div className="a-activities">
-              <h2>Activity</h2>
+              <h1>Activity</h1>
               {activitiesList.map((activity, index) => (
                 <CustomList
                   options={{ marginBottom: "10px" }}
@@ -137,77 +137,31 @@ const TodayActivityPage = () => {
             </div>
           </div>
           <div className="a-other-area">
-            <div className="a-single-value-area">
-              <SingleValue
-                height="120px"
-                width="150px"
-                title="Calories Burned"
-                value={todayData.summary.caloriesOut}
-              />
-              <SingleValue
-                height="120px"
-                width="150px"
-                title="Steps"
-                value={todayData.summary.steps}
-              />
-              <SingleValue
-                height="120px"
-                width="150px"
-                title="Floors"
-                value={todayData.summary.floors}
-              />
-              <SingleValue
-                height="120px"
-                width="150px"
-                title="Basal Metabolic Rate"
-                value={todayData.summary.caloriesBMR}
-              />
-              <SingleValue
-                height="120px"
-                width="150px"
-                title="Distance"
-                value={
-                  todayData.summary.distances.find(
-                    (item) => item.activity === "total"
-                  ).distance
-                }
-              />
-              <SingleValue
-                height="120px"
-                width="150px"
-                title="Active Time"
-                value={
-                  todayData.summary.lightlyActiveMinutes +
-                  todayData.summary.fairlyActiveMinutes +
-                  todayData.summary.veryActiveMinutes
-                }
-              />
-            </div>
             <div className="a-ring-area">
               <Ring
-                height="190px"
-                width="180px"
+                height="270px"
+                width="230px"
                 title="Calories Burned"
                 current={todayData.summary.caloriesOut}
                 goal={todayData.goals.caloriesOut}
               />
               <Ring
-                height="190px"
-                width="180px"
+                height="270px"
+                width="230px"
                 title="Steps"
                 current={todayData.summary.steps}
                 goal={todayData.goals.steps}
               />
               <Ring
-                height="190px"
-                width="180px"
+                height="270px"
+                width="230px"
                 title="Floors"
                 current={todayData.summary.floors}
                 goal={todayData.goals.floors}
               />
               <Ring
-                height="190px"
-                width="180px"
+                height="270px"
+                width="230px"
                 title="Distance"
                 current={
                   todayData.summary.distances.find(
@@ -216,30 +170,13 @@ const TodayActivityPage = () => {
                 }
                 goal={todayData.goals.distance}
               />
-              <Ring
-                height="190px"
-                width="180px"
-                title="Active Minutes"
-                current={
-                  todayData.summary.lightlyActiveMinutes +
-                  todayData.summary.fairlyActiveMinutes +
-                  todayData.summary.veryActiveMinutes
-                }
-                goal={todayData.goals.activeMinutes}
-              />
             </div>
 
             <div className="a-chart-area">
-              <CustomPie
-                height={300}
-                width={300}
-                title="Daily Activity Breakdown"
-                data={pieList}
-              />
               {weeklyStepData && weeklyStepData["activities-steps"] && (
                 <CustomLineChart
-                  height={300}
-                  width={600}
+                  height={350}
+                  width={900}
                   title="Weekly Steps"
                   data={weeklyStepData["activities-steps"].map((item) => ({
                     ...item,

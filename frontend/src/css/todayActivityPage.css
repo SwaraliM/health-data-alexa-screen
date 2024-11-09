@@ -55,7 +55,7 @@
 
 .a-ring-area {
   background-color: var(--dark-blue-transparent-color);
-  height: 28%;
+  height: 40%;
   width: 95%;
   border-radius: 8px;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
@@ -67,7 +67,7 @@
 
 .a-chart-area {
   background-color: var(--dark-blue-transparent-color);
-  height: 45%;
+  height: 50%;
   width: 95%;
   border-radius: 8px;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
