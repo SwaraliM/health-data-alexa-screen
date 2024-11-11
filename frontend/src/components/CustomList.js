@@ -4,6 +4,10 @@ import { RightCircleTwoTone } from "@ant-design/icons";
 import "../css/customList.css";
 
 const CustomList = ({ height, width, data, options }) => {
+  console.log("List received: " + JSON.stringify(data));
+  console.log("List received: " + data.title);
+  console.log("List received: " + data.list);
+  console.log("List received: " + (typeof data.list));
   return (
     <div className="custom-list">
       <Card
