@@ -2,51 +2,20 @@ const express = require("express");
 const alexaRouter = express.Router();
 const { getClients } = require("../websocket");
 require("dotenv").config();
-const {
-  ANALYZE_QUESTION_SYSTEM_CONFIG,
-  ALEXA_RESPONSE_SYSTEM_CONFIG,
-  PROCESS_DATA_SYSTEM_CONFIG,
-} = require("../configs/openAiSystemConfigs");
+const { SYSTEM_CONFIG } = require("../configs/openAiSystemConfigs");
+const GPTChat = require("../GPTChat");
 
-const apiUrl = "https://api.openai.com/v1/chat/completions";
 const apiKey =
   "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";
+const gptChat = new GPTChat(apiKey, SYSTEM_CONFIG);
 
-async function analyzeQuestion(question) {
-  // system information
-  const systemConfig = ANALYZE_QUESTION_SYSTEM_CONFIG;
-
-  const systemMessage = {
-    role: "system",
-    content: systemConfig,
-  };
-  // question the user raise
-  const userMessage = {
-    role: "user",
-    content: question,
-  };
-
-  // OpenAI request payload
-  const requestBody = {
-    model: "gpt-4o", // model
-    messages: [systemMessage, userMessage],
-    max_tokens: 300, // reply max length
-  };
-
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  const data = await response.json();
-  const dataContentString = data.choices[0].message.content.trim();
-  console.log(dataContentString);
-  const analysis = JSON.parse(dataContentString);
-  return analysis;
+async function callGPT(input) {
+  try {
+    const reply = await gptChat.callGPT(input);
+    return JSON.parse(reply);
+  } catch (error) {
+    console.error(error.message);
+  }
 }
 
 async function fetchData(queryUrls, username) {
@@ -81,153 +50,139 @@ async function fetchData(queryUrls, username) {
   return combinedData;
 }
 
-async function processData(combinedData) {
-  const systemConfig = PROCESS_DATA_SYSTEM_CONFIG;
-
-  const systemMessage = {
-    role: "system",
-    content: systemConfig,
-  };
-  // question the user raise
-  const userMessage = {
-    role: "user",
-    content: JSON.stringify(combinedData),
-  };
-
-  // OpenAI request payload
-  const requestBody = {
-    model: "gpt-4o", // model
-    messages: [systemMessage, userMessage],
-    max_tokens: 2000, // reply max length
-  };
-
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  const data = await response.json();
-  const dataContentString = data.choices[0].message.content.trim();
-  const processedData = JSON.parse(dataContentString);
-  console.log("=====process=======" + JSON.stringify(processedData, null, 2));
-  return processedData;
-}
-
-async function getAlexaResponse(combinedData) {
-  const systemConfig = ALEXA_RESPONSE_SYSTEM_CONFIG;
-
-  const systemMessage = {
-    role: "system",
-    content: systemConfig,
-  };
-  // question the user raise
-  const userMessage = {
-    role: "user",
-    content: JSON.stringify(combinedData),
-  };
-
-  // OpenAI request payload
-  const requestBody = {
-    model: "gpt-4o", // model
-    messages: [systemMessage, userMessage],
-    max_tokens: 2000, // reply max length
-  };
-
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  const data = await response.json();
-  const speakOutput = data.choices[0].message.content.trim();
-  return speakOutput;
-}
-
 alexaRouter.post("/", async (req, res) => {
-  let { question, username } = req.body;
+  let { userInput, username } = req.body;
   username = username.toLowerCase();
-  /*************for test*********/
-  // console.log(question);
-  // res.status(200).json({ speakOutput: "Command sent successfully" });
-  /*************for test*********/
 
-  try {
-    const clients = getClients();
-    // Step1:analysis question, return list of endpoints
-    //example of analysis: ["/activities/summary/2023-10-13","/hrv/range/date/2023-10-06/2023-10-13"]
-    const analysis = await analyzeQuestion(question);
-    if (analysis === "back") {
-      const clientSocket = clients.get(username);
-      if (username && clients.has(username) && clientSocket) {
-        const message = {
-          action: "navigation",
-          option: "/today-activity",
-          data: {},
-        };
+  const clients = getClients();
+  const clientSocket = clients.get(username);
 
-        clientSocket.send(JSON.stringify(message));
 
-        console.log(`Sent message to ${username}:`, JSON.stringify(message));
-      }
-      return res.status(200).json({ message: "returned to the dashboard" });
-    }
-
-    if (analysis.completed == false) {
-      return res.status(200).json({ message: analysis.next });
-    }
-
-    console.log("=======analysis completed===========");
-
-    // // Step2: fetch data
-    const combinedData = await fetchData(analysis.next, username);
-
-    console.log("=======fetch completed===========");
-
-    // Step3: Get General Response to alexa
-    const alexaResponse = await getAlexaResponse(combinedData);
-    console.log("alexa Response: " + alexaResponse);
-    res.status(200).json({ message: alexaResponse });
-
-    console.log("=======response returned===========");
-
-    //Step4: send stuctured display data and analysis to frontend using websocket
-
-    if (!username || !clients.has(username)) {
-      return;
-    }
-
-    //TODO
-    const fetchedDataWithQuestion = {
-      question: analysis.question,
-      data: combinedData,
-    };
-    console.log(JSON.stringify(fetchedDataWithQuestion, null, 2));
-
-    const processedData = await processData(combinedData);
-
-    console.log("=======process completed===========");
-
-    const clientSocket = clients.get(username);
-    if (clientSocket) {
-      const message = processedData;
+  const gptRet = await callGPT(userInput);
+  if (gptRet.type == "close") {
+    console.log("close");
+    if (username && clients.has(username) && clientSocket) {
+      const message = {
+        action: "navigation",
+        option: "/today-activity",
+        data: {},
+      };
 
       clientSocket.send(JSON.stringify(message));
 
       console.log(`Sent message to ${username}:`, JSON.stringify(message));
-
-      return;
+      return res.status(200).json({ message: gptRet.data });
     }
-  } catch (error) {
-    console.error(error);
+  } else if (gptRet.type == "reInput") {
+    console.log("reInput");
+    return res.status(200).json({ message: gptRet.data });
+  } else if (gptRet.type == "fetch") {
+    console.log("fetch");
+    const fetchedData = await fetchData(gptRet.data,username);
+    console.log("======" + fetchedData);
+    const newInput = {"type":"rawData", "data": fetchedData};
+    const gptRetAfterFetch = await callGPT(newInput);
+    if (username && clients.has(username) && clientSocket) {
+      const message = {
+        action: "navigation",
+        option: "/general",
+        data: gptRetAfterFetch.data.frontend,
+      };
+
+      clientSocket.send(JSON.stringify(message));
+
+      console.log(`Sent message to ${username}:`, JSON.stringify(message));
+      return res.status(200).json({ message: gptRetAfterFetch.data.response });
+    }
+  } else if (gptRet.type == "present") {
+    console.log("present");
+    if (username && clients.has(username) && clientSocket) {
+      const message = {
+        action: "navigation",
+        option: "/general",
+        data: gptRet.data.frontend,
+      };
+
+      clientSocket.send(JSON.stringify(message));
+
+      console.log(`Sent message to ${username}:`, JSON.stringify(message));
+      return res.status(200).json({ message: gptRet.data.response });
+    }
+  } else {
+    console.log("unknow");
+    return res.status(200).json({ message: "error" });
   }
+ 
+
+  // try {
+  //   const gptRet = await callGPT(userInput);
+
+
+  //   const clients = getClients();
+  //   if (analysis === "back") {
+  //     const clientSocket = clients.get(username);
+  //     if (username && clients.has(username) && clientSocket) {
+  //       const message = {
+  //         action: "navigation",
+  //         option: "/today-activity",
+  //         data: {},
+  //       };
+
+  //       clientSocket.send(JSON.stringify(message));
+
+  //       console.log(`Sent message to ${username}:`, JSON.stringify(message));
+  //     }
+  //     return res.status(200).json({ message: "returned to the dashboard" });
+  //   }
+
+  //   if (analysis.completed == false) {
+  //     return res.status(200).json({ message: analysis.next });
+  //   }
+
+  //   console.log("=======analysis completed===========");
+
+  //   // // Step2: fetch data
+  //   const combinedData = await fetchData(analysis.next, username);
+
+  //   console.log("=======fetch completed===========");
+
+  //   // Step3: Get General Response to alexa
+  //   const alexaResponse = await getAlexaResponse(combinedData);
+  //   console.log("alexa Response: " + alexaResponse);
+  //   res.status(200).json({ message: alexaResponse });
+
+  //   console.log("=======response returned===========");
+
+  //   //Step4: send stuctured display data and analysis to frontend using websocket
+
+  //   if (!username || !clients.has(username)) {
+  //     return;
+  //   }
+
+  //   //TODO
+  //   const fetchedDataWithQuestion = {
+  //     question: analysis.question,
+  //     data: combinedData,
+  //   };
+  //   console.log(JSON.stringify(fetchedDataWithQuestion, null, 2));
+
+  //   const processedData = await processData(combinedData);
+
+  //   console.log("=======process completed===========");
+
+  //   const clientSocket = clients.get(username);
+  //   if (clientSocket) {
+  //     const message = processedData;
+
+  //     clientSocket.send(JSON.stringify(message));
+
+  //     console.log(`Sent message to ${username}:`, JSON.stringify(message));
+
+  //     return;
+  //   }
+  // } catch (error) {
+  //   console.error(error);
+  // }
 
   // const clients = getClients();
 

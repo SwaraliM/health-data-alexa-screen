@@ -38,8 +38,9 @@ function handleWebSocketCommand(data, navigate) {
       const navigation = data.option;
       if (navigation) {
         console.log(`Navigating to ${navigation}`);
-        localStorage.setItem('analysis', JSON.stringify(data.data));
-        navigate(`${navigation}/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`); 
+        const random = Math.floor(Math.random() * 9000000000) + 1000000000;
+        localStorage.setItem(random, JSON.stringify(data.data));
+        navigate(`${navigation}/${username}/${random}`); 
       }
     } else {
       console.log("Unknown command received:", data.action);

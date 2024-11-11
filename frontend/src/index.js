@@ -7,7 +7,14 @@ import { ConfigProvider } from "antd";
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
-    <ConfigProvider theme={{ token: { colorPrimary: "#ffffff" } }}>
+    <ConfigProvider theme={{
+      components: {
+        Statistic: {
+          titleFontSize: 24,
+          contentFontSize: 30,
+        },
+      },
+    }}>
       <App />
     </ConfigProvider>
   </React.StrictMode>

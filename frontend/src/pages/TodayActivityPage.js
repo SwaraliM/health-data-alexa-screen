@@ -3,11 +3,8 @@ import "../css/todayActivityPage.css";
 import { useParams } from "react-router-dom";
 import PageLayoutClean from "../components/PageLayoutClean";
 import CustomList from "../components/CustomList";
-import SingleValue from "../components/SingleValue";
 import Ring from "../components/Ring";
-import CustomPie from "../components/CustomPie";
 import CustomLineChart from "../components/CustomLineChart";
-
 import { getCurrentDate } from "../utils/getCurrentDate";
 import { getCurrentTime } from "../utils/getCurrentTime";
 import convertTime from "../utils/convertTime";
@@ -18,7 +15,6 @@ const TodayActivityPage = () => {
   const [todayData, setTodayData] = useState(null);
   const [weeklyStepData, setWeeklyStepData] = useState(null);
   const [activitiesList, setActivitiesList] = useState([]);
-  const [pieList, setPieList] = useState([]);
   const [currentTime, setCurrentTime] = useState(getCurrentTime());
 
   const fetchTodayData = async () => {
@@ -82,28 +78,8 @@ const TodayActivityPage = () => {
           `Duration - ${convertTime(activity.duration)}`,
           `Start Time - ${activity.startTime}`,
         ],
-      }));
-      const newPieList = [
-        {
-          type: "Sedentary Minutes",
-          value: todayData.summary.sedentaryMinutes,
-        },
-        {
-          type: "Lightly Active Minutes",
-          value: todayData.summary.lightlyActiveMinutes,
-        },
-        {
-          type: "Fairly Active Minutes",
-          value: todayData.summary.fairlyActiveMinutes,
-        },
-        {
-          type: "Very Active Minutes",
-          value: todayData.summary.veryActiveMinutes,
-        },
-      ];
+      }));   
       setActivitiesList(newActivitiesList);
-      setPieList(newPieList);
-      console.log(newPieList);
     }
   }, [todayData]);
 
