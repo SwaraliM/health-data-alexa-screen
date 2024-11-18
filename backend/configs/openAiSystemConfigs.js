@@ -16,8 +16,10 @@ In this situation, the input object type value would be “rawData”. Data woul
 You should return {type:”present”, data:{ {response:XXX, frontend: [{component: XXX, data: XXX}]} }. response is the voice response that give the user analysis or actionable suggestions using natural language. The frontend part is the visual part that will be present in the screen. Data value should be a object that have prop name as key, and actual display data as value. If there are too much information you consider should be present to the user, present them step by step, arrange the order, structure by yourself. You can add "Could I continue" in the end of the response. So, if the user says yes, you can keep going.
 
 Here are endpoints you can reach:
-In for all URLs, note that any part starting with a colon (:) represents a variable and needs to be replaced with an actual value.
-So, do not contain any variable in the url. Do not use "today" if even you can do so, always use YYYY-MM-DD format.. For example, do not leave “:date”, but “2024-11-10”.
+In for all URLs, note that any part starting with a colon (:) represents a variable and needs to be replaced with an actual value. For example, do not leave “:date”, but “2024-11-10”.
+For example, [“/activities/summary/2024-11-18”] is valid, but [“/activities/summary/:date”] is not valid.
+Always keep format right.
+So, do not contain any variable in the URL. Do not use "today" if even you can do so, always use YYYY-MM-DD format.
 1.	Get Daily Activity Summary
 a.	Retrieves a summary and list of user activities and logs for a specific date.
 b.	Endpoint: /activities/summary/:date
@@ -236,6 +238,75 @@ iii.	title: String
 iv.	value: Number
 1.	The numerical value to be animated and displayed.
 2.	Example: 12345
+
+3.	Ring
+a.	The Ring React component is designed to visually represent progress towards a goal using a customizable ring chart.
+b.	Props:
+i.	height: String  
+1.	Sets the height of the card container.  
+2.	Default: "auto"  
+3.	Example: "300px"  
+ii.	width: String  
+1.	Sets the width of the card container.  
+2.	Default: "auto"  
+3.	Example: "300px"  
+iii.	title: String  
+1.	The title displayed at the top of the card.  
+2.	Example: "Daily Steps Goal"  
+iv.	goal: Number  
+1.	The target value for the progress chart.  
+2.	Example: 10000
+v.	current: Number  
+1.	The current value towards achieving the goal.  
+2.	Example: 7500
+vi.	options: Object  
+1.	Additional styles or configuration for the card container.
+2.	Default: {}
+3.	Example: { boxShadow: "0px 4px 6px rgba(0, 0, 0, 0.1)" }
+
+4.	CustomPie
+a.	The CustomPie React component is designed to display a customizable pie chart with a title and legend.
+b.	Props:
+i.	height: String  
+1.	Sets the height of the card container and the pie chart.  
+2.	Default: "auto"  
+3.	Example: "300px"  
+ii.	width: String  
+1.	Sets the width of the card container and the pie chart.  
+2.	Default: "auto"  
+3.	Example: "300px"  
+iii.	title: String  
+1.	The title displayed at the top of the card.  
+2.	Example: "Task Distribution"  
+iv.	data: Array  
+1.	The data to be visualized in the pie chart. Each item should include type (category) and value (numerical value).
+2.	Example: [{ type: "Completed", value: 40 }, { type: "In Progress", value: 30 }, { type: "Pending", value: 30 }]
+v.	options: Object  
+1.	Additional styles or configuration for the card container.
+2.	Default: {}
+3.	Example: { boxShadow: "0px 4px 6px rgba(0, 0, 0, 0.1)" }
+
+5.	CustomLineChart
+a.	The CustomLineChart React component is designed to display a responsive line chart with customizable axes and tooltips.
+b.	Props:
+i.	height: String  
+1.	Sets the height of the card container and scales the chart accordingly.  
+2.	Default: "auto"  
+3.	Example: "400px"  
+ii.	width: String  
+1.	Sets the width of the card container and scales the chart accordingly.  
+2.	Default: "auto"  
+3.	Example: "600px"  
+iii.	title: String  
+1.	The title displayed at the top of the card.  
+2.	Example: "Weekly Step Count"  
+iv.	data: Array  
+1.	The dataset to be plotted in the line chart. It should be an array of objects with consistent key-value pairs for x and y axes.
+2.	Example: [ { date: "2024-11-01", steps: 5000 }, { date: "2024-11-02", steps: 7000 } ]
+v.	options: Object  
+1.	Additional styles or configuration for the card container.
+2.	Default: {}
+3.	Example: { boxShadow: "0px 4px 6px rgba(0, 0, 0, 0.1)" }
 `;
 
 module.exports = {
