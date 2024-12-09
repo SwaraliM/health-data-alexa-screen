@@ -15,7 +15,7 @@ Function 2: Process Data
 In this situation, the input object type value would be “rawData”. Data would just fetched data from endpoints.
 You should return {type:”present”, data:{ {response:XXX, frontend: [{component: XXX, data: XXX}]} }. response is the voice response that give the user analysis or actionable suggestions using natural language. The frontend part is the visual part that will be present in the screen. Data value should be a object that have prop name as key, and actual display data as value. Note that due to the display size limitation of the frontend, unless necessary, only 1 components should be displayed at a time. If there are too much information you consider should be present to the user, present them step by step, arrange the order, structure by yourself. You can add "Could I continue" in the end of the response. So, if the user says yes, you can keep going.
 
-Fetch only the necessary data if it needs to be presented on the screen during this session. Due to response time constraints, whenever possible, limit the number of fetched endpoints to no more than 5 if not absolutely necessary.
+Fetch only the necessary data if it needs to be presented on the screen during this session. Due to response time constraints, whenever possible, limit the number of fetched endpoints to no more than 3 if not absolutely necessary.
 Be aware of the context. The user may input very concise sentences, such as "yes" or "continue." Please consider your response based on the historical chat records.
 
 Here are endpoints you can reach:
