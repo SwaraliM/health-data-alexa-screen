@@ -81,7 +81,7 @@ alexaRouter.post("/", async (req, res) => {
       }
     } else if (gptRet.type == "reInput") {
       console.log("reInput");
-      return { message: gptRet.data };
+      return { timeout: false, data: { message: gptRet.data } };
     } else if (gptRet.type == "fetch") {
       console.log("fetch");
       const fetchedData = await fetchData(gptRet.data, username);
@@ -98,7 +98,7 @@ alexaRouter.post("/", async (req, res) => {
         clientSocket.send(JSON.stringify(message));
 
         console.log(`Sent message to ${username}:`, JSON.stringify(message));
-        return { message: gptRetAfterFetch.data.response };
+        return { timeout: false, data: { message: gptRetAfterFetch.data.response } };
       }
     } else if (gptRet.type == "present") {
       console.log("present");
@@ -112,24 +112,22 @@ alexaRouter.post("/", async (req, res) => {
         clientSocket.send(JSON.stringify(message));
 
         console.log(`Sent message to ${username}:`, JSON.stringify(message));
-        return { message: gptRet.data.response };
+        return { timeout: false, data: { message: gptRet.data.response } };
       }
-    } else if(gptRet.type == "voice"){
-      return { message: gptRet.data };
-    }else {
+    } else if (gptRet.type == "voice") {
+      return { timeout: false, data:{ message: gptRet.data }};
+    } else {
       console.log("unknow");
-      return { message: "error" };
+      return { timeout: false, data:{ message: "error" }};
     }
   })();
 
   const result = await Promise.race([mainLogicPromise, timeoutPromise]);
 
-  console.log(".......");
-  console.log(JSON.stringify(result));
   if (result.timeout) {
     return res.status(200).json({ message: "Due to the time constraint, please request the voice description again after the data is displayed on the screen." });
   } else {
-    return res.status(200).json(result);
+    return res.status(200).json(result.data);
   }
 
 
