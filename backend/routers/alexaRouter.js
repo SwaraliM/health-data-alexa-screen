@@ -127,7 +127,7 @@ alexaRouter.post("/", async (req, res) => {
   console.log(".......");
   console.log(JSON.stringify(result));
   if (result.timeout) {
-    return res.status(500).json({ message: "Due to the time constraint, please request the voice description again after the data is displayed on the screen." });
+    return res.status(200).json({ message: "Due to the time constraint, please request the voice description again after the data is displayed on the screen." });
   } else {
     return res.status(200).json(result);
   }
