@@ -51,68 +51,88 @@ async function fetchData(queryUrls, username) {
 }
 
 alexaRouter.post("/", async (req, res) => {
-  let { userInput, username } = req.body;
-  username = username.toLowerCase();
+  const timeoutPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({ timeout: true });
+    }, 7000); // timeout limit 7 seconds
+  });
+  const mainLogicPromise = (async () => {
+    let { userInput, username } = req.body;
+    username = username.toLowerCase();
 
-  const clients = getClients();
-  const clientSocket = clients.get(username);
+    const clients = getClients();
+    const clientSocket = clients.get(username);
 
 
-  const gptRet = await callGPT(userInput);
-  if (gptRet.type == "close") {
-    console.log("close");
-    if (username && clients.has(username) && clientSocket) {
-      const message = {
-        action: "navigation",
-        option: "/today-activity",
-        data: {},
-      };
+    const gptRet = await callGPT(userInput);
+    if (gptRet.type == "close") {
+      console.log("close");
+      if (username && clients.has(username) && clientSocket) {
+        const message = {
+          action: "navigation",
+          option: "/today-activity",
+          data: {},
+        };
 
-      clientSocket.send(JSON.stringify(message));
+        clientSocket.send(JSON.stringify(message));
 
-      console.log(`Sent message to ${username}:`, JSON.stringify(message));
-      return res.status(200).json({ message: gptRet.data });
+        console.log(`Sent message to ${username}:`, JSON.stringify(message));
+        return res.status(200).json({ message: gptRet.data });
+      }
+    } else if (gptRet.type == "reInput") {
+      console.log("reInput");
+      return { message: gptRet.data };
+    } else if (gptRet.type == "fetch") {
+      console.log("fetch");
+      const fetchedData = await fetchData(gptRet.data, username);
+      console.log("======" + fetchedData);
+      const newInput = { "type": "rawData", "data": fetchedData };
+      const gptRetAfterFetch = await callGPT(newInput);
+      if (username && clients.has(username) && clientSocket) {
+        const message = {
+          action: "navigation",
+          option: "/general",
+          data: gptRetAfterFetch.data.frontend,
+        };
+
+        clientSocket.send(JSON.stringify(message));
+
+        console.log(`Sent message to ${username}:`, JSON.stringify(message));
+        return { message: gptRetAfterFetch.data.response };
+      }
+    } else if (gptRet.type == "present") {
+      console.log("present");
+      if (username && clients.has(username) && clientSocket) {
+        const message = {
+          action: "navigation",
+          option: "/general",
+          data: gptRet.data.frontend,
+        };
+
+        clientSocket.send(JSON.stringify(message));
+
+        console.log(`Sent message to ${username}:`, JSON.stringify(message));
+        return { message: gptRet.data.response };
+      }
+    } else if(gptRet.type == "voice"){
+      return { message: gptRet.data };
+    }else {
+      console.log("unknow");
+      return { message: "error" };
     }
-  } else if (gptRet.type == "reInput") {
-    console.log("reInput");
-    return res.status(200).json({ message: gptRet.data });
-  } else if (gptRet.type == "fetch") {
-    console.log("fetch");
-    const fetchedData = await fetchData(gptRet.data,username);
-    console.log("======" + fetchedData);
-    const newInput = {"type":"rawData", "data": fetchedData};
-    const gptRetAfterFetch = await callGPT(newInput);
-    if (username && clients.has(username) && clientSocket) {
-      const message = {
-        action: "navigation",
-        option: "/general",
-        data: gptRetAfterFetch.data.frontend,
-      };
+  })();
 
-      clientSocket.send(JSON.stringify(message));
+  const result = await Promise.race([mainLogicPromise, timeoutPromise]);
 
-      console.log(`Sent message to ${username}:`, JSON.stringify(message));
-      return res.status(200).json({ message: gptRetAfterFetch.data.response });
-    }
-  } else if (gptRet.type == "present") {
-    console.log("present");
-    if (username && clients.has(username) && clientSocket) {
-      const message = {
-        action: "navigation",
-        option: "/general",
-        data: gptRet.data.frontend,
-      };
-
-      clientSocket.send(JSON.stringify(message));
-
-      console.log(`Sent message to ${username}:`, JSON.stringify(message));
-      return res.status(200).json({ message: gptRet.data.response });
-    }
+  console.log(".......");
+  console.log(JSON.stringify(result));
+  if (result.timeout) {
+    return res.status(500).json({ message: "Due to the time constraint, please request the voice description again after the data is displayed on the screen." });
   } else {
-    console.log("unknow");
-    return res.status(200).json({ message: "error" });
+    return res.status(200).json(result);
   }
- 
+
+
 
   // try {
   //   const gptRet = await callGPT(userInput);
