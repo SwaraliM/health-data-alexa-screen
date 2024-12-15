@@ -22,12 +22,10 @@ function connectWebSocket(username, navigate) {
   };
 
   socket.onclose = () => {
-    console.log("WebSocket connection closed");
+    console.log("WebSocket connection closed. Reconnecting..");
     localStorage.clear();
     socket = null; // clear the socket
-    setTimeout(() => {
-      socket =new WebSocket(process.env.REACT_APP_BACKEND_URL);
-  }, 2000);
+    setTimeout(() => connectWebSocket(username, navigate), 1500); 
   };
 
   socket.onerror = (error) => {
