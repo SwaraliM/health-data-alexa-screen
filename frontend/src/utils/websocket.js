@@ -25,6 +25,9 @@ function connectWebSocket(username, navigate) {
     console.log("WebSocket connection closed");
     localStorage.clear();
     socket = null; // clear the socket
+    setTimeout(() => {
+      socket =new WebSocket(process.env.REACT_APP_BACKEND_URL);
+  }, 2000);
   };
 
   socket.onerror = (error) => {
