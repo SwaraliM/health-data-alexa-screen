@@ -294,7 +294,8 @@ v.	options: Object
 
 5.	CustomLineChart
 a.	The CustomLineChart React component is designed to display a responsive line chart with customizable axes and tooltips.
-b.	Props:
+b.	This component is usually big, so only present one component at one time
+c.	Props:
 i.	height: String  
 1.	Sets the height of the card container and scales the chart accordingly.  
 2.	Default: "auto"  
@@ -313,6 +314,7 @@ v.	options: Object
 1.	Additional styles or configuration for the card container.
 2.	Default: {}
 3.	Example: { boxShadow: "0px 4px 6px rgba(0, 0, 0, 0.1)" }
+
 `;
 
 module.exports = {
