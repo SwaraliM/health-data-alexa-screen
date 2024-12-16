@@ -81,7 +81,7 @@ alexaRouter.post("/", async (req, res) => {
         clientSocket.send(JSON.stringify(message));
 
         console.log(`Sent message to ${username}:`, JSON.stringify(message));
-        return { timeout: false, message: gptRet.data };
+        return { timeout: false, data: { message: gptRet.data } };
       }
     } else if (gptRet.type == "reInput") {
       console.log("reInput");
@@ -120,10 +120,10 @@ alexaRouter.post("/", async (req, res) => {
       }
     } else if (gptRet.type == "voice") {
       console.log("voice");
-      return { timeout: false, data:{ message: gptRet.data }};
+      return { timeout: false, data: { message: gptRet.data } };
     } else {
       console.log("unknow");
-      return { timeout: false, data:{ message: "error" }};
+      return { timeout: false, data: { message: "error" } };
     }
   })();
 
