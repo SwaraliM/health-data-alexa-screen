@@ -25,7 +25,7 @@ function connectWebSocket(username, navigate) {
     console.log("WebSocket connection closed. Reconnecting..");
     localStorage.clear();
     socket = null; // clear the socket
-    setTimeout(() => connectWebSocket(username, navigate), 1500); 
+    setTimeout(() => connectWebSocket(username, navigate), 500); 
   };
 
   socket.onerror = (error) => {
@@ -34,7 +34,8 @@ function connectWebSocket(username, navigate) {
 }
 
 function handleWebSocketCommand(data, navigate) {
-    const username = localStorage.getItem('username');
+    // const username = localStorage.getItem('username');
+    const username = "amy";
     if (data.action === "navigation") {
       const navigation = data.option;
       if (navigation) {
