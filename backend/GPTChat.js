@@ -55,11 +55,15 @@ class GPTChat {
 
         // 清空会话历史并重新初始化
         this.history = [{ role: "system", content: this.systemConfig }];
+        const today = getCurrentDate();
+        this.history.push({ role: "user", content: "Today is " + today });
     }
 
     // 清除会话历史
     clearHistory() {
         this.history = [{ role: "system", content: this.systemConfig }];
+        const today = getCurrentDate();
+        this.history.push({ role: "user", content: "Today is " + today });
     }
 
     // 获取当前的系统配置
