@@ -81,7 +81,7 @@ alexaRouter.post("/", async (req, res) => {
         clientSocket.send(JSON.stringify(message));
 
         console.log(`Sent message to ${username}:`, JSON.stringify(message));
-        return res.status(200).json({ message: gptRet.data });
+        return { timeout: false, message: gptRet.data };
       }
     } else if (gptRet.type == "reInput") {
       console.log("reInput");
@@ -119,6 +119,7 @@ alexaRouter.post("/", async (req, res) => {
         return { timeout: false, data: { message: gptRet.data.response } };
       }
     } else if (gptRet.type == "voice") {
+      console.log("voice");
       return { timeout: false, data:{ message: gptRet.data }};
     } else {
       console.log("unknow");
@@ -128,6 +129,7 @@ alexaRouter.post("/", async (req, res) => {
 
   const result = await Promise.race([mainLogicPromise, timeoutPromise]);
 
+  console.log("result: " + result);
   if (result.timeout) {
     return res.status(200).json({ message: "Due to the time constraint, please request the voice description again after the data is displayed on the screen." });
   } else {
