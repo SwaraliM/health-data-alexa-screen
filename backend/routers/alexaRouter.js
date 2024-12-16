@@ -58,6 +58,9 @@ alexaRouter.post("/", async (req, res) => {
   });
   const mainLogicPromise = (async () => {
     let { userInput, username } = req.body;
+    console.log("Recevied Post request from Alexa========");
+    console.log(JSON.stringify(userInput));
+    console.log(JSON.stringify(username));
     username = username.toLowerCase();
 
     const clients = getClients();
