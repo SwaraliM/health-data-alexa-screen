@@ -70,6 +70,7 @@ alexaRouter.post("/", async (req, res) => {
     const gptRet = await callGPT(userInput);
     if (gptRet.type == "close") {
       console.log("close");
+      gptChat.clearHistory();
       if (username && clients.has(username) && clientSocket) {
         const message = {
           action: "navigation",
