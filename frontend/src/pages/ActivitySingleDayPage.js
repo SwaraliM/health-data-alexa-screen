@@ -63,14 +63,12 @@ function ActivitySingleDayPage() {
   
 
   function convertTime(duration) {
-    // 将毫秒转换为秒
     let seconds = Math.floor((duration / 1000) % 60);
     let minutes = Math.floor((duration / (1000 * 60)) % 60);
     let hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
 
     let result = [];
 
-    // 判断是否有小时、分钟、秒，依次加入结果字符串
     if (hours > 0) {
       result.push(`${hours} hour${hours > 1 ? "s" : ""}`);
     }
@@ -81,7 +79,6 @@ function ActivitySingleDayPage() {
       result.push(`${seconds} second${seconds > 1 ? "s" : ""}`);
     }
 
-    // 返回可读的时间字符串
     return result.join(" ");
   }
 

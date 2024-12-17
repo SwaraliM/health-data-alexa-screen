@@ -3,21 +3,21 @@ const { getCurrentDate } = require("../frontend/src/utils/getCurrentDate");
 class GPTChat {
     constructor(apiKey, systemConfig = "You are a helpful assistant.") {
         this.apiKey = apiKey;
-        this.history = []; // 保存历史会话
-        this.systemConfig = systemConfig; // 系统配置
-        // 初始化系统消息
+        this.history = []; // save history
+        this.systemConfig = systemConfig; // system config
+        // initiate system config
         this.history.push({ role: "system", content: this.systemConfig });
         const today = getCurrentDate();
         this.history.push({ role: "user", content: "Today is " + today });
     }
 
-    // 调用 GPT 接口
+    // call GPT api
     async callGPT(userInput, model = "gpt-4o") {
         try {
-            // 将用户输入添加到会话历史
+            // add user input to the history
             this.history.push({ role: "user", content: JSON.stringify(userInput) });
 
-            // 调用 OpenAI API
+            // call OpenAI API
             const response = await fetch("https://api.openai.com/v1/chat/completions", {
                 method: "POST",
                 headers: {
@@ -26,7 +26,7 @@ class GPTChat {
                 },
                 body: JSON.stringify({
                     model: model,
-                    messages: this.history, // 包含历史会话和系统配置
+                    messages: this.history, // contains history and system config
                 }),
             });
 
@@ -39,7 +39,7 @@ class GPTChat {
             const responseData = await response.json();
             const assistantMessage = responseData.choices[0].message.content;
 
-            // 将助手的回复添加到会话历史
+            // add response of assistant to the history
             this.history.push({ role: "assistant", content: assistantMessage });
 
             return assistantMessage;
@@ -49,24 +49,24 @@ class GPTChat {
         }
     }
 
-    // 设置或更新系统配置
+    // set system config
     setSystemConfig(newConfig) {
         this.systemConfig = newConfig;
 
-        // 清空会话历史并重新初始化
+        // clear history and re-initialization
         this.history = [{ role: "system", content: this.systemConfig }];
         const today = getCurrentDate();
         this.history.push({ role: "user", content: "Today is " + today });
     }
 
-    // 清除会话历史
+    // clear history
     clearHistory() {
         this.history = [{ role: "system", content: this.systemConfig }];
         const today = getCurrentDate();
         this.history.push({ role: "user", content: "Today is " + today });
     }
 
-    // 获取当前的系统配置
+    // get current system config
     getSystemConfig() {
         return this.systemConfig;
     }
