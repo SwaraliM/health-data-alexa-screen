@@ -23,9 +23,9 @@ fitbitRouter.get("/:username/activities/summary/:date", async (req, res) => {
       return res.status(404).json({ message: USER_NOT_FOUNT });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/date/${date}.json`,
       {
         method: "GET",
@@ -37,7 +37,23 @@ fitbitRouter.get("/:username/activities/summary/:date", async (req, res) => {
     );
 
     if (!response.ok) {
-      throw new Error("Error fetching Fitbit data");
+      const errorResponse = await response.json();
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/date/${date}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -76,10 +92,10 @@ fitbitRouter.get("/:username/activities/goals/:period", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get activity goals data
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/goals/${period}.json`,
       {
         method: "GET",
@@ -91,7 +107,23 @@ fitbitRouter.get("/:username/activities/goals/:period", async (req, res) => {
     );
 
     if (!response.ok) {
-      throw new Error("Error fetching Fitbit data");
+      const errorResponse = await response.json();
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/goals/${period}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -121,11 +153,11 @@ fitbitRouter.get("/:username/activities/favorite", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
 
     // Call Fitbit API to get favorite activities
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/favorite.json`,
       {
         method: "GET",
@@ -137,7 +169,23 @@ fitbitRouter.get("/:username/activities/favorite", async (req, res) => {
     );
 
     if (!response.ok) {
-      throw new Error("Error fetching Fitbit data");
+      const errorResponse = await response.json();
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/favorite.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -169,10 +217,10 @@ fitbitRouter.get("/:username/activities/frequent", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get frequent activities
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/frequent.json`,
       {
         method: "GET",
@@ -185,8 +233,22 @@ fitbitRouter.get("/:username/activities/frequent", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/frequent.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -214,10 +276,10 @@ fitbitRouter.get("/:username/activities/life-time", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get all activities
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities.json`,
       {
         method: "GET",
@@ -230,8 +292,22 @@ fitbitRouter.get("/:username/activities/life-time", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -258,10 +334,10 @@ fitbitRouter.get("/:username/activities/recent", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get recent activities
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/recent.json`,
       {
         method: "GET",
@@ -274,8 +350,22 @@ fitbitRouter.get("/:username/activities/recent", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/recent.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -297,27 +387,27 @@ fitbitRouter.get("/:username/activities/period/:resource/date/:date/:period", as
 
   // Validate resource parameter
   const validResources = [
-    "activityCalories", 
-    "calories", 
-    "caloriesBMR", 
-    "distance", 
-    "elevation", 
-    "floors", 
-    "minutesSedentary", 
-    "minutesLightlyActive", 
-    "minutesFairlyActive", 
-    "minutesVeryActive", 
-    "steps", 
-    "swimming-strokes", 
-    "tracker/activityCalories", 
-    "tracker/calories", 
-    "tracker/distance", 
-    "tracker/elevation", 
-    "tracker/floors", 
-    "tracker/minutesSedentary", 
-    "tracker/minutesLightlyActive", 
-    "tracker/minutesFairlyActive", 
-    "tracker/minutesVeryActive", 
+    "activityCalories",
+    "calories",
+    "caloriesBMR",
+    "distance",
+    "elevation",
+    "floors",
+    "minutesSedentary",
+    "minutesLightlyActive",
+    "minutesFairlyActive",
+    "minutesVeryActive",
+    "steps",
+    "swimming-strokes",
+    "tracker/activityCalories",
+    "tracker/calories",
+    "tracker/distance",
+    "tracker/elevation",
+    "tracker/floors",
+    "tracker/minutesSedentary",
+    "tracker/minutesLightlyActive",
+    "tracker/minutesFairlyActive",
+    "tracker/minutesVeryActive",
     "tracker/steps"
   ];
 
@@ -339,10 +429,10 @@ fitbitRouter.get("/:username/activities/period/:resource/date/:date/:period", as
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get specific activity resource data
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/${resource}/date/${date}/${period}.json`,
       {
         method: "GET",
@@ -353,11 +443,27 @@ fitbitRouter.get("/:username/activities/period/:resource/date/:date/:period", as
       }
     );
 
+
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/${resource}/date/${date}/${period}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
+
 
     const fitbitData = await response.json();
     res.status(200).json(fitbitData);
@@ -377,27 +483,27 @@ fitbitRouter.get("/:username/activities/range/:resource/date/:startDate/:endDate
 
   // Validate resource parameter
   const validResources = [
-    "activityCalories", 
-    "calories", 
-    "caloriesBMR", 
-    "distance", 
-    "elevation", 
-    "floors", 
-    "minutesSedentary", 
-    "minutesLightlyActive", 
-    "minutesFairlyActive", 
-    "minutesVeryActive", 
-    "steps", 
-    "swimming-strokes", 
-    "tracker/activityCalories", 
-    "tracker/calories", 
-    "tracker/distance", 
-    "tracker/elevation", 
-    "tracker/floors", 
-    "tracker/minutesSedentary", 
-    "tracker/minutesLightlyActive", 
-    "tracker/minutesFairlyActive", 
-    "tracker/minutesVeryActive", 
+    "activityCalories",
+    "calories",
+    "caloriesBMR",
+    "distance",
+    "elevation",
+    "floors",
+    "minutesSedentary",
+    "minutesLightlyActive",
+    "minutesFairlyActive",
+    "minutesVeryActive",
+    "steps",
+    "swimming-strokes",
+    "tracker/activityCalories",
+    "tracker/calories",
+    "tracker/distance",
+    "tracker/elevation",
+    "tracker/floors",
+    "tracker/minutesSedentary",
+    "tracker/minutesLightlyActive",
+    "tracker/minutesFairlyActive",
+    "tracker/minutesVeryActive",
     "tracker/steps"
   ];
 
@@ -413,10 +519,10 @@ fitbitRouter.get("/:username/activities/range/:resource/date/:startDate/:endDate
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get specific activity resource data for the date range
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/${resource}/date/${startDate}/${endDate}.json`,
       {
         method: "GET",
@@ -429,8 +535,22 @@ fitbitRouter.get("/:username/activities/range/:resource/date/:startDate/:endDate
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/${resource}/date/${startDate}/${endDate}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -467,10 +587,10 @@ fitbitRouter.get("/:username/body/log/:goalType/goal", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get the specified body log goal
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/body/log/${goalType}/goal.json`,
       {
         method: "GET",
@@ -483,8 +603,22 @@ fitbitRouter.get("/:username/body/log/:goalType/goal", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/body/log/${goalType}/goal.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -520,10 +654,10 @@ fitbitRouter.get("/:username/heart/period/date/:date/:period", async (req, res) 
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get heart rate activity data
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/heart/date/${date}/${period}.json`,
       {
         method: "GET",
@@ -536,8 +670,22 @@ fitbitRouter.get("/:username/heart/period/date/:date/:period", async (req, res) 
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/heart/date/${date}/${period}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -565,10 +713,10 @@ fitbitRouter.get("/:username/heart/range/date/:startDate/:endDate", async (req, 
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get heart rate time series data
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/activities/heart/date/${startDate}/${endDate}.json`,
       {
         method: "GET",
@@ -581,8 +729,22 @@ fitbitRouter.get("/:username/heart/range/date/:startDate/:endDate", async (req, 
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/activities/heart/date/${startDate}/${endDate}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -610,10 +772,10 @@ fitbitRouter.get("/:username/hrv/single-day/date/:date", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get HRV data for the specified date
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/hrv/date/${date}.json`,
       {
         method: "GET",
@@ -626,8 +788,22 @@ fitbitRouter.get("/:username/hrv/single-day/date/:date", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/hrv/date/${date}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -656,10 +832,10 @@ fitbitRouter.get("/:username/hrv/range/date/:startDate/:endDate", async (req, re
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get HRV data for the specified date range
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${endDate}.json`,
       {
         method: "GET",
@@ -672,10 +848,23 @@ fitbitRouter.get("/:username/hrv/range/date/:startDate/:endDate", async (req, re
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${endDate}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
-
     const fitbitData = await response.json();
     res.status(200).json(fitbitData);
   } catch (error) {
@@ -702,10 +891,10 @@ fitbitRouter.get("/:username/sleep/goal", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get the user's sleep goal
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1.2/user/-/sleep/goal.json`,
       {
         method: "GET",
@@ -718,8 +907,22 @@ fitbitRouter.get("/:username/sleep/goal", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1.2/user/-/sleep/goal.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -746,10 +949,10 @@ fitbitRouter.get("/:username/sleep/single-day/date/:date", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get sleep log for the specified date
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1.2/user/-/sleep/date/${date}.json`,
       {
         method: "GET",
@@ -762,8 +965,22 @@ fitbitRouter.get("/:username/sleep/single-day/date/:date", async (req, res) => {
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1.2/user/-/sleep/date/${date}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -789,10 +1006,10 @@ fitbitRouter.get("/:username/sleep/range/date/:startDate/:endDate", async (req, 
       return res.status(404).json({ message: "User not found." });
     }
 
-    const accessToken = user.accessToken;
+    let accessToken = user.accessToken;
 
     // Call Fitbit API to get sleep log for the specified date range
-    const response = await fetch(
+    let response = await fetch(
       `https://api.fitbit.com/1.2/user/-/sleep/date/${startDate}/${endDate}.json`,
       {
         method: "GET",
@@ -805,8 +1022,22 @@ fitbitRouter.get("/:username/sleep/range/date/:startDate/:endDate", async (req, 
 
     if (!response.ok) {
       const errorResponse = await response.json();
-      console.error("Error Response:", errorResponse);
-      throw new Error("Error fetching Fitbit data");
+      if (errorResponse.errors[0].errorType == "expired_token") {
+        accessToken = await renewAccessToken(user);
+        response = await fetch(
+          `https://api.fitbit.com/1.2/user/-/sleep/date/${startDate}/${endDate}.json`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } else {
+        console.error("Error Response:", errorResponse);
+        throw new Error("Error fetching Fitbit data");
+      }
     }
 
     const fitbitData = await response.json();
@@ -816,6 +1047,39 @@ fitbitRouter.get("/:username/sleep/range/date/:startDate/:endDate", async (req, 
     res.status(500).json({ message: "Server error", error: error.message });
   }
 });
+
+const renewAccessToken = async (user) => {
+  const clientId = "23PLM3";
+  const clientSecret = "c9cd4302ebcbd64bc14b8a14d84de6d6";
+  // Base64 encode client_id:client_secret for the Authorization header
+  const encodedCredentials = btoa(`${clientId}:${clientSecret}`);
+
+  const refreshResponse = await fetch("https://api.fitbit.com/oauth2/token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${encodedCredentials}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: user.refreshToken,
+    }),
+  });
+
+  const refreshData = await refreshResponse.json();
+
+  if (!refreshResponse.ok) {
+    throw new Error("Failed to refresh access token");
+  }
+
+  user.accessToken = refreshData.access_token;
+  user.refreshToken = refreshData.refresh_token;
+  user.tokenExpiry = Date.now() + refreshData.expires_in * 1000;
+  await user.save();
+
+  return refreshData.access_token;
+};
+
 
 
 
