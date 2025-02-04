@@ -3,11 +3,20 @@
     height: 90%;
     width: 90%;
 }
-.g-components{
+.g-components.vertical{
     height: 100%;
     width: 100%;
     display: flex;
     flex-direction: column;
+    justify-content: space-around;
+    align-items: center;
+}
+
+.g-components.horizontal{
+    height: 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: row;
     justify-content: space-around;
     align-items: center;
 }

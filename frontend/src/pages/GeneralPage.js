@@ -12,11 +12,13 @@ import Ring from "../components/Ring";
 const GeneralPage = () => {
   const { username, random } = useParams();
   const [components, setComponents] = useState([]);
+  const [layout, setLayout] = useState("vertical");
 
   useEffect(() => {
     const data = localStorage.getItem(random);
     if (data) {
-      setComponents(JSON.parse(data));
+      setComponents(JSON.parse(data).components);
+      setLayout(JSON.parse(data).layout);
     }
   }, [random]);
 
@@ -31,12 +33,12 @@ const GeneralPage = () => {
       case "SingleValue":
         return <SingleValue {...data} />;
       case "CustomLineChart":
-        return <CustomLineChart title={data.title} data={data.data} />
+        return <CustomLineChart {...data} />
       case "CustomPie":
-        return <CustomPie title={data.title} data={data.data} />
-      case "Ring":
+        return <CustomPie {...data} />
+      case "Ring": 
         //height, width, title, goal, current, options
-        return <Ring title={data.title} goal={data.goal} current = {data.current}/>
+        return <Ring {...data}/>
       default:
         return null; // Return null for unknown component types
     }
@@ -45,7 +47,7 @@ const GeneralPage = () => {
 
   return (
     <PageLayoutClean>
-      <div className="g-components">
+      <div className={`g-components ${layout === "horizontal" ? "horizontal" : "vertical"}`}>
       {components.map((comp, index) => (
         <div className="g-component" key={index}>{renderComponent(comp)}</div>
       ))}
