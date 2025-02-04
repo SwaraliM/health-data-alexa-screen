@@ -173,10 +173,12 @@ alexaRouter.post("/", async (req, res) => {
 
       if (ifWaitQuestion) {
         asyncResults.set(username, gptRetAfterFetch);
+        console.log("mark1")
         return { timeout: false };
       }
 
       if (ifAbandon) {
+        console.log("mark2")
         return { timeout: false, data: {} }
       }
 
@@ -192,6 +194,7 @@ alexaRouter.post("/", async (req, res) => {
         console.log(`Sent message to ${username}:`, JSON.stringify(message));
 
         ifWaitQuestion = false;
+        console.log("mark3")
         return { timeout: false, data: { message: gptRetAfterFetch.data.response } };
       }
     } else if (gptRet.type == "present") {
