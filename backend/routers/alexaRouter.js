@@ -73,6 +73,26 @@ alexaRouter.post("/", async (req, res) => {
 
     if (ifWaitQuestion && userInput.data && userInput.data.toLowerCase().includes("yes")) {
       //user want to wait
+      if (
+        asyncResults.has(username) &&
+        (currentAsyncResult == null || currentAsyncResult.data == null)
+      ) {
+        asyncResults.clear();
+        ifWaitQuestion = false;
+        if (username && clients.has(username) && clientSocket) {
+          const message = {
+            action: "navigation",
+            option: "/today-activity",
+            data: {},
+          };
+
+          clientSocket.send(JSON.stringify(message));
+          console.log(`Sent message to ${username}:`, JSON.stringify(message));
+        }
+
+        return { timeout: false, data: { message: "sorry I am lost, please say again your question." } };
+      }
+
       if (asyncResults.has(username) && asyncResults.get(username) !== null) {
         const currentAsyncResult = asyncResults.get(username);
         console.log("current " + currentAsyncResult)
@@ -109,6 +129,7 @@ alexaRouter.post("/", async (req, res) => {
       //use don't want to wait
       ifWaitQuestion = false;
       ifAbandon = true;
+      asyncResults.clear();
 
       if (username && clients.has(username) && clientSocket) {
         const message = {
