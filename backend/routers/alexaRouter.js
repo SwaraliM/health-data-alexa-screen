@@ -9,7 +9,7 @@ const apiKey =
   "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";
 const gptChat = new GPTChat(apiKey, SYSTEM_CONFIG);
 
-let ifWaitQuestion = false;
+let ifWaitQuestion = true;
 let ifAbandon = false;
 const asyncResults = new Map();
 
