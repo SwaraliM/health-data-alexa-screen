@@ -75,6 +75,7 @@ alexaRouter.post("/", async (req, res) => {
       //user want to wait
       if (asyncResults.has(username) && asyncResults.get(username) !== null) {
         const currentAsyncResult = asyncResults.get(username);
+        console.log("current " + currentAsyncResult)
         asyncResults.delete(username);
 
         if (username && clients.has(username) && clientSocket) {
