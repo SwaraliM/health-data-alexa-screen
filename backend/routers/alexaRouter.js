@@ -9,7 +9,7 @@ const apiKey =
   "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";
 const gptChat = new GPTChat(apiKey, SYSTEM_CONFIG);
 
-let ifWaitQuestion = true;
+let ifWaitQuestion = false;
 let ifAbandon = false;
 const asyncResults = new Map();
 
@@ -99,7 +99,7 @@ alexaRouter.post("/", async (req, res) => {
         while (Date.now() - start < 7000) {
           //block for 7 seconds
         }
-        if (asyncResults.has(username)) {
+        if (asyncResults.has(username) && asyncResults.get(username) !== null) {
           return { timeout: false, data: asyncResults.get(username) };
         } else {
           return { timeout: true };
@@ -135,6 +135,7 @@ alexaRouter.post("/", async (req, res) => {
         return { timeout: false };
       }
       if (ifAbandon) {
+        asyncResults.clear();
         return { timeout: false, data: {} }
       }
       if (username && clients.has(username) && clientSocket) {
@@ -159,6 +160,7 @@ alexaRouter.post("/", async (req, res) => {
       }
 
       if (ifAbandon) {
+        asyncResults.clear();
         return { timeout: false, data: {} }
       }
 
@@ -179,6 +181,7 @@ alexaRouter.post("/", async (req, res) => {
       }
 
       if (ifAbandon) {
+        asyncResults.clear();
         console.log("mark2")
         return { timeout: false, data: {} }
       }
@@ -207,6 +210,7 @@ alexaRouter.post("/", async (req, res) => {
       }
 
       if (ifAbandon) {
+        asyncResults.clear();
         return { timeout: false, data: {} }
       }
 
@@ -232,6 +236,7 @@ alexaRouter.post("/", async (req, res) => {
       }
 
       if (ifAbandon) {
+        asyncResults.clear();
         return { timeout: false, data: {} }
       }
 
