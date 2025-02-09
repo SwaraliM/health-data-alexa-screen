@@ -90,7 +90,7 @@ alexaRouter.post("/", async (req, res) => {
           console.log(`Sent message to ${username}:`, JSON.stringify(message));
         }
 
-        return { timeout: false, data: { message: "sorry I am lost, please say again your question." } };
+        return { timeout: false, data: { message: "Sorry, I didn’t catch that. Could you repeat your question?" } };
       }
 
       if (asyncResults.has(username) && asyncResults.get(username) !== null) {
@@ -278,7 +278,7 @@ alexaRouter.post("/", async (req, res) => {
   if (result.timeout) {
     ifWaitQuestion = true;
     ifAbandon = false;
-    return res.status(200).json({ message: "Due to the time constraint, we still need time to processe, do you want to wait?" });
+    return res.status(200).json({ message: "We're still processing due to time constraints. Do you want to wait, or should we continue later?" });
   } else {
     ifWaitQuestion = false;
     return res.status(200).json(result.data);
