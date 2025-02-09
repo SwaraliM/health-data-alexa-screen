@@ -75,7 +75,7 @@ alexaRouter.post("/", async (req, res) => {
       //user want to wait
       if (
         asyncResults.has(username) &&
-        (currentAsyncResult == null || currentAsyncResult.data == null)
+        (asyncResults.get(username) == null || asyncResults.get(username).data == null)
       ) {
         asyncResults.clear();
         ifWaitQuestion = false;
