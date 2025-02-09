@@ -158,6 +158,9 @@ alexaRouter.post("/", async (req, res) => {
 
     ifAbandon = false;
     const gptRet = await callGPT(userInput);
+    if (!gptRet || typeof gptRet.type === "undefined") {
+      return { timeout: false, data: { message: "Sorry, I didn’t catch that. Could you repeat your question?" } }
+    }
     if (gptRet.type == "close") {
       console.log("close");
       gptChat.clearHistory();
