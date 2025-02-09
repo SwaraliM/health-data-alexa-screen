@@ -278,7 +278,7 @@ alexaRouter.post("/", async (req, res) => {
   if (result.timeout) {
     ifWaitQuestion = true;
     ifAbandon = false;
-    return res.status(200).json({ message: "We're still processing due to time constraints. Do you want to wait, or should we continue later?" });
+    return res.status(200).json({ message: "Due to the time constraint, we still need time to processe, do you want to wait?" });
   } else {
     ifWaitQuestion = false;
     return res.status(200).json(result.data);
