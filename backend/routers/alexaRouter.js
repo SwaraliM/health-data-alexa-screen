@@ -77,6 +77,8 @@ alexaRouter.post("/", async (req, res) => {
         asyncResults.has(username) &&
         (asyncResults.get(username) == null || asyncResults.get(username).data == null)
       ) {
+        console.log("line80: " );
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.clear();
         ifWaitQuestion = false;
         if (username && clients.has(username) && clientSocket) {
@@ -94,9 +96,13 @@ alexaRouter.post("/", async (req, res) => {
       }
 
       if (asyncResults.has(username) && asyncResults.get(username) !== null) {
+        console.log("line98: ");
+        console.log(Object.fromEntries(asyncResults));
         const currentAsyncResult = asyncResults.get(username);
         console.log("current " + currentAsyncResult)
         asyncResults.delete(username);
+        console.log("line102: ");
+        console.log(Object.fromEntries(asyncResults));
 
         if (username && clients.has(username) && clientSocket) {
           const message = {
@@ -116,10 +122,12 @@ alexaRouter.post("/", async (req, res) => {
 
       } else {
         const start = Date.now();
-        while (Date.now() - start < 7000) {
-          //block for 7 seconds
+        while (Date.now() - start < 6500) {
+          //block for 6.5 seconds
         }
         if (asyncResults.has(username) && asyncResults.get(username) !== null) {
+          console.log("line126: ");
+          console.log(Object.fromEntries(asyncResults));
           return { timeout: false, data: asyncResults.get(username) };
         } else {
           return { timeout: true };
@@ -129,6 +137,8 @@ alexaRouter.post("/", async (req, res) => {
       //use don't want to wait
       ifWaitQuestion = false;
       ifAbandon = true;
+      console.log("line136: " );
+      console.log(Object.fromEntries(asyncResults));
       asyncResults.clear();
 
       if (username && clients.has(username) && clientSocket) {
@@ -152,10 +162,14 @@ alexaRouter.post("/", async (req, res) => {
       console.log("close");
       gptChat.clearHistory();
       if (ifWaitQuestion) {
+        console.log("line160: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.set(username, gptRet);
         return { timeout: false };
       }
       if (ifAbandon) {
+        console.log("line165: " );
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.clear();
         return { timeout: false, data: {} }
       }
@@ -176,11 +190,15 @@ alexaRouter.post("/", async (req, res) => {
     } else if (gptRet.type == "reInput") {
 
       if (ifWaitQuestion) {
+        console.log("line186: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.set(username, gptRet);
         return { timeout: false };
       }
 
       if (ifAbandon) {
+        console.log("line192: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.clear();
         return { timeout: false, data: {} }
       }
@@ -196,12 +214,16 @@ alexaRouter.post("/", async (req, res) => {
       const gptRetAfterFetch = await callGPT(newInput);
 
       if (ifWaitQuestion) {
+        console.log("line208: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.set(username, gptRetAfterFetch);
         console.log("mark1")
         return { timeout: false };
       }
 
       if (ifAbandon) {
+        console.log("line215: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.clear();
         console.log("mark2")
         return { timeout: false, data: {} }
@@ -226,11 +248,15 @@ alexaRouter.post("/", async (req, res) => {
       console.log("present");
 
       if (ifWaitQuestion) {
+        console.log("line240: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.set(username, gptRet);
         return { timeout: false };
       }
 
       if (ifAbandon) {
+        console.log("line246: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.clear();
         return { timeout: false, data: {} }
       }
@@ -252,11 +278,15 @@ alexaRouter.post("/", async (req, res) => {
     } else {
 
       if (ifWaitQuestion) {
+        console.log("line268: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.set(username, gptRet);
         return { timeout: false };
       }
 
       if (ifAbandon) {
+        console.log("line274: ");
+        console.log(Object.fromEntries(asyncResults));
         asyncResults.clear();
         return { timeout: false, data: {} }
       }
@@ -270,7 +300,7 @@ alexaRouter.post("/", async (req, res) => {
 
   const result = await Promise.race([mainLogicPromise, timeoutPromise]);
 
-  console.log("Result is:")
+  console.log("288Result is:")
   console.log(JSON.stringify(result, null, 2));
 
   console.log("result: " + result);
