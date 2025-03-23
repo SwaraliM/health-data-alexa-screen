@@ -64,6 +64,8 @@ class GPTChat {
         this.history = [{ role: "system", content: this.systemConfig }];
         const today = getCurrentDate();
         this.history.push({ role: "user", content: "Today is " + today });
+        console.log("History is cleared.");
+        console.log("Current history:", this.history);
     }
 
     // get current system config

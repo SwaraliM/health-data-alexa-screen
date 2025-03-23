@@ -42,6 +42,7 @@ alexaRouter.get("/", (req, res) => {
 
     }
     gptRet = {};
+    
 
     return res.status(200).json({
       state: state,
