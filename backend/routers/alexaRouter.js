@@ -537,6 +537,8 @@ alexaRouter.post("/", async (req, res) => {
 alexaRouter.get("/back", (req, res) => {
   console.log("close");
     gptChat.clearHistory();
+    const clients = getClients();
+    const clientSocket = clients.get(curUsername);
     if (curUsername && clients.has(curUsername) && clientSocket) {
       const message = {
         action: "navigation",
