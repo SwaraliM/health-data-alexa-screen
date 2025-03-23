@@ -69,269 +69,269 @@ async function fetchData(queryUrls, username) {
   return combinedData;
 }
 
-alexaRouter.post("/", async (req, res) => {
-  const timeoutPromise = new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({ timeout: true });
-    }, 7000); // timeout limit 7 seconds
-  });
-  const mainLogicPromise = (async () => {
-    let { userInput, username } = req.body;
-    console.log("Recevied Post request from Alexa========");
-    console.log(JSON.stringify(userInput));
-    console.log(JSON.stringify(username));
-    username = username.toLowerCase();
+// alexaRouter.post("/", async (req, res) => {
+//   const timeoutPromise = new Promise((resolve) => {
+//     setTimeout(() => {
+//       resolve({ timeout: true });
+//     }, 7000); // timeout limit 7 seconds
+//   });
+//   const mainLogicPromise = (async () => {
+//     let { userInput, username } = req.body;
+//     console.log("Recevied Post request from Alexa========");
+//     console.log(JSON.stringify(userInput));
+//     console.log(JSON.stringify(username));
+//     username = username.toLowerCase();
 
-    const clients = getClients();
-    const clientSocket = clients.get(username);
+//     const clients = getClients();
+//     const clientSocket = clients.get(username);
 
-    if (ifWaitQuestion && userInput.data && userInput.data.toLowerCase().includes("yes")) {
-      //user want to wait
-      if (
-        asyncResults.has(username) &&
-        (asyncResults.get(username) == null || asyncResults.get(username).data == null)
-      ) {
-        console.log("line80: " );
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.clear();
-        ifWaitQuestion = false;
-        if (username && clients.has(username) && clientSocket) {
-          const message = {
-            action: "navigation",
-            option: "/today-activity",
-            data: {},
-          };
+//     if (ifWaitQuestion && userInput.data && userInput.data.toLowerCase().includes("yes")) {
+//       //user want to wait
+//       if (
+//         asyncResults.has(username) &&
+//         (asyncResults.get(username) == null || asyncResults.get(username).data == null)
+//       ) {
+//         console.log("line80: " );
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.clear();
+//         ifWaitQuestion = false;
+//         if (username && clients.has(username) && clientSocket) {
+//           const message = {
+//             action: "navigation",
+//             option: "/today-activity",
+//             data: {},
+//           };
 
-          clientSocket.send(JSON.stringify(message));
-          console.log(`Sent message to ${username}:`, JSON.stringify(message));
-        }
+//           clientSocket.send(JSON.stringify(message));
+//           console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//         }
 
-        return { timeout: false, data: { message: "Sorry, I didn’t catch that. Could you repeat your question?" } };
-      }
+//         return { timeout: false, data: { message: "Sorry, I didn’t catch that. Could you repeat your question?" } };
+//       }
 
-      if (asyncResults.has(username) && asyncResults.get(username) !== null) {
-        console.log("line98: ");
-        console.log(Object.fromEntries(asyncResults));
-        const currentAsyncResult = asyncResults.get(username);
-        console.log("current " + currentAsyncResult)
-        asyncResults.delete(username);
-        console.log("line102: ");
-        console.log(Object.fromEntries(asyncResults));
+//       if (asyncResults.has(username) && asyncResults.get(username) !== null) {
+//         console.log("line98: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         const currentAsyncResult = asyncResults.get(username);
+//         console.log("current " + currentAsyncResult)
+//         asyncResults.delete(username);
+//         console.log("line102: ");
+//         console.log(Object.fromEntries(asyncResults));
 
-        if (username && clients.has(username) && clientSocket) {
-          const message = {
-            action: "navigation",
-            option: "/general",
-            data: currentAsyncResult.data.frontend,
-          };
+//         if (username && clients.has(username) && clientSocket) {
+//           const message = {
+//             action: "navigation",
+//             option: "/general",
+//             data: currentAsyncResult.data.frontend,
+//           };
 
-          clientSocket.send(JSON.stringify(message));
+//           clientSocket.send(JSON.stringify(message));
 
-          console.log(`Sent message to ${username}:`, JSON.stringify(message));
-        }
+//           console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//         }
 
-        ifWaitQuestion = false;
-        return { timeout: false, data: { message: currentAsyncResult.data.response } };
-
-
-      } else {
-        const start = Date.now();
-        while (Date.now() - start < 6500) {
-          //block for 6.5 seconds
-        }
-        if (asyncResults.has(username) && asyncResults.get(username) !== null) {
-          console.log("line126: ");
-          console.log(Object.fromEntries(asyncResults));
-          return { timeout: false, data: asyncResults.get(username) };
-        } else {
-          return { timeout: true };
-        }
-      }
-    } else if (ifWaitQuestion) {
-      //use don't want to wait
-      ifWaitQuestion = false;
-      ifAbandon = true;
-      console.log("line136: " );
-      console.log(Object.fromEntries(asyncResults));
-      asyncResults.clear();
-
-      if (username && clients.has(username) && clientSocket) {
-        const message = {
-          action: "navigation",
-          option: "/today-activity",
-          data: {},
-        };
-
-        clientSocket.send(JSON.stringify(message));
-        console.log(`Sent message to ${username}:`, JSON.stringify(message));
-      }
-
-      return { timeout: false, data: { message: "sorry for processing so long, back to dashboard for you" } };
-    }
+//         ifWaitQuestion = false;
+//         return { timeout: false, data: { message: currentAsyncResult.data.response } };
 
 
-    ifAbandon = false;
-    const gptRet = await callGPT(userInput);
-    if (!gptRet || typeof gptRet.type === "undefined") {
-      return { timeout: false, data: { message: "Sorry, I didn’t catch that. Could you repeat your question?" } }
-    }
-    if (gptRet.type == "close") {
-      console.log("close");
-      gptChat.clearHistory();
-      if (ifWaitQuestion) {
-        console.log("line160: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.set(username, gptRet);
-        return { timeout: false };
-      }
-      if (ifAbandon) {
-        console.log("line165: " );
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.clear();
-        return { timeout: false, data: {} }
-      }
-      if (username && clients.has(username) && clientSocket) {
-        const message = {
-          action: "navigation",
-          option: "/today-activity",
-          data: {},
-        };
+//       } else {
+//         const start = Date.now();
+//         while (Date.now() - start < 6500) {
+//           //block for 6.5 seconds
+//         }
+//         if (asyncResults.has(username) && asyncResults.get(username) !== null) {
+//           console.log("line126: ");
+//           console.log(Object.fromEntries(asyncResults));
+//           return { timeout: false, data: asyncResults.get(username) };
+//         } else {
+//           return { timeout: true };
+//         }
+//       }
+//     } else if (ifWaitQuestion) {
+//       //use don't want to wait
+//       ifWaitQuestion = false;
+//       ifAbandon = true;
+//       console.log("line136: " );
+//       console.log(Object.fromEntries(asyncResults));
+//       asyncResults.clear();
 
-        clientSocket.send(JSON.stringify(message));
+//       if (username && clients.has(username) && clientSocket) {
+//         const message = {
+//           action: "navigation",
+//           option: "/today-activity",
+//           data: {},
+//         };
 
-        console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//         clientSocket.send(JSON.stringify(message));
+//         console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//       }
 
-        ifWaitQuestion = false;
-        return { timeout: false, data: { message: gptRet.data } };
-      }
-    } else if (gptRet.type == "reInput") {
-
-      if (ifWaitQuestion) {
-        console.log("line186: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.set(username, gptRet);
-        return { timeout: false };
-      }
-
-      if (ifAbandon) {
-        console.log("line192: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.clear();
-        return { timeout: false, data: {} }
-      }
-
-      console.log("reInput");
-      ifWaitQuestion = false;
-      return { timeout: false, data: { message: gptRet.data } };
-    } else if (gptRet.type == "fetch") {
-      console.log("fetch");
-      const fetchedData = await fetchData(gptRet.data, username);
-      console.log("======" + fetchedData);
-      const newInput = { "type": "rawData", "data": fetchedData };
-      const gptRetAfterFetch = await callGPT(newInput);
-
-      if (ifWaitQuestion) {
-        console.log("line208: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.set(username, gptRetAfterFetch);
-        console.log("mark1")
-        return { timeout: false };
-      }
-
-      if (ifAbandon) {
-        console.log("line215: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.clear();
-        console.log("mark2")
-        return { timeout: false, data: {} }
-      }
-
-      if (username && clients.has(username) && clientSocket) {
-        const message = {
-          action: "navigation",
-          option: "/general",
-          data: gptRetAfterFetch.data.frontend,
-        };
-
-        clientSocket.send(JSON.stringify(message));
-
-        console.log(`Sent message to ${username}:`, JSON.stringify(message));
-
-        ifWaitQuestion = false;
-        console.log("mark3")
-        return { timeout: false, data: { message: gptRetAfterFetch.data.response } };
-      }
-    } else if (gptRet.type == "present") {
-      console.log("present");
-
-      if (ifWaitQuestion) {
-        console.log("line240: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.set(username, gptRet);
-        return { timeout: false };
-      }
-
-      if (ifAbandon) {
-        console.log("line246: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.clear();
-        return { timeout: false, data: {} }
-      }
-
-      if (username && clients.has(username) && clientSocket) {
-        const message = {
-          action: "navigation",
-          option: "/general",
-          data: gptRet.data.frontend,
-        };
-
-        clientSocket.send(JSON.stringify(message));
-
-        console.log(`Sent message to ${username}:`, JSON.stringify(message));
-
-        ifWaitQuestion = false;
-        return { timeout: false, data: { message: gptRet.data.response } };
-      }
-    } else {
-
-      if (ifWaitQuestion) {
-        console.log("line268: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.set(username, gptRet);
-        return { timeout: false };
-      }
-
-      if (ifAbandon) {
-        console.log("line274: ");
-        console.log(Object.fromEntries(asyncResults));
-        asyncResults.clear();
-        return { timeout: false, data: {} }
-      }
-
-      console.log("unknow");
-
-      ifWaitQuestion = false;
-      return { timeout: false, data: { message: "error" } };
-    }
-  })();
-
-  const result = await Promise.race([mainLogicPromise, timeoutPromise]);
-
-  console.log("288Result is:")
-  console.log(JSON.stringify(result, null, 2));
-
-  console.log("result: " + result);
-
-  if (result.timeout) {
-    ifWaitQuestion = true;
-    ifAbandon = false;
-    return res.status(200).json({ message: "It is taking me a bit longer , we still need time to processe, do you want to wait?" });
-  } else {
-    ifWaitQuestion = false;
-    return res.status(200).json(result.data);
-  }
+//       return { timeout: false, data: { message: "sorry for processing so long, back to dashboard for you" } };
+//     }
 
 
+//     ifAbandon = false;
+//     const gptRet = await callGPT(userInput);
+//     if (!gptRet || typeof gptRet.type === "undefined") {
+//       return { timeout: false, data: { message: "Sorry, I didn’t catch that. Could you repeat your question?" } }
+//     }
+//     if (gptRet.type == "close") {
+//       console.log("close");
+//       gptChat.clearHistory();
+//       if (ifWaitQuestion) {
+//         console.log("line160: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.set(username, gptRet);
+//         return { timeout: false };
+//       }
+//       if (ifAbandon) {
+//         console.log("line165: " );
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.clear();
+//         return { timeout: false, data: {} }
+//       }
+//       if (username && clients.has(username) && clientSocket) {
+//         const message = {
+//           action: "navigation",
+//           option: "/today-activity",
+//           data: {},
+//         };
+
+//         clientSocket.send(JSON.stringify(message));
+
+//         console.log(`Sent message to ${username}:`, JSON.stringify(message));
+
+//         ifWaitQuestion = false;
+//         return { timeout: false, data: { message: gptRet.data } };
+//       }
+//     } else if (gptRet.type == "reInput") {
+
+//       if (ifWaitQuestion) {
+//         console.log("line186: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.set(username, gptRet);
+//         return { timeout: false };
+//       }
+
+//       if (ifAbandon) {
+//         console.log("line192: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.clear();
+//         return { timeout: false, data: {} }
+//       }
+
+//       console.log("reInput");
+//       ifWaitQuestion = false;
+//       return { timeout: false, data: { message: gptRet.data } };
+//     } else if (gptRet.type == "fetch") {
+//       console.log("fetch");
+//       const fetchedData = await fetchData(gptRet.data, username);
+//       console.log("======" + fetchedData);
+//       const newInput = { "type": "rawData", "data": fetchedData };
+//       const gptRetAfterFetch = await callGPT(newInput);
+
+//       if (ifWaitQuestion) {
+//         console.log("line208: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.set(username, gptRetAfterFetch);
+//         console.log("mark1")
+//         return { timeout: false };
+//       }
+
+//       if (ifAbandon) {
+//         console.log("line215: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.clear();
+//         console.log("mark2")
+//         return { timeout: false, data: {} }
+//       }
+
+//       if (username && clients.has(username) && clientSocket) {
+//         const message = {
+//           action: "navigation",
+//           option: "/general",
+//           data: gptRetAfterFetch.data.frontend,
+//         };
+
+//         clientSocket.send(JSON.stringify(message));
+
+//         console.log(`Sent message to ${username}:`, JSON.stringify(message));
+
+//         ifWaitQuestion = false;
+//         console.log("mark3")
+//         return { timeout: false, data: { message: gptRetAfterFetch.data.response } };
+//       }
+//     } else if (gptRet.type == "present") {
+//       console.log("present");
+
+//       if (ifWaitQuestion) {
+//         console.log("line240: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.set(username, gptRet);
+//         return { timeout: false };
+//       }
+
+//       if (ifAbandon) {
+//         console.log("line246: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.clear();
+//         return { timeout: false, data: {} }
+//       }
+
+//       if (username && clients.has(username) && clientSocket) {
+//         const message = {
+//           action: "navigation",
+//           option: "/general",
+//           data: gptRet.data.frontend,
+//         };
+
+//         clientSocket.send(JSON.stringify(message));
+
+//         console.log(`Sent message to ${username}:`, JSON.stringify(message));
+
+//         ifWaitQuestion = false;
+//         return { timeout: false, data: { message: gptRet.data.response } };
+//       }
+//     } else {
+
+//       if (ifWaitQuestion) {
+//         console.log("line268: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.set(username, gptRet);
+//         return { timeout: false };
+//       }
+
+//       if (ifAbandon) {
+//         console.log("line274: ");
+//         console.log(Object.fromEntries(asyncResults));
+//         asyncResults.clear();
+//         return { timeout: false, data: {} }
+//       }
+
+//       console.log("unknow");
+
+//       ifWaitQuestion = false;
+//       return { timeout: false, data: { message: "error" } };
+//     }
+//   })();
+
+//   const result = await Promise.race([mainLogicPromise, timeoutPromise]);
+
+//   console.log("288Result is:")
+//   console.log(JSON.stringify(result, null, 2));
+
+//   console.log("result: " + result);
+
+//   if (result.timeout) {
+//     ifWaitQuestion = true;
+//     ifAbandon = false;
+//     return res.status(200).json({ message: "It is taking me a bit longer , we still need time to processe, do you want to wait?" });
+//   } else {
+//     ifWaitQuestion = false;
+//     return res.status(200).json(result.data);
+//   }
+
+return res.status(200).json({ message: "post return" });
 
   // try {
   //   const gptRet = await callGPT(userInput);
