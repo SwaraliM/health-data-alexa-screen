@@ -520,13 +520,20 @@ alexaRouter.post("/", async (req, res) => {
   curUsername = username.toLowerCase();
   state = "processing";
   console.log("state -> processing");
-  const curGptRet = await callGPT(userInput);
-  gptRet = curGptRet;
-  state = "completed";
-  console.log("state -> completed");
-  console.log("current GptRet: " + JSON.stringify(gptRet));
-  return res.status(200).json({ message: "received" });
 
+  // ⏱️ 不等待 callGPT
+  callGPT(userInput).then(result => {
+    gptRet = result;
+    state = "completed";
+    console.log("state -> completed");
+    console.log("current GptRet: " + JSON.stringify(gptRet));
+  }).catch(err => {
+    state = "error";
+    console.error("GPT error:", err.message);
+  });
+
+  return res.status(200).json({ message: "received immediately" }); // ✅ 立即返回
 });
+
 
 module.exports = alexaRouter;
