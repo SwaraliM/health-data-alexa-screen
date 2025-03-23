@@ -9,33 +9,112 @@ const apiKey =
   "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";
 const gptChat = new GPTChat(apiKey, SYSTEM_CONFIG);
 
-let ifWaitQuestion = false;
-let ifAbandon = false;
-const asyncResults = new Map();
+let state = "completed";
+let gptRet = {};
+let curUsername = "";
 
 alexaRouter.get("/", (req, res) => {
-  // 生成一个 0 到 1 之间的随机数
-  const rand = Math.random();
+  console.log("current user: " + curUsername);
+  if (state === "processing") {
+    //still processing
+    return res.status(200).json({
+      state: state,
+      message: "Welcome to Alexa Router"
+    });
+  }
+  //if state is completed
+  const clients = getClients();
+  const clientSocket = clients.get(curUsername);
+  if (gptRet.type == "close") {
+    const curGptRet = gptRet;
+    console.log("close");
+    gptChat.clearHistory();
+    if (curUsername && clients.has(curUsername) && clientSocket) {
+      const message = {
+        action: "navigation",
+        option: "/today-activity",
+        data: {},
+      };
 
-  // 20% 概率返回 completed，其余为 processing
-  const state = rand < 0.2 ? "completed" : "processing";
+      clientSocket.send(JSON.stringify(message));
 
-  res.status(200).json({
-    state: state,
-    message: "Welcome to Alexa Router"
-  });
+      console.log(`Sent message to ${curUsername}:`, JSON.stringify(message));
+
+    }
+    gptRet = {};
+
+    return res.status(200).json({
+      state: state,
+      message: curGptRet.data
+    });
+  } else if (gptRet.type == "reInput") {
+    const curGptRet = gptRet;
+
+    console.log("reInput");
+    gptRet = {};
+
+    return res.status(200).json({
+      state: state,
+      message: curGptRet.data
+    });
+  } else if (gptRet.type == "present") {
+    const curGptRet = gptRet;
+    console.log("present");
+
+    if (curUsername && clients.has(curUsername) && clientSocket) {
+      const message = {
+        action: "navigation",
+        option: "/general",
+        data: curGptRet.data.frontend,
+      };
+
+      clientSocket.send(JSON.stringify(message));
+
+      console.log(`Sent message to ${curUsername}:`, JSON.stringify(message));
+
+    }
+    return res.status(200).json({
+      state: state,
+      message: curGptRet.data.response
+    });
+  } else {
+
+    console.log("unknow error");
+
+    return res.status(200).json({
+      state: state,
+      message: "I didn't catch that, could you repeat your question?"
+    });
+  }
+
 });
 
 
-
 async function callGPT(input) {
+  console.log("callGPT");
   try {
-    const reply = await gptChat.callGPT(input);
-    return JSON.parse(reply);
+    let reply = await gptChat.callGPT(input);
+    console.log("98 reply: " + JSON.stringify(reply));
+
+    let replyJson = typeof reply === "string" ? JSON.parse(reply) : reply;
+
+
+    if (replyJson.type == "fetch") {
+      const fetchedData = await fetchData(replyJson.data, curUsername);
+      console.log("======" + fetchedData);
+
+      const newInput = { type: "rawData", data: fetchedData };
+
+      replyJson = await callGPT(newInput);
+    }
+
+    return replyJson;
   } catch (error) {
-    console.error(error.message);
+    console.error("error here:" + error.message);
+    return { type: "error", data: "Sorry, I didn’t catch that. Could you repeat your question?" };
   }
 }
+
 
 async function fetchData(queryUrls, username) {
   console.log("url number: " + queryUrls.length);
@@ -433,8 +512,20 @@ async function fetchData(queryUrls, username) {
 // });
 
 alexaRouter.post("/", async (req, res) => {
+  let { userInput, username } = req.body;
   console.log("Recevied Post request from Alexa========");
-  res.status(200).json({ message: "post Router" });
+  console.log(JSON.stringify(userInput));
+  console.log(JSON.stringify(username));
+  curUsername = username.toLowerCase();
+  state = "processing";
+  console.log("state -> processing");
+  const curGptRet = await callGPT(userInput);
+  gptRet = curGptRet;
+  state = "completed";
+  console.log("state -> completed");
+  console.log("current GptRet: " + JSON.stringify(gptRet));
+  return res.status(200).json({ message: "received" });
+
 });
 
 module.exports = alexaRouter;
