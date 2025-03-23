@@ -13,6 +13,20 @@ let ifWaitQuestion = false;
 let ifAbandon = false;
 const asyncResults = new Map();
 
+alexaRouter.get("/", (req, res) => {
+  // 生成一个 0 到 1 之间的随机数
+  const rand = Math.random();
+
+  // 20% 概率返回 completed，其余为 processing
+  const state = rand < 0.2 ? "completed" : "processing";
+
+  res.status(200).json({
+    state: state,
+    message: "Welcome to Alexa Router"
+  });
+});
+
+
 
 async function callGPT(input) {
   try {
