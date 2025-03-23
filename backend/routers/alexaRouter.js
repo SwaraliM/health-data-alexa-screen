@@ -521,7 +521,6 @@ alexaRouter.post("/", async (req, res) => {
   state = "processing";
   console.log("state -> processing");
 
-  // ⏱️ 不等待 callGPT
   callGPT(userInput).then(result => {
     gptRet = result;
     state = "completed";
@@ -532,7 +531,27 @@ alexaRouter.post("/", async (req, res) => {
     console.error("GPT error:", err.message);
   });
 
-  return res.status(200).json({ message: "received immediately" }); // ✅ 立即返回
+  return res.status(200).json({ message: "received immediately" });
+});
+
+alexaRouter.get("/back", (req, res) => {
+  console.log("close");
+    gptChat.clearHistory();
+    if (curUsername && clients.has(curUsername) && clientSocket) {
+      const message = {
+        action: "navigation",
+        option: "/today-activity",
+        data: {},
+      };
+
+      clientSocket.send(JSON.stringify(message));
+
+      console.log(`Sent message to ${curUsername}:`, JSON.stringify(message));
+
+    }
+    gptRet = {};
+    state = "completed";
+  return res.status(200).json({ state: state });
 });
 
 
