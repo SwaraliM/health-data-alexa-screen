@@ -434,6 +434,7 @@ async function fetchData(queryUrls, username) {
 
 alexaRouter.post("/", async (req, res) => {
   console.log("Recevied Post request from Alexa========");
+  res.status(200).json({ message: "post Router" });
 });
 
 module.exports = alexaRouter;
