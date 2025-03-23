@@ -331,105 +331,109 @@ async function fetchData(queryUrls, username) {
 //     return res.status(200).json(result.data);
 //   }
 
-return res.status(200).json({ message: "post return" });
-
-  // try {
-  //   const gptRet = await callGPT(userInput);
 
 
-  //   const clients = getClients();
-  //   if (analysis === "back") {
-  //     const clientSocket = clients.get(username);
-  //     if (username && clients.has(username) && clientSocket) {
-  //       const message = {
-  //         action: "navigation",
-  //         option: "/today-activity",
-  //         data: {},
-  //       };
+//   // try {
+//   //   const gptRet = await callGPT(userInput);
 
-  //       clientSocket.send(JSON.stringify(message));
 
-  //       console.log(`Sent message to ${username}:`, JSON.stringify(message));
-  //     }
-  //     return res.status(200).json({ message: "returned to the dashboard" });
-  //   }
+//   //   const clients = getClients();
+//   //   if (analysis === "back") {
+//   //     const clientSocket = clients.get(username);
+//   //     if (username && clients.has(username) && clientSocket) {
+//   //       const message = {
+//   //         action: "navigation",
+//   //         option: "/today-activity",
+//   //         data: {},
+//   //       };
 
-  //   if (analysis.completed == false) {
-  //     return res.status(200).json({ message: analysis.next });
-  //   }
+//   //       clientSocket.send(JSON.stringify(message));
 
-  //   console.log("=======analysis completed===========");
+//   //       console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//   //     }
+//   //     return res.status(200).json({ message: "returned to the dashboard" });
+//   //   }
 
-  //   // // Step2: fetch data
-  //   const combinedData = await fetchData(analysis.next, username);
+//   //   if (analysis.completed == false) {
+//   //     return res.status(200).json({ message: analysis.next });
+//   //   }
 
-  //   console.log("=======fetch completed===========");
+//   //   console.log("=======analysis completed===========");
 
-  //   // Step3: Get General Response to alexa
-  //   const alexaResponse = await getAlexaResponse(combinedData);
-  //   console.log("alexa Response: " + alexaResponse);
-  //   res.status(200).json({ message: alexaResponse });
+//   //   // // Step2: fetch data
+//   //   const combinedData = await fetchData(analysis.next, username);
 
-  //   console.log("=======response returned===========");
+//   //   console.log("=======fetch completed===========");
 
-  //   //Step4: send stuctured display data and analysis to frontend using websocket
+//   //   // Step3: Get General Response to alexa
+//   //   const alexaResponse = await getAlexaResponse(combinedData);
+//   //   console.log("alexa Response: " + alexaResponse);
+//   //   res.status(200).json({ message: alexaResponse });
 
-  //   if (!username || !clients.has(username)) {
-  //     return;
-  //   }
+//   //   console.log("=======response returned===========");
 
-  //   //TODO
-  //   const fetchedDataWithQuestion = {
-  //     question: analysis.question,
-  //     data: combinedData,
-  //   };
-  //   console.log(JSON.stringify(fetchedDataWithQuestion, null, 2));
+//   //   //Step4: send stuctured display data and analysis to frontend using websocket
 
-  //   const processedData = await processData(combinedData);
+//   //   if (!username || !clients.has(username)) {
+//   //     return;
+//   //   }
 
-  //   console.log("=======process completed===========");
+//   //   //TODO
+//   //   const fetchedDataWithQuestion = {
+//   //     question: analysis.question,
+//   //     data: combinedData,
+//   //   };
+//   //   console.log(JSON.stringify(fetchedDataWithQuestion, null, 2));
 
-  //   const clientSocket = clients.get(username);
-  //   if (clientSocket) {
-  //     const message = processedData;
+//   //   const processedData = await processData(combinedData);
 
-  //     clientSocket.send(JSON.stringify(message));
+//   //   console.log("=======process completed===========");
 
-  //     console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//   //   const clientSocket = clients.get(username);
+//   //   if (clientSocket) {
+//   //     const message = processedData;
 
-  //     return;
-  //   }
-  // } catch (error) {
-  //   console.error(error);
-  // }
+//   //     clientSocket.send(JSON.stringify(message));
 
-  // const clients = getClients();
+//   //     console.log(`Sent message to ${username}:`, JSON.stringify(message));
 
-  // if (!username || !clients.has(username)) {
-  //     return res.status(400).json({ message: "No client connected with the given username." });
-  // }
+//   //     return;
+//   //   }
+//   // } catch (error) {
+//   //   console.error(error);
+//   // }
 
-  // const clientSocket = clients.get(username);
+//   // const clients = getClients();
 
-  // //call gpt to interpret voice input
-  // //voice input -gpt-> what endpoint should be reached
-  // //get data from api call -gpt-> analysis, stuctured data, response
-  // //response to alexa, ws to frontend(analysis and data)
+//   // if (!username || !clients.has(username)) {
+//   //     return res.status(400).json({ message: "No client connected with the given username." });
+//   // }
 
-  // if (clientSocket) {
-  //     const message = {
-  //         command: command,
-  //         options: options
-  //     };
+//   // const clientSocket = clients.get(username);
 
-  //     clientSocket.send(JSON.stringify(message));
+//   // //call gpt to interpret voice input
+//   // //voice input -gpt-> what endpoint should be reached
+//   // //get data from api call -gpt-> analysis, stuctured data, response
+//   // //response to alexa, ws to frontend(analysis and data)
 
-  //     console.log(`Sent message to ${username}:`, JSON.stringify(message));
+//   // if (clientSocket) {
+//   //     const message = {
+//   //         command: command,
+//   //         options: options
+//   //     };
 
-  //     return res.status(200).json({ message: "Command sent successfully" });
-  // } else {
-  //     return res.status(500).json({ message: "Failed to send command to client." });
-  // }
+//   //     clientSocket.send(JSON.stringify(message));
+
+//   //     console.log(`Sent message to ${username}:`, JSON.stringify(message));
+
+//   //     return res.status(200).json({ message: "Command sent successfully" });
+//   // } else {
+//   //     return res.status(500).json({ message: "Failed to send command to client." });
+//   // }
+// });
+
+alexaRouter.post("/", async (req, res) => {
+  console.log("Recevied Post request from Alexa========");
 });
 
 module.exports = alexaRouter;
