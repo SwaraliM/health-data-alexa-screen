@@ -26,6 +26,52 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: false,
   },
+  // User Profile for personalization
+  userProfile: {
+    age: {
+      type: Number,
+      required: false,
+    },
+    gender: {
+      type: String,
+      enum: ['male', 'female', 'other', 'prefer_not_to_say'],
+      required: false,
+    },
+    fitnessLevel: {
+      type: String,
+      enum: ['sedentary', 'lightly_active', 'moderately_active', 'very_active', 'athlete'],
+      default: 'moderately_active',
+    },
+    healthGoals: {
+      type: [String],
+      default: [],
+      // Examples: 'weight_loss', 'muscle_gain', 'improve_cardio', 'better_sleep', 'stress_reduction'
+    },
+    healthConditions: {
+      type: [String],
+      default: [],
+      // Examples: 'diabetes', 'hypertension', 'heart_disease', 'asthma', 'none'
+    },
+    preferences: {
+      preferredExercise: {
+        type: [String],
+        default: [],
+        // Examples: 'running', 'swimming', 'cycling', 'walking', 'weightlifting', 'yoga'
+      },
+      sleepGoalMinutes: {
+        type: Number,
+        default: 480,  // 8 hours
+      },
+      dailyStepGoal: {
+        type: Number,
+        default: 10000,
+      },
+      dailyCalorieGoal: {
+        type: Number,
+        required: false,
+      },
+    },
+  },
 });
 
 const User = mongoose.model('User', userSchema);

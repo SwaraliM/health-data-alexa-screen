@@ -4,9 +4,15 @@ const { getClients } = require("../websocket");
 require("dotenv").config();
 const { SYSTEM_CONFIG } = require("../configs/openAiSystemConfigs");
 const GPTChat = require("../GPTChat");
+const User = require("../models/Users");
 
-const apiKey =
-  "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";
+const apiKey = process.env.OPENAI_API_KEY;
+
+if (!apiKey) {
+  console.error("ERROR: OPENAI_API_KEY is not set in environment variables!");
+  console.error("Please add OPENAI_API_KEY to your backend/.env file");
+}
+
 const gptChat = new GPTChat(apiKey, SYSTEM_CONFIG);
 
 let state = "completed";
@@ -91,13 +97,51 @@ alexaRouter.get("/", (req, res) => {
 });
 
 
+// Helper function to clean and parse JSON responses
+function parseJSONResponse(response) {
+  if (typeof response !== "string") {
+    return response;
+  }
+  
+  // Remove markdown code blocks if present
+  response = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+  
+  // Fix unquoted property names (e.g., {type: "fetch"} -> {"type": "fetch"})
+  response = response.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+  
+  try {
+    return JSON.parse(response);
+  } catch (error) {
+    console.error("JSON parse error. Original response:", response);
+    console.error("Parse error:", error.message);
+    
+    // Try to extract JSON from the response if it's wrapped in text
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const cleaned = jsonMatch[0].replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+        return JSON.parse(cleaned);
+      } catch (e) {
+        throw new Error(`Invalid JSON format: ${error.message}`);
+      }
+    }
+    throw error;
+  }
+}
+
 async function callGPT(input) {
   console.log("callGPT");
   try {
-    let reply = await gptChat.callGPT(input);
+    // Set max tokens based on input type
+    // For questions: 200 tokens (enough for JSON + short response)
+    // For data processing: 250 tokens (slightly longer for analysis)
+    const maxTokens = input.type === "question" ? 200 : 250;
+    
+    let reply = await gptChat.callGPT(input, "gpt-4o", maxTokens);
     console.log("98 reply: " + JSON.stringify(reply));
 
-    let replyJson = typeof reply === "string" ? JSON.parse(reply) : reply;
+    // Use improved JSON parsing with cleaning
+    let replyJson = parseJSONResponse(reply);
 
 
     if (replyJson.type == "fetch") {
@@ -106,13 +150,20 @@ async function callGPT(input) {
 
       const newInput = { type: "rawData", data: fetchedData };
 
+      // Use higher token limit for data processing
       replyJson = await callGPT(newInput);
     }
 
     return replyJson;
   } catch (error) {
     console.error("error here:" + error.message);
-    return { type: "error", data: "Sorry, I didn’t catch that. Could you repeat your question?" };
+    
+    // Return a concise error message
+    if (error.message.includes("timeout")) {
+      return { type: "error", data: "That took too long. Please try a simpler question." };
+    }
+    
+    return { type: "error", data: "Sorry, I didn't catch that. Could you repeat your question?" };
   }
 }
 
@@ -121,26 +172,31 @@ async function fetchData(queryUrls, username) {
   console.log("url number: " + queryUrls.length);
   const combinedData = {}; // using object to store return data
 
+  // Use localhost for internal API calls instead of API_URL (which may be ngrok URL)
+  const internalApiUrl = process.env.INTERNAL_API_URL || 'http://localhost:5001';
+
   for (const queryUrl of queryUrls) {
-    const url = `${process.env.API_URL}/api/fitbit/${username}${queryUrl}`;
+    const url = `${internalApiUrl}/api/fitbit/${username}${queryUrl}`;
     try {
-      console.log(url);
+      console.log("Fetching Fitbit data from:", url);
 
       const response = await fetch(url, {
         method: "GET",
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Error fetching ${url}: Status ${response.status} - ${errorText}`);
         throw new Error(
-          `Error fetching data from ${url}: ${response.statusText}`
+          `Error fetching data from ${url}: ${response.status} ${response.statusText}`
         );
       }
 
       const data = await response.json();
-
+      console.log(`Successfully fetched data from ${url}`);
       combinedData[url] = data; // URL as key, data as value
     } catch (error) {
-      console.error("Fetch error:", error.message);
+      console.error("Fetch error for", url, ":", error.message);
       // write error msg to object, url as key
       combinedData[url] = { error: error.message }; // record error
     }
@@ -513,25 +569,260 @@ async function fetchData(queryUrls, username) {
 // });
 
 alexaRouter.post("/", async (req, res) => {
-  let { userInput, username } = req.body;
-  console.log("Recevied Post request from Alexa========");
-  console.log(JSON.stringify(userInput));
-  console.log(JSON.stringify(username));
-  curUsername = username.toLowerCase();
-  state = "processing";
-  console.log("state -> processing");
+  console.log("Received request from Alexa========");
+  console.log("Request body:", JSON.stringify(req.body, null, 2));
 
-  callGPT(userInput).then(result => {
-    gptRet = result;
-    state = "completed";
-    console.log("state -> completed");
-    console.log("current GptRet: " + JSON.stringify(gptRet));
-  }).catch(err => {
-    state = "error";
-    console.error("GPT error:", err.message);
-  });
+  // Check if this is a direct Alexa request or Lambda-formatted request
+  const isAlexaRequest = req.body.version && req.body.request;
+  
+  if (isAlexaRequest) {
+    // Handle direct Alexa request
+    const requestType = req.body.request.type;
+    
+    // Handle LaunchRequest
+    if (requestType === 'LaunchRequest') {
+      return res.status(200).json({
+        version: "1.0",
+        response: {
+          outputSpeech: {
+            type: "PlainText",
+            text: "Welcome to Health Data. How can I assist you with your health data today?"
+          },
+          shouldEndSession: false
+        }
+      });
+    }
+    
+    // Handle IntentRequest
+    if (requestType === 'IntentRequest') {
+      const intentName = req.body.request.intent.name;
+      
+      // Handle Stop/Cancel intents
+      if (intentName === 'AMAZON.StopIntent' || intentName === 'AMAZON.CancelIntent') {
+        gptChat.clearHistory();
+        return res.status(200).json({
+          version: "1.0",
+          response: {
+            outputSpeech: {
+              type: "PlainText",
+              text: "Goodbye! Back to dashboard for you."
+            },
+            shouldEndSession: true
+          }
+        });
+      }
+      
+      // Extract question from slot
+      const slots = req.body.request.intent.slots;
+      let question = '';
+      
+      if (slots && slots.question && slots.question.value) {
+        question = slots.question.value;
+        
+        // Add intent prefix
+        if (intentName === 'WhatIntent') question = "What " + question;
+        else if (intentName === 'HowIntent') question = "How " + question;
+        else if (intentName === 'WhoIntent') question = "Who " + question;
+        else if (intentName === 'WhereIntent') question = "Where " + question;
+        else if (intentName === 'WhenIntent') question = "When " + question;
+        else if (intentName === 'WhyIntent') question = "Why " + question;
+        else if (intentName === 'TellIntent') question = "Tell " + question;
+      }
+      
+      if (!question) {
+        return res.status(200).json({
+          version: "1.0",
+          response: {
+            outputSpeech: {
+              type: "PlainText",
+              text: "I'm sorry, I didn't catch that. Could you please rephrase your question?"
+            },
+            shouldEndSession: false
+          }
+        });
+      }
+      
+      console.log("Question extracted:", question);
+      
+      // Set username (hardcoded for now)
+      curUsername = "amy";
+      state = "processing";
+      
+      // Fetch user profile for personalization
+      try {
+        const user = await User.findOne({ username: curUsername });
+        
+        const userContext = {
+          age: user?.userProfile?.age || null,
+          gender: user?.userProfile?.gender || 'unknown',
+          fitnessLevel: user?.userProfile?.fitnessLevel || 'moderately_active',
+          healthGoals: user?.userProfile?.healthGoals || [],
+          healthConditions: user?.userProfile?.healthConditions || [],
+          preferences: {
+            preferredExercise: user?.userProfile?.preferences?.preferredExercise || [],
+            sleepGoalMinutes: user?.userProfile?.preferences?.sleepGoalMinutes || 480,
+            dailyStepGoal: user?.userProfile?.preferences?.dailyStepGoal || 10000,
+            dailyCalorieGoal: user?.userProfile?.preferences?.dailyCalorieGoal || null,
+          },
+        };
+        
+        console.log("User context loaded:", JSON.stringify(userContext));
+        
+        // Process with GPT - wait for response (synchronous for direct Alexa calls)
+        const userInput = { 
+          type: "question", 
+          data: question,
+          userContext: userContext,  // Include user context!
+        };
+        
+      try {
+        // Add overall timeout of 7 seconds to prevent Alexa timeout (8s limit)
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("Overall request timeout")), 7000);
+        });
+        
+        const result = await Promise.race([
+          callGPT(userInput),
+          timeoutPromise
+        ]);
+        
+        gptRet = result;
+        state = "completed";
+        console.log("state -> completed");
+        console.log("current GptRet: " + JSON.stringify(gptRet));
+        
+        // Send to frontend via WebSocket if needed
+        const clients = getClients();
+        const clientSocket = clients.get(curUsername);
+        
+        if (result.type === "present" && curUsername && clients.has(curUsername) && clientSocket) {
+          const message = {
+            action: "navigation",
+            option: "/general",
+            data: result.data.frontend,
+          };
+          clientSocket.send(JSON.stringify(message));
+          console.log(`Sent message to ${curUsername}:`, JSON.stringify(message));
+        }
+        
+        // Return appropriate response based on result type
+        let speechText = "";
+        let shouldEnd = false;
+        
+        if (result.type === "close") {
+          speechText = result.data;
+          shouldEnd = true;
+          gptChat.clearHistory();
+          
+          // Navigate frontend back
+          if (curUsername && clients.has(curUsername) && clientSocket) {
+            const message = {
+              action: "navigation",
+              option: "/today-activity",
+              data: {},
+            };
+            clientSocket.send(JSON.stringify(message));
+          }
+        } else if (result.type === "reInput") {
+          speechText = result.data;
+          shouldEnd = false;
+        } else if (result.type === "present") {
+          speechText = result.data.response || result.data;
+          // Truncate if response is too long (more than 300 characters)
+          if (speechText && speechText.length > 300) {
+            speechText = speechText.substring(0, 297) + "...";
+          }
+          shouldEnd = false;
+        } else {
+          speechText = "I didn't catch that, could you repeat your question?";
+          shouldEnd = false;
+        }
+        
+        // Clear gptRet after processing
+        gptRet = {};
+        
+        return res.status(200).json({
+          version: "1.0",
+          response: {
+            outputSpeech: {
+              type: "PlainText",
+              text: speechText
+            },
+            shouldEndSession: shouldEnd
+          }
+        });
+        
+      } catch (err) {
+        state = "error";
+        console.error("GPT error:", err.message);
+        
+        // Provide concise error message
+        let errorMessage = "Sorry, I had trouble processing your request. Please try again.";
+        if (err.message.includes("timeout")) {
+          errorMessage = "That took too long. Please try a simpler question.";
+        }
+        
+        return res.status(200).json({
+          version: "1.0",
+          response: {
+            outputSpeech: {
+              type: "PlainText",
+              text: errorMessage
+            },
+            shouldEndSession: false
+          }
+        });
+      }
+      
+      } catch (userFetchError) {
+        console.error("Error fetching user profile:", userFetchError.message);
+        
+        return res.status(200).json({
+          version: "1.0",
+          response: {
+            outputSpeech: {
+              type: "PlainText",
+              text: "Sorry, I had trouble accessing your profile. Please try again."
+            },
+            shouldEndSession: false
+          }
+        });
+      }
+    }
+    
+    // Handle SessionEndedRequest
+    if (requestType === 'SessionEndedRequest') {
+      return res.status(200).json({
+        version: "1.0",
+        response: {}
+      });
+    }
+  } else {
+    // Handle Lambda-formatted request (backward compatibility)
+    let { userInput, username } = req.body;
+    console.log("Lambda format - userInput:", JSON.stringify(userInput));
+    console.log("Lambda format - username:", username);
+    
+    if (!username) {
+      return res.status(400).json({ error: "Username is required" });
+    }
+    
+    curUsername = username.toLowerCase();
+    state = "processing";
+    console.log("state -> processing");
 
-  return res.status(200).json({ message: "received immediately" });
+    callGPT(userInput).then(result => {
+      gptRet = result;
+      state = "completed";
+      console.log("state -> completed");
+      console.log("current GptRet: " + JSON.stringify(gptRet));
+    }).catch(err => {
+      state = "error";
+      console.error("GPT error:", err.message);
+    });
+
+    return res.status(200).json({ message: "received immediately" });
+  }
 });
 
 alexaRouter.get("/back", (req, res) => {

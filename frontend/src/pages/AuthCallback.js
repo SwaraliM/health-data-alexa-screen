@@ -14,11 +14,19 @@ const AuthCallback = () => {
     // get Access Token with authcode
     const fetchToken = async (code) => {
       try {
-        const clientId = "23PLM3";
-        const clientSecret = "c9cd4302ebcbd64bc14b8a14d84de6d6";
+        const clientId = process.env.REACT_APP_FITBIT_CLIENT_ID;
+        const clientSecret = process.env.REACT_APP_FITBIT_CLIENT_SECRET;
+
+        console.log('Client ID:', clientId);
+        console.log('Client Secret:', clientSecret ? 'Present' : 'Missing');
+
+        if (!clientId || !clientSecret) {
+          throw new Error('Missing Fitbit credentials. Check your .env file.');
+        }
 
         // Base64 encode client_id:client_secret for the Authorization header
         const encodedCredentials = btoa(`${clientId}:${clientSecret}`);
+        console.log('Encoded credentials:', encodedCredentials);
 
         const response = await fetch("https://api.fitbit.com/oauth2/token", {
           method: "POST",
@@ -35,10 +43,13 @@ const AuthCallback = () => {
         });
 
         if (!response.ok) {
-          throw new Error("get Token fail");
+          const errorData = await response.json();
+          console.error('Fitbit API Error:', errorData);
+          throw new Error(`Fitbit API Error: ${JSON.stringify(errorData)}`);
         }
 
         const data = await response.json();
+        console.log('Token response:', data);
         const { access_token, refresh_token, expires_in } = data;
 
         //save token
@@ -67,6 +78,8 @@ const AuthCallback = () => {
         navigate(`/today-activity/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`);
       } catch (error) {
         console.error("error:", error);
+        alert(`OAuth Error: ${error.message}. Check console for details.`);
+        navigate('/');
       }
     };
 

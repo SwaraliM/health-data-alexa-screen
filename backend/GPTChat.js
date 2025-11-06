@@ -12,37 +12,53 @@ class GPTChat {
     }
 
     // call GPT api
-    async callGPT(userInput, model = "gpt-4o") {
+    async callGPT(userInput, model = "gpt-4o", maxTokens = 200) {
         try {
             // add user input to the history
             this.history.push({ role: "user", content: JSON.stringify(userInput) });
 
-            // call OpenAI API
-            const response = await fetch("https://api.openai.com/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${this.apiKey}`,
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: this.history, // contains history and system config
-                }),
-            });
+            // call OpenAI API with timeout and token limits
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-            if (!response.ok) {
-                const errorData = await response.json();
-                console.error("Error calling OpenAI API:", errorData);
-                throw new Error("Failed to call GPT API");
+            try {
+                const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${this.apiKey}`,
+                    },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: model,
+                        messages: this.history, // contains history and system config
+                        max_tokens: maxTokens, // Limit response length
+                        temperature: 0.7, // Slightly lower for more consistent, concise responses
+                    }),
+                });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    console.error("Error calling OpenAI API:", errorData);
+                    throw new Error("Failed to call GPT API");
+                }
+
+                const responseData = await response.json();
+                const assistantMessage = responseData.choices[0].message.content;
+
+                // add response of assistant to the history
+                this.history.push({ role: "assistant", content: assistantMessage });
+
+                return assistantMessage;
+            } catch (fetchError) {
+                clearTimeout(timeoutId);
+                if (fetchError.name === 'AbortError') {
+                    throw new Error("Request timeout - response took too long");
+                }
+                throw fetchError;
             }
-
-            const responseData = await response.json();
-            const assistantMessage = responseData.choices[0].message.content;
-
-            // add response of assistant to the history
-            this.history.push({ role: "assistant", content: assistantMessage });
-
-            return assistantMessage;
         } catch (error) {
             console.error("Error:", error.message);
             throw new Error("Failed to call GPT API");

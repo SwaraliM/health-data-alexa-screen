@@ -1049,10 +1049,10 @@ fitbitRouter.get("/:username/sleep/range/date/:startDate/:endDate", async (req, 
 });
 
 const renewAccessToken = async (user) => {
-  const clientId = "23PLM3";
-  const clientSecret = "c9cd4302ebcbd64bc14b8a14d84de6d6";
+  const clientId = process.env.FITBIT_CLIENT_ID;
+  const clientSecret = process.env.FITBIT_CLIENT_SECRET;
   // Base64 encode client_id:client_secret for the Authorization header
-  const encodedCredentials = btoa(`${clientId}:${clientSecret}`);
+  const encodedCredentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
   const refreshResponse = await fetch("https://api.fitbit.com/oauth2/token", {
     method: "POST",
