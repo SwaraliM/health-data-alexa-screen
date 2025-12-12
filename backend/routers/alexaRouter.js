@@ -3,6 +3,7 @@ const alexaRouter = express.Router();
 const { getClients } = require("../websocket");
 require("dotenv").config();
 const { SYSTEM_CONFIG } = require("../configs/openAiSystemConfigs");
+const { ENHANCED_VISUAL_CONFIG } = require("../configs/enhancedVisualConfigs");
 const GPTChat = require("../GPTChat");
 const User = require("../models/Users");
 
@@ -14,6 +15,7 @@ if (!apiKey) {
 }
 
 const gptChat = new GPTChat(apiKey, SYSTEM_CONFIG);
+const enhancedVisualGPT = new GPTChat(apiKey, ENHANCED_VISUAL_CONFIG);
 
 let state = "completed";
 let gptRet = {};
@@ -112,8 +114,92 @@ function parseJSONResponse(response) {
   try {
     return JSON.parse(response);
   } catch (error) {
-    console.error("JSON parse error. Original response:", response);
+    console.error("JSON parse error. Original response length:", response.length);
     console.error("Parse error:", error.message);
+    
+    // Check if response is truncated
+    if (error.message.includes("Unterminated") || error.message.includes("Unexpected end")) {
+      console.warn("Response appears to be truncated. Attempting to fix...");
+      
+      // Extract truncation position if available
+      const truncationMatch = error.message.match(/position (\d+)/);
+      if (truncationMatch) {
+        const truncationPos = parseInt(truncationMatch[1]);
+        const beforeTruncation = response.substring(0, truncationPos);
+        
+        // Try to find the last complete component in the components array
+        const componentsMatch = beforeTruncation.match(/"components":\[([\s\S]*)$/);
+        if (componentsMatch) {
+          const componentsContent = componentsMatch[1];
+          // Find the last complete component object
+          let braceCount = 0;
+          let lastCompletePos = -1;
+          let inString = false;
+          let escapeNext = false;
+          
+          for (let i = 0; i < componentsContent.length; i++) {
+            const char = componentsContent[i];
+            
+            if (escapeNext) {
+              escapeNext = false;
+              continue;
+            }
+            
+            if (char === '\\') {
+              escapeNext = true;
+              continue;
+            }
+            
+            if (char === '"' && !escapeNext) {
+              inString = !inString;
+              continue;
+            }
+            
+            if (!inString) {
+              if (char === '{') {
+                braceCount++;
+              } else if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                  lastCompletePos = i;
+                }
+              }
+            }
+          }
+          
+          if (lastCompletePos >= 0) {
+            // Extract up to the last complete component
+            const componentsStart = beforeTruncation.indexOf('"components":[');
+            const completeComponents = componentsContent.substring(0, lastCompletePos + 1);
+            const beforeComponents = beforeTruncation.substring(0, componentsStart);
+            
+            // Reconstruct the JSON
+            let fixedResponse = beforeComponents + '"components":[' + completeComponents + ']';
+            
+            // Close remaining structures
+            if (fixedResponse.includes('"frontend":{') && !fixedResponse.endsWith('}')) {
+              fixedResponse += '}';
+            }
+            if (fixedResponse.includes('"data":{') && !fixedResponse.endsWith('}')) {
+              fixedResponse += '}';
+            }
+            if (fixedResponse.startsWith('{') && !fixedResponse.endsWith('}')) {
+              fixedResponse += '}';
+            }
+            
+            // Try to parse the fixed response
+            try {
+              const cleaned = fixedResponse.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+              const parsed = JSON.parse(cleaned);
+              console.log("Successfully parsed truncated response after removing incomplete component");
+              return parsed;
+            } catch (e) {
+              console.error("Failed to fix truncated response:", e.message);
+            }
+          }
+        }
+      }
+    }
     
     // Try to extract JSON from the response if it's wrapped in text
     const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -132,10 +218,9 @@ function parseJSONResponse(response) {
 async function callGPT(input) {
   console.log("callGPT");
   try {
-    // Set max tokens based on input type
-    // For questions: 200 tokens (enough for JSON + short response)
-    // For data processing: 250 tokens (slightly longer for analysis)
-    const maxTokens = input.type === "question" ? 200 : 250;
+    // No token limit - let GPT use full context window
+    // Pass null to allow unlimited response length
+    const maxTokens = null;
     
     let reply = await gptChat.callGPT(input, "gpt-4o", maxTokens);
     console.log("98 reply: " + JSON.stringify(reply));
@@ -152,6 +237,11 @@ async function callGPT(input) {
 
       // Use higher token limit for data processing
       replyJson = await callGPT(newInput);
+      
+      // Store raw data for enhanced visualization
+      if (replyJson && replyJson.type === "present") {
+        replyJson._rawData = fetchedData;
+      }
     }
 
     return replyJson;
@@ -203,6 +293,98 @@ async function fetchData(queryUrls, username) {
   }
 
   return combinedData;
+}
+
+// Generate enhanced visualizations asynchronously
+async function generateEnhancedVisuals(rawData, userContext, username) {
+  try {
+    console.log("Generating enhanced visuals...");
+    
+    const clients = getClients();
+    const clientSocket = clients.get(username);
+    
+    // Send status message to frontend
+    if (clientSocket) {
+      const statusMessage = {
+        action: "status",
+        message: "I am creating visuals for you, it might take a moment.",
+        type: "generating"
+      };
+      clientSocket.send(JSON.stringify(statusMessage));
+      console.log(`Sent status message to ${username}: Generating visuals`);
+    }
+    
+    // Create input for enhanced visualization GPT
+    const enhancedInput = {
+      type: "enhancedVisual",
+      data: rawData,
+      userContext: userContext
+    };
+    
+    // Call GPT with enhanced config (longer timeout, more tokens)
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Enhanced visualization timeout")), 30000); // 30 second timeout
+    });
+    
+    let enhancedReply;
+    try {
+      enhancedReply = await Promise.race([
+        enhancedVisualGPT.callGPT(enhancedInput, "gpt-4o", null), // No token limit - full context window
+        timeoutPromise
+      ]);
+    } catch (timeoutError) {
+      console.error("Enhanced visualization timeout:", timeoutError.message);
+      // Send error status
+      if (clientSocket) {
+        const errorMessage = {
+          action: "status",
+          message: "Visual generation took too long. Showing basic visuals instead.",
+          type: "error"
+        };
+        clientSocket.send(JSON.stringify(errorMessage));
+      }
+      return null;
+    }
+    
+    console.log("Enhanced visual reply:", enhancedReply);
+    
+    // Parse the enhanced response
+    const enhancedJson = parseJSONResponse(enhancedReply);
+    
+    if (enhancedJson.type === "present" && enhancedJson.data && enhancedJson.data.frontend) {
+      // Send enhanced visuals to frontend
+      if (clientSocket) {
+        const enhancedMessage = {
+          action: "navigation",
+          option: "/general",
+          data: enhancedJson.data.frontend,
+          replace: true // Flag to replace existing visuals
+        };
+        clientSocket.send(JSON.stringify(enhancedMessage));
+        console.log(`Sent enhanced visuals to ${username}`);
+      }
+      
+      return enhancedJson.data.frontend;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error generating enhanced visuals:", error.message);
+    
+    // Send error status to frontend
+    const clients = getClients();
+    const clientSocket = clients.get(username);
+    if (clientSocket) {
+      const errorMessage = {
+        action: "status",
+        message: "Could not generate enhanced visuals. Basic visuals are shown.",
+        type: "error"
+      };
+      clientSocket.send(JSON.stringify(errorMessage));
+    }
+    
+    return null;
+  }
 }
 
 // alexaRouter.post("/", async (req, res) => {
@@ -676,33 +858,75 @@ alexaRouter.post("/", async (req, res) => {
         };
         
       try {
-        // Add overall timeout of 7 seconds to prevent Alexa timeout (8s limit)
+        // Add overall timeout of 12 seconds to allow for data fetching + GPT processing
+        // Alexa HTTPS endpoints can handle up to 8s for initial response, but we allow more for async processing
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("Overall request timeout")), 7000);
+          setTimeout(() => reject(new Error("Overall request timeout")), 12000);
         });
         
-        const result = await Promise.race([
-          callGPT(userInput),
-          timeoutPromise
-        ]);
+        let result;
+        try {
+          result = await Promise.race([
+            callGPT(userInput),
+            timeoutPromise
+          ]);
+        } catch (timeoutError) {
+          // If timeout occurs, check if we have a partial result
+          if (gptRet && Object.keys(gptRet).length > 0 && gptRet.type !== "error") {
+            console.log("Timeout occurred but using partial result:", gptRet);
+            result = gptRet;
+          } else {
+            throw timeoutError;
+          }
+        }
         
         gptRet = result;
         state = "completed";
         console.log("state -> completed");
         console.log("current GptRet: " + JSON.stringify(gptRet));
         
-        // Send to frontend via WebSocket if needed
+        // Store fetched data for enhanced visuals (if available)
+        let fetchedRawData = null;
+        if (result.type === "present" && result._rawData) {
+          fetchedRawData = result._rawData;
+        }
+        
+        // Send to frontend via WebSocket if needed (basic visuals first)
         const clients = getClients();
         const clientSocket = clients.get(curUsername);
         
+        console.log("Checking WebSocket connection:");
+        console.log("- curUsername:", curUsername);
+        console.log("- clients.has(curUsername):", clients.has(curUsername));
+        console.log("- clientSocket:", clientSocket ? "exists" : "null");
+        console.log("- result.type:", result.type);
+        console.log("- result.data:", result.data ? "exists" : "null");
+        console.log("- result.data.frontend:", result.data && result.data.frontend ? "exists" : "null");
+        
         if (result.type === "present" && curUsername && clients.has(curUsername) && clientSocket) {
-          const message = {
-            action: "navigation",
-            option: "/general",
-            data: result.data.frontend,
-          };
-          clientSocket.send(JSON.stringify(message));
-          console.log(`Sent message to ${curUsername}:`, JSON.stringify(message));
+          if (result.data && result.data.frontend) {
+            const message = {
+              action: "navigation",
+              option: "/general",
+              data: result.data.frontend,
+            };
+            console.log(`Sending basic visuals to ${curUsername}:`, JSON.stringify(message, null, 2));
+            try {
+              clientSocket.send(JSON.stringify(message));
+              console.log(`✅ Successfully sent basic visuals to ${curUsername}`);
+            } catch (wsError) {
+              console.error(`❌ Error sending WebSocket message:`, wsError);
+            }
+          } else {
+            console.warn("⚠️ result.data.frontend is missing, cannot send to frontend");
+            console.warn("Full result:", JSON.stringify(result, null, 2));
+          }
+        } else {
+          console.warn("⚠️ Cannot send to frontend - missing requirements:");
+          if (!curUsername) console.warn("  - curUsername is missing");
+          if (!clients.has(curUsername)) console.warn("  - Client not connected");
+          if (!clientSocket) console.warn("  - clientSocket is null");
+          if (result.type !== "present") console.warn("  - result.type is not 'present':", result.type);
         }
         
         // Return appropriate response based on result type
@@ -741,7 +965,8 @@ alexaRouter.post("/", async (req, res) => {
         // Clear gptRet after processing
         gptRet = {};
         
-        return res.status(200).json({
+        // Return response immediately (don't wait for enhanced visuals)
+        const alexaResponse = {
           version: "1.0",
           response: {
             outputSpeech: {
@@ -750,7 +975,18 @@ alexaRouter.post("/", async (req, res) => {
             },
             shouldEndSession: shouldEnd
           }
-        });
+        };
+        
+        // Generate enhanced visuals asynchronously (after returning response)
+        // Only if we have fetched data and result is "present"
+        if (result.type === "present" && fetchedRawData && curUsername) {
+          // Don't await - let it run in background
+          generateEnhancedVisuals(fetchedRawData, userContext, curUsername).catch(err => {
+            console.error("Background enhanced visual generation failed:", err.message);
+          });
+        }
+        
+        return res.status(200).json(alexaResponse);
         
       } catch (err) {
         state = "error";

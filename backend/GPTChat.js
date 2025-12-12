@@ -12,16 +12,26 @@ class GPTChat {
     }
 
     // call GPT api
-    async callGPT(userInput, model = "gpt-4o", maxTokens = 200) {
+    async callGPT(userInput, model = "gpt-5.1", maxTokens = null) {
         try {
             // add user input to the history
             this.history.push({ role: "user", content: JSON.stringify(userInput) });
 
-            // call OpenAI API with timeout and token limits
+            // call OpenAI API with timeout
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout for GPT API
 
             try {
+                // Build request body
+                // If maxTokens is null/undefined, set to very high value (16000) to allow maximum context usage
+                // GPT-4o has 128k context window, so 16k tokens for response is well within limits
+                const requestBody = {
+                    model: model,
+                    messages: this.history, // contains history and system config
+                    temperature: 0.7, // Slightly lower for more consistent, concise responses
+                    max_tokens: maxTokens !== null && maxTokens !== undefined ? maxTokens : 16000, // Very high limit to allow full context usage
+                };
+                
                 const response = await fetch("https://api.openai.com/v1/chat/completions", {
                     method: "POST",
                     headers: {
@@ -29,12 +39,7 @@ class GPTChat {
                         Authorization: `Bearer ${this.apiKey}`,
                     },
                     signal: controller.signal,
-                    body: JSON.stringify({
-                        model: model,
-                        messages: this.history, // contains history and system config
-                        max_tokens: maxTokens, // Limit response length
-                        temperature: 0.7, // Slightly lower for more consistent, concise responses
-                    }),
+                    body: JSON.stringify(requestBody),
                 });
 
                 clearTimeout(timeoutId);
