@@ -1,18 +1,67 @@
 .ring-card {
-  background-color: var(--extra-light-blue-transparent-color);
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
+  background-color: #ffffff;
+  border-radius: 20px;
+  /* Soft, modern shadow */
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08); 
+  border: 1px solid #e5e7eb;
   display: flex;
   flex-direction: column;
-  justify-content: space-around;
-  align-items: center;
+  justify-content: flex-start;
+  align-items: stretch;
+  padding: 32px;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 350px;
+  min-width: 300px;
+  box-sizing: border-box;
+  transition: transform 0.2s, box-shadow 0.2s;
 }
 
-.ring-goal{
-  font-size: 20px;
+.ring-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.12);
+}
+
+.ring-card .ant-card-head {
+  padding: 0 0 20px 0;
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 20px;
+  width: 100%;
+  min-height: auto;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+.ring-card .ant-card-head-title {
+  padding: 0;
+  max-width: 100%;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
+}
+
+.ring-card .ant-card-body {
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  flex: 1;
+  min-height: 250px;
+}
+
+.ring-goal {
+  font-size: 16px;
+  color: #64748b;
+  margin-top: 10px;
+  font-weight: 500;
 }
 
 .ring-current {
-  font-size: 20px;
-  margin-bottom: 10px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 5px;
 }

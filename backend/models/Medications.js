@@ -30,6 +30,21 @@ const medicationSchema = new mongoose.Schema({
     type: String,
     default: "",
   },
+  // Medication confirmation tracking
+  confirmations: [{
+    date: {
+      type: String, // YYYY-MM-DD format
+      required: true,
+    },
+    taken: {
+      type: Boolean,
+      required: true,
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now,
+    },
+  }],
 });
 
 const Medication = mongoose.model("Medication", medicationSchema);

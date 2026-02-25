@@ -1,9 +1,34 @@
 .single-value-component {
-    background-color: var(--extra-light-blue-transparent-color);
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-  }
+  background-color: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  border: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 32px;
+  width: 100% !important;
+  min-height: 200px;
+  min-width: 300px;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+.single-value-component .ant-statistic {
+  width: 100%;
+  text-align: center;
+}
+
+.single-value-component .ant-statistic-title {
+  font-size: 24px !important;
+  font-weight: 600 !important;
+  margin-bottom: 16px;
+  color: #1f2937;
+}
+
+.single-value-component .ant-statistic-content {
+  font-size: 48px !important;
+  font-weight: 700 !important;
+}

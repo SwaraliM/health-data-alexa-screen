@@ -20,6 +20,7 @@ const enhancedVisualGPT = new GPTChat(apiKey, ENHANCED_VISUAL_CONFIG);
 let state = "completed";
 let gptRet = {};
 let curUsername = "";
+let lastTopic = null; // Store last topic for "Tell me more" follow-ups
 
 alexaRouter.get("/", (req, res) => {
   console.log("current user: " + curUsername);
@@ -222,7 +223,7 @@ async function callGPT(input) {
     // Pass null to allow unlimited response length
     const maxTokens = null;
     
-    let reply = await gptChat.callGPT(input, "gpt-4o", maxTokens);
+    let reply = await gptChat.callGPT(input, "gpt-5.1", maxTokens);
     console.log("98 reply: " + JSON.stringify(reply));
 
     // Use improved JSON parsing with cleaning
@@ -322,14 +323,15 @@ async function generateEnhancedVisuals(rawData, userContext, username) {
     };
     
     // Call GPT with enhanced config (longer timeout, more tokens)
+    // Increased timeout to 90 seconds for complex visualizations
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Enhanced visualization timeout")), 30000); // 30 second timeout
+      setTimeout(() => reject(new Error("Enhanced visualization timeout")), 90000); // 90 second timeout
     });
     
     let enhancedReply;
     try {
       enhancedReply = await Promise.race([
-        enhancedVisualGPT.callGPT(enhancedInput, "gpt-4o", null), // No token limit - full context window
+        enhancedVisualGPT.callGPT(enhancedInput, "gpt-5.1", null), // No token limit - full context window
         timeoutPromise
       ]);
     } catch (timeoutError) {
@@ -352,16 +354,21 @@ async function generateEnhancedVisuals(rawData, userContext, username) {
     const enhancedJson = parseJSONResponse(enhancedReply);
     
     if (enhancedJson.type === "present" && enhancedJson.data && enhancedJson.data.frontend) {
-      // Send enhanced visuals to frontend
+      // Send enhanced visuals to frontend (update in place, no new navigation)
       if (clientSocket) {
         const enhancedMessage = {
-          action: "navigation",
-          option: "/general",
+          action: "updateVisuals",
           data: enhancedJson.data.frontend,
-          replace: true // Flag to replace existing visuals
         };
         clientSocket.send(JSON.stringify(enhancedMessage));
-        console.log(`Sent enhanced visuals to ${username}`);
+        console.log(`Sent enhanced visuals update to ${username}`);
+
+        const completeStatus = {
+          action: "status",
+          message: "Enhanced visuals are ready.",
+          type: "completed",
+        };
+        clientSocket.send(JSON.stringify(completeStatus));
       }
       
       return enhancedJson.data.frontend;
@@ -850,11 +857,17 @@ alexaRouter.post("/", async (req, res) => {
         
         console.log("User context loaded:", JSON.stringify(userContext));
         
+        // Check if this is a "Tell me more" follow-up
+        const isTellMeMore = question.toLowerCase().includes("tell me more") || 
+                             question.toLowerCase().includes("more details") ||
+                             question.toLowerCase().includes("expand");
+        
         // Process with GPT - wait for response (synchronous for direct Alexa calls)
         const userInput = { 
-          type: "question", 
-          data: question,
+          type: isTellMeMore && lastTopic ? "rawData" : "question", 
+          data: isTellMeMore && lastTopic ? { topic: lastTopic, expand: true } : question,
           userContext: userContext,  // Include user context!
+          lastTopic: lastTopic, // Pass last topic for context
         };
         
       try {
@@ -885,6 +898,15 @@ alexaRouter.post("/", async (req, res) => {
         console.log("state -> completed");
         console.log("current GptRet: " + JSON.stringify(gptRet));
         
+        // Extract topic and anchorKey from result
+        const topic = result.topic || null;
+        const anchorKey = result.anchorKey || null;
+        
+        // Store topic for "Tell me more" follow-ups
+        if (topic) {
+          lastTopic = topic;
+        }
+        
         // Store fetched data for enhanced visuals (if available)
         let fetchedRawData = null;
         if (result.type === "present" && result._rawData) {
@@ -902,6 +924,7 @@ alexaRouter.post("/", async (req, res) => {
         console.log("- result.type:", result.type);
         console.log("- result.data:", result.data ? "exists" : "null");
         console.log("- result.data.frontend:", result.data && result.data.frontend ? "exists" : "null");
+        console.log("- topic:", topic, "anchorKey:", anchorKey);
         
         if (result.type === "present" && curUsername && clients.has(curUsername) && clientSocket) {
           if (result.data && result.data.frontend) {
@@ -909,11 +932,24 @@ alexaRouter.post("/", async (req, res) => {
               action: "navigation",
               option: "/general",
               data: result.data.frontend,
+              anchorKey: anchorKey, // Include anchor key for highlighting
+              anchorDuration: 4000, // 4 seconds highlight
             };
             console.log(`Sending basic visuals to ${curUsername}:`, JSON.stringify(message, null, 2));
             try {
               clientSocket.send(JSON.stringify(message));
               console.log(`✅ Successfully sent basic visuals to ${curUsername}`);
+              
+              // Also trigger anchor highlight on dashboard if we're on dashboard
+              if (anchorKey) {
+                // Send anchor highlight event to dashboard
+                const anchorMessage = {
+                  action: "anchorHighlight",
+                  anchorKey: anchorKey,
+                  duration: 4000,
+                };
+                clientSocket.send(JSON.stringify(anchorMessage));
+              }
             } catch (wsError) {
               console.error(`❌ Error sending WebSocket message:`, wsError);
             }
@@ -937,6 +973,7 @@ alexaRouter.post("/", async (req, res) => {
           speechText = result.data;
           shouldEnd = true;
           gptChat.clearHistory();
+          lastTopic = null; // Clear topic on close
           
           // Navigate frontend back
           if (curUsername && clients.has(curUsername) && clientSocket) {
@@ -1064,6 +1101,7 @@ alexaRouter.post("/", async (req, res) => {
 alexaRouter.get("/back", (req, res) => {
   console.log("close");
     gptChat.clearHistory();
+    lastTopic = null; // Clear topic on back
     const clients = getClients();
     const clientSocket = clients.get(curUsername);
     if (curUsername && clients.has(curUsername) && clientSocket) {

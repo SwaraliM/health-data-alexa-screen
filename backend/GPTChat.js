@@ -12,14 +12,15 @@ class GPTChat {
     }
 
     // call GPT api
-    async callGPT(userInput, model = "gpt-5.1", maxTokens = null) {
+    async callGPT(userInput, model = "gpt-5.2-codex", maxTokens = 300) {
         try {
             // add user input to the history
             this.history.push({ role: "user", content: JSON.stringify(userInput) });
 
             // call OpenAI API with timeout
+            // Increased timeout for enhanced visuals (which can take longer)
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout for GPT API
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout for GPT API
 
             try {
                 // Build request body
@@ -29,7 +30,7 @@ class GPTChat {
                     model: model,
                     messages: this.history, // contains history and system config
                     temperature: 0.7, // Slightly lower for more consistent, concise responses
-                    max_tokens: maxTokens !== null && maxTokens !== undefined ? maxTokens : 16000, // Very high limit to allow full context usage
+                    max_completion_tokens: maxTokens !== null && maxTokens !== undefined ? maxTokens : 16000, // Very high limit to allow full context usage
                 };
                 
                 const response = await fetch("https://api.openai.com/v1/chat/completions", {

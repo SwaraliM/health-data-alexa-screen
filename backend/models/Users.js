@@ -71,6 +71,22 @@ const userSchema = new mongoose.Schema({
         required: false,
       },
     },
+    // Mood check-in tracking (once daily)
+    moodCheckIns: [{
+      date: {
+        type: String, // YYYY-MM-DD format
+        required: true,
+      },
+      mood: {
+        type: String,
+        enum: ['Good', 'Okay', 'Low'],
+        required: true,
+      },
+      timestamp: {
+        type: Date,
+        default: Date.now,
+      },
+    }],
   },
 });
 
