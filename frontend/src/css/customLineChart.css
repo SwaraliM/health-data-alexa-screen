@@ -1,25 +1,24 @@
 .line-card {
   background-color: #ffffff;
-  border-radius: 20px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  border-radius: 16px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
   border: 1px solid #e5e7eb;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
   align-items: stretch;
-  padding: 32px;
+  padding: 18px;
   width: 100% !important;
-  height: 100% !important;
-  min-height: 400px;
-  min-width: 600px;
+  min-height: 320px;
+  min-width: 0;
   box-sizing: border-box;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .line-card .ant-card-head {
-  padding: 0 0 20px 0;
+  padding: 0 0 12px 0;
   border-bottom: 1px solid #f0f0f0;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
   width: 100%;
   min-height: auto;
   max-width: 100%;
@@ -38,17 +37,40 @@
 .line-card .ant-card-body {
   padding: 0;
   width: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex: 1;
-  min-height: 300px;
+  min-height: 240px;
 }
 
-.line-card .ant-card-body > div {
+.line-card .ant-card-body > div,
+.line-card canvas {
   width: 100%;
-  height: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  max-width: 100%;
+}
+
+.chart-title-wrap h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.chart-insight {
+  margin-top: 8px;
+  display: block;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f3f7ff;
+  color: #1f5fcf !important;
+}
+
+@media (max-width: 820px) {
+  .line-card {
+    min-height: 280px;
+    padding: 14px;
+  }
+
+  .chart-title-wrap h2 {
+    font-size: 18px;
+  }
 }

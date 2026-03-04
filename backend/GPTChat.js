@@ -18,9 +18,8 @@ class GPTChat {
             this.history.push({ role: "user", content: JSON.stringify(userInput) });
 
             // call OpenAI API with timeout
-            // Increased timeout for enhanced visuals (which can take longer)
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout for GPT API
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout for GPT API
 
             try {
                 // Build request body

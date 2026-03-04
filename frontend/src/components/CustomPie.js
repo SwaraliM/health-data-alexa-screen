@@ -2,6 +2,7 @@ import React from "react";
 import { Card, Typography } from "antd";
 import { Pie } from "@ant-design/plots";
 import "../css/customPie.css";
+import { sanitizeChartSize } from "../utils/sanitizeChartSize";
 
 const { Text } = Typography;
 
@@ -40,7 +41,7 @@ const CustomPie = ({ componentData, height, width, title, data: propData = [], o
     finalProps = { height, width, title, data: propData || [], insight, options };
   }
   
-  const { height: finalHeight, width: finalWidth, title: finalTitle, data: finalData, insight: finalInsight } = finalProps;
+  const { title: finalTitle, data: finalData, insight: finalInsight } = finalProps;
   
   // Normalize data to use `type` key (backend may send `label`, `name`, or `type`)
   const normalizedData = (finalData || []).map((item) => ({
@@ -48,16 +49,15 @@ const CustomPie = ({ componentData, height, width, title, data: propData = [], o
     value: item.value ?? 0,
   }));
 
-  // Ensure we have valid dimensions
-  const pieHeight = Math.max(parseInt(finalHeight, 10) || 400, 350);
-  const pieWidth = Math.max(parseInt(finalWidth, 10) || 400, 350);
+  const { heightPx, cardStyle, cleanedOptions } = sanitizeChartSize(componentData || finalProps, "container-fit");
+  const pieHeight = Math.max(heightPx - 30, 240);
   
   // Calculate total for percentage display
   const total = normalizedData.reduce((sum, item) => sum + item.value, 0);
   
   const config = {
     height: pieHeight,
-    width: pieWidth,
+    autoFit: true,
     data: normalizedData,
     angleField: "value",
     colorField: "type",
@@ -68,7 +68,7 @@ const CustomPie = ({ componentData, height, width, title, data: propData = [], o
       offset: "-30%",
       content: ({ percent }) => `${(percent * 100).toFixed(0)}%`,
       style: {
-        fontSize: 16,
+        fontSize: 12,
         textAlign: "center",
         fontWeight: "bold",
       },
@@ -76,12 +76,16 @@ const CustomPie = ({ componentData, height, width, title, data: propData = [], o
     legend: {
       color: {
         title: false,
-        position: "right",
+        position: "bottom",
         rowPadding: 8,
         itemName: {
           style: {
-            fontSize: 16,
+            fontSize: 12,
             fontWeight: "500",
+          },
+          formatter: (value) => {
+            const text = String(value);
+            return text.length > 14 ? `${text.slice(0, 14)}...` : text;
           },
         },
       },
@@ -98,14 +102,14 @@ const CustomPie = ({ componentData, height, width, title, data: propData = [], o
       title: {
         content: "Total",
         style: {
-          fontSize: 18,
+          fontSize: 14,
           fontWeight: "bold",
         },
       },
       content: {
         content: total.toLocaleString(),
         style: {
-          fontSize: 24,
+          fontSize: 18,
           fontWeight: "bold",
         },
       },
@@ -150,7 +154,7 @@ const CustomPie = ({ componentData, height, width, title, data: propData = [], o
         </div>
       }
       size="small"
-      style={{ height: finalHeight, width: finalWidth, ...finalProps.options }}
+      style={{ ...cardStyle, ...cleanedOptions }}
     >
       <Pie {...config} />
     </Card>

@@ -8,6 +8,7 @@ import TodayActivityPage from "./pages/TodayActivityPage";
 import DashboardPage from "./pages/DashboardPage";
 import ReminderPage from "./pages/ReminderPage";
 import QnAPage from "./pages/QnAPage";
+import ReminderNudgeOverlay from "./components/ReminderNudgeOverlay";
 import "./App.css";
 import "./css/fonts.css";
 import "./css/colors.css";
@@ -50,6 +51,7 @@ function Root() {
       <Route path="/general/:username/:random" element={<GeneralPage />} />
       <Route path="/today-activity/:username/:random" element={<TodayActivityPage />} />
       <Route path="/dashboard" element={<DashboardPage />} />
+      <Route path="/dashboard/:username" element={<DashboardPage />} />
       <Route path="/reminder" element={<ReminderPage />} />
       <Route path="/qna" element={<QnAPage />} />
     </Routes>
@@ -61,6 +63,7 @@ function App() {
     <div className="App">
       <Router>
         <Root />
+        <ReminderNudgeOverlay />
       </Router>
     </div>
   );

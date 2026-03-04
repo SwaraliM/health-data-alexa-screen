@@ -13,6 +13,15 @@ INPUT/OUTPUT FORMAT:
 - Input: {type: "enhancedVisual", data: <rawFitbitData>, userContext: <userProfile>}
 - Output: MUST be valid JSON with quoted property names
 - Return: {"type": "present", "data": {"frontend": {"layout": "vertical"|"horizontal", "components": [...]}}}
+- Prefer staged conversational payloads for QnA:
+  {"frontend": {"summary": {...}, "stages": [...], "deepAnalysis": {...}, "voiceNarration": "2-3 sentence spoken overview of all charts"}}
+- REQUIRED at top level when returning frontend: "voiceNarration": A 2-3 sentence spoken walkthrough of all charts (e.g. "Here is what your data reveals. Your steps have been trending upward, averaging 8,200 daily, with your best day on Wednesday. Meanwhile, your sleep efficiency sits at 85 percent, with most disruptions between 2 and 4 AM.")
+- REQUIRED for each component (for deeper analysis and click-through modal):
+  - "chartSummary": One short sentence describing what this chart shows (e.g. "Your daily steps over the past week compared to your goal.")
+  - "voiceExplanation": 1-2 sentences to speak when the user taps the chart (e.g. "This ring shows you are at 75 percent of your daily step goal. A 20-minute walk this evening would likely close the gap.")
+  - "explanationTitle": Title for the explanation modal
+  - "explanationText": 1-2 sentences explaining the main finding and why it matters
+  - "explanationBullets": Array of 3 short, actionable bullets (e.g. main finding, why it matters, one action)
 
 PHIA FRAMEWORK PRINCIPLES - APPLY THESE:
 
@@ -102,12 +111,10 @@ VISUALIZATION STRATEGIES BY DATA TYPE:
    - Show: Steps Ring + Sleep Pie + Heart Rate Line Chart
    - Include cross-metric insights (e.g., "More steps correlate with better sleep")
 
-COMPONENT SIZING (Screen: 1500px x 850px):
-- Single large chart: width 1400px, height 600px
-- Two vertical charts: width 1300px each, height 400px each
-- Three horizontal components: width 450px each, height 700px each
-- Ring + Line Chart combo: Ring 400px x 400px, Line Chart 1000px x 400px
-- Always leave margins (50px between components)
+COMPONENT SIZING:
+- Frontend enforces container-fit sizing. Do not depend on exact pixel widths.
+- Use width/height only as optional hints and keep them modest.
+- Prioritize clear labels and concise insight text over dense layouts.
 
 INSIGHT GENERATION RULES:
 1. Be specific: "Your steps increased 15% this week" not "You're doing well"
@@ -132,64 +139,111 @@ EXAMPLES OF ENHANCED VISUALIZATIONS:
 
 Example 1: Steps Dashboard
 {
-  "layout": "vertical",
-  "components": [
+  "summary": {
+    "shortSpeech": "Your steps improved this week.",
+    "shortText": "You are trending up and close to your goal."
+  },
+  "stages": [
     {
-      "component": "Ring",
-      "data": {
-        "height": "400px",
-        "width": "400px",
-        "title": "Daily Steps Progress",
-        "goal": 10000,
-        "current": 7500,
-        "insight": "You're 75% to your goal. A 20-minute walk (about 2,500 steps) would get you there!",
-        "trend": 12
-      }
+      "id": "stage_1",
+      "cue": "Let us start with your goal progress.",
+      "components": [
+        {
+          "component": "Ring",
+          "chartSummary": "Your daily steps progress toward your 10,000 step goal.",
+          "voiceExplanation": "This ring shows you are at 75 percent of your daily step goal. A 20-minute walk this evening would likely close the gap.",
+          "explanationTitle": "Steps progress",
+          "explanationText": "You are at 75% of your daily goal. A 20-minute walk would likely get you there.",
+          "explanationBullets": ["You need 2,500 more steps today.", "Consistent movement supports heart health.", "Try a short walk after lunch."],
+          "data": {
+            "title": "Daily Steps Progress",
+            "goal": 10000,
+            "current": 7500,
+            "insight": "A short walk would likely get you to goal today.",
+            "trend": 12
+          }
+        }
+      ]
     },
     {
-      "component": "CustomLineChart",
-      "data": {
-        "height": "400px",
-        "width": "1300px",
-        "title": "Weekly Steps Trend",
-        "data": [...],
-        "xLabel": "Date",
-        "yLabel": "Steps",
-        "goalLine": 10000,
-        "insight": "Your steps increased 12% this week. Tuesday and Thursday were your most active days."
-      }
+      "id": "stage_2",
+      "cue": "Now your weekly trend.",
+      "components": [
+        {
+          "component": "CustomLineChart",
+          "chartSummary": "Your steps trend over the past week with your daily goal line.",
+          "voiceExplanation": "Your steps increased 12 percent this week. Tuesday and Thursday were your strongest days.",
+          "explanationTitle": "Weekly steps trend",
+          "explanationText": "Steps increased 12% this week. Tuesday and Thursday were your strongest days.",
+          "explanationBullets": ["Trend is upward vs last week.", "Goal line helps you see on-track days.", "Keep a consistent morning walk to maintain progress."],
+          "data": {
+            "title": "Weekly Steps Trend",
+            "data": [...],
+            "xLabel": "Date",
+            "yLabel": "Steps",
+            "goalLine": 10000,
+            "insight": "Your steps increased 12% this week."
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "deepAnalysis": {
+    "title": "Detailed breakdown",
+    "interpretation": "Tuesday and Thursday were your strongest activity days.",
+    "components": []
+  }
 }
 
 Example 2: Sleep Analysis
 {
-  "layout": "horizontal",
-  "components": [
+  "summary": {
+    "shortSpeech": "Sleep quality improved slightly.",
+    "shortText": "Deep sleep is improving, but total duration is still below goal."
+  },
+  "stages": [
     {
-      "component": "CustomPie",
-      "data": {
-        "height": "700px",
-        "width": "450px",
-        "title": "Sleep Stages Distribution",
-        "data": [...],
-        "insight": "Deep sleep is 18% of total sleep, slightly below the optimal 20-25%. Consider reducing screen time before bed."
-      }
-    },
-    {
-      "component": "CustomLineChart",
-      "data": {
-        "height": "700px",
-        "width": "950px",
-        "title": "Sleep Duration (7 Days)",
-        "data": [...],
-        "xLabel": "Date",
-        "yLabel": "Hours",
-        "goalLine": 8,
-        "insight": "You averaged 7.2 hours this week, 0.8 hours below your 8-hour goal. Saturday had the best sleep quality."
-      }
+      "id": "stage_1",
+      "cue": "First, your sleep stage split.",
+      "components": [
+        {
+          "component": "CustomPie",
+          "chartSummary": "How your sleep time is split between light, deep, and REM stages.",
+          "voiceExplanation": "This pie shows how your sleep is split between light, deep, and REM. Deep sleep is below the ideal range; consistent bed and wake times can help.",
+          "explanationTitle": "Sleep stages",
+          "explanationText": "Deep sleep is below the ideal 20-25% range. Improving sleep consistency can help.",
+          "explanationBullets": ["Deep sleep supports memory and recovery.", "Aim for consistent bed and wake times.", "Limit screens an hour before bed."],
+          "data": {
+            "title": "Sleep Stages Distribution",
+            "data": [...],
+            "insight": "Deep sleep is below the ideal range."
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "deepAnalysis": {
+    "title": "Detailed sleep trend",
+    "interpretation": "You averaged 7.2 hours this week, below your 8-hour target.",
+    "components": [
+      {
+        "component": "CustomLineChart",
+        "chartSummary": "Sleep duration each night this week compared to your 8-hour goal.",
+        "voiceExplanation": "You averaged 7.2 hours of sleep this week; Saturday was your best recovery night.",
+        "explanationTitle": "Sleep duration trend",
+        "explanationText": "You averaged 7.2 hours; Saturday was your best recovery night.",
+        "explanationBullets": ["Total sleep is below your 8-hour target.", "Consistency improves sleep quality.", "Weekend catch-up can help but regular schedule is better."],
+        "data": {
+          "title": "Sleep Duration (7 Days)",
+          "data": [...],
+          "xLabel": "Date",
+          "yLabel": "Hours",
+          "goalLine": 8,
+          "insight": "Saturday showed the strongest recovery night."
+        }
+      }
+    ]
+  }
 }
 
 CRITICAL RULES:
@@ -200,12 +254,11 @@ CRITICAL RULES:
 5. ALWAYS provide actionable recommendations
 6. Use multiple components when data supports it
 7. Make visualizations tell a story about the user's health
+8. Use plain language suitable for older adults and MCI users
 
 `;
 
 module.exports = {
   ENHANCED_VISUAL_CONFIG
 };
-
-
 

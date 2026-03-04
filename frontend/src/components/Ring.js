@@ -2,6 +2,7 @@ import React from "react";
 import { Card, Typography } from "antd";
 import { Tiny } from "@ant-design/plots";
 import "../css/ring.css";
+import { sanitizeChartSize } from "../utils/sanitizeChartSize";
 
 const { Text } = Typography;
 
@@ -42,7 +43,8 @@ const Ring = ({ componentData, height, width, title, goal, current, options, ins
     finalProps = { height, width, title, goal, current, options, insight, trend };
   }
   
-  const { height: finalHeight, width: finalWidth, title: finalTitle, goal: finalGoal, current: finalCurrent, insight: finalInsight, trend: finalTrend } = finalProps;
+  const { title: finalTitle, goal: finalGoal, current: finalCurrent, insight: finalInsight, trend: finalTrend } = finalProps;
+  const { heightPx, cardStyle, cleanedOptions } = sanitizeChartSize(componentData || finalProps, "container-fit");
   
   if (finalGoal === undefined || finalCurrent === undefined) {
     return (
@@ -51,7 +53,7 @@ const Ring = ({ componentData, height, width, title, goal, current, options, ins
           title={<h2 style={{ margin: 0, fontSize: "24px", fontWeight: "600" }}>{finalTitle || "Ring"}</h2>}
           bordered={false}
           size="small"
-          style={{ height: finalHeight, width: finalWidth, ...finalProps.options }}
+          style={{ ...cardStyle, ...cleanedOptions }}
           className="ring-card"
         >
           <div style={{ padding: "20px", color: "#8c8c8c" }}>Missing goal or current value</div>
@@ -81,12 +83,12 @@ const Ring = ({ componentData, height, width, title, goal, current, options, ins
   }
 
   const remaining = Math.max(0, finalGoal - finalCurrent);
-  const ringWidth = parseInt(finalWidth, 10) * 0.4;
+  const ringSize = Math.max(150, Math.min(230, Math.round((heightPx || 320) * 0.55)));
 
   const config = {
     percent: Math.max(percent, 0.0001),
-    width: ringWidth,
-    height: ringWidth,
+    width: ringSize,
+    height: ringSize,
     color: ["#EBF2FF", color],
     annotations: [
       {
@@ -96,7 +98,7 @@ const Ring = ({ componentData, height, width, title, goal, current, options, ins
           x: "50%",
           y: "50%",
           textAlign: "center",
-          fontSize: 32,
+          fontSize: 28,
           fontWeight: "bold",
           fill: color,
         },
@@ -110,7 +112,7 @@ const Ring = ({ componentData, height, width, title, goal, current, options, ins
         title={<h2 style={{ margin: 0, fontSize: "24px", fontWeight: "600", wordWrap: "break-word", overflowWrap: "break-word", maxWidth: "100%" }}>{finalTitle || "Ring"}</h2>}
         bordered={false}
         size="small"
-        style={{ height: finalHeight, width: finalWidth, ...finalProps.options }}
+        style={{ ...cardStyle, ...cleanedOptions }}
         className="ring-card"
       >
         <div style={{ textAlign: "center", marginBottom: "12px" }}>

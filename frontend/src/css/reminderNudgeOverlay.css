@@ -17,6 +17,7 @@
 .reminder-card,
 .nudge-card,
 .mood-card {
+  position: relative;
   background: #ffffff;
   border-radius: 24px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
@@ -24,6 +25,32 @@
   max-width: 500px;
   width: 100%;
   animation: slideIn 0.3s ease-out;
+}
+
+/* Close button (×) on all overlay cards */
+.reminder-overlay-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.08);
+  color: #333;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.reminder-overlay-close:hover {
+  background: rgba(0, 0, 0, 0.14);
+  color: #000;
 }
 
 @keyframes slideIn {
@@ -203,6 +230,65 @@
 }
 
 .mood-button.skip:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.reminder-button.skip {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.reminder-button.skip:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+/* Skip confirmation (medication) */
+.reminder-skip-confirm {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.reminder-skip-confirm p {
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  color: #666;
+}
+
+.reminder-skip-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reminder-button.skip-yes {
+  background: #ff4d4f;
+  color: white;
+}
+
+.reminder-button.skip-yes:hover {
+  background: #ff7875;
+  transform: translateY(-2px);
+}
+
+.reminder-button.skip-cancel {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.reminder-button.skip-cancel:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.nudge-button.later {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.nudge-button.later:hover {
   background: #e0e0e0;
   transform: translateY(-2px);
 }

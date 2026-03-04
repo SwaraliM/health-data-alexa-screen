@@ -35,6 +35,13 @@ curl -X POST http://localhost:5001/api/med/nudge/amy
 - Shows exercise suggestion overlay
 - Optionally prompts mood check-in
 
+### Open Reminder Create Workflow
+```bash
+curl -X POST http://localhost:5001/api/reminder/amy/open-create
+```
+- Navigates the active smart-screen session to `Add reminder`
+- Opens `/reminder?mode=create`
+
 ### Confirm Medication Taken
 ```bash
 # First, get medication ID
@@ -109,4 +116,3 @@ curl -X POST http://localhost:5001/api/alexa/ \
 - **Anchor highlighting not working**: Verify `anchorKey` in WebSocket message
 
 For detailed test procedures, see `WORKSHOP_SMOKE_TESTS.md`.
-

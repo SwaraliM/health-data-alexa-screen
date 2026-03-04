@@ -1,8 +1,10 @@
 const { SERVER_ERROR } = require('../../utils/constants');
 const Medication = require('../models/Medications');
+const Reminder = require('../models/Reminder');
 const User = require('../models/Users');
 const { getClients } = require('../websocket');
 const { getCurrentDate } = require('../../frontend/src/utils/getCurrentDate');
+const { parseReminderTextToRule, nextDateForRule } = require("../services/reminderUtils");
 const express = require("express");
 const medicationRouter = express.Router();
 
@@ -12,14 +14,86 @@ medicationRouter.get("/all/:username", async (req, res) => {
     try {
       const medications = await Medication.find({ username: username });
 
-      if (medications.length === 0) {
-        return res.status(404).json({ message: 'No medications found for this user' });
-      }
-
       res.status(200).json(medications); 
     } catch (error) {
       res.status(500).json({ error: SERVER_ERROR, details: error });
     }
+});
+
+medicationRouter.post("/:username/schedule/:medicationId", async (req, res) => {
+  const { username, medicationId } = req.params;
+  const { recurrenceText = "every day at 8 AM", timezone = "America/New_York" } = req.body || {};
+
+  try {
+    const medication = await Medication.findById(medicationId);
+    if (!medication) {
+      return res.status(404).json({ message: "Medication not found" });
+    }
+    if (medication.username !== username) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+
+    const rule = parseReminderTextToRule(recurrenceText, new Date());
+    medication.schedule = {
+      timezone,
+      rules: [rule],
+      defaultDueWindowMin: 30,
+    };
+    medication.pillVisual = {
+      iconKey: medication.form || "tablet",
+      accentColor: medication.pillVisual?.accentColor || "#3b82f6",
+    };
+    await medication.save();
+
+    const nextTriggerAt = nextDateForRule(rule, new Date());
+    const reminder = await Reminder.findOneAndUpdate(
+      { username, "payload.medicationId": medication._id, status: { $ne: "archived" } },
+      {
+        username,
+        title: `Take ${medication.name}`,
+        category: "medication",
+        source: "app",
+        schedule: {
+          timezone,
+          rules: [rule],
+        },
+        payload: {
+          medicationId: medication._id,
+          voicePromptTemplate: `It's time to take your ${medication.name}. ${medication.instructions}`,
+        },
+        delivery: {
+          popup: true,
+          alexaVoice: true,
+        },
+        nextTriggerAt,
+        status: "active",
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    return res.status(200).json({
+      message: "Medication schedule saved",
+      medication,
+      reminder,
+    });
+  } catch (error) {
+    console.error("Error saving medication schedule:", error);
+    res.status(500).json({ error: SERVER_ERROR, details: error.message });
+  }
+});
+
+medicationRouter.get("/:username/schedule", async (req, res) => {
+  const { username } = req.params;
+  try {
+    const reminders = await Reminder.find({
+      username,
+      category: "medication",
+      status: { $ne: "archived" },
+    }).sort({ nextTriggerAt: 1 });
+    return res.status(200).json(reminders);
+  } catch (error) {
+    res.status(500).json({ error: SERVER_ERROR, details: error.message });
+  }
 });
 
 // Manual demo trigger: Medication reminder
@@ -85,15 +159,37 @@ medicationRouter.post("/confirm/:medicationId", async (req, res) => {
     }
 
     const today = getCurrentDate();
+    const now = new Date();
     
     // Add confirmation
     medication.confirmations.push({
       date: today,
       taken: taken === true,
-      timestamp: new Date(),
+      timestamp: now,
     });
 
     await medication.save();
+
+    await Reminder.updateMany(
+      {
+        username,
+        "payload.medicationId": medication._id,
+        status: { $ne: "archived" },
+      },
+      {
+        $set: {
+          retryPending: false,
+          retryAt: null,
+        },
+        $push: {
+          adherence: {
+            dueAt: now,
+            action: taken === true ? "taken" : "snoozed",
+            actedAt: now,
+          },
+        },
+      },
+    );
 
     return res.status(200).json({ 
       message: taken ? "Medication confirmed as taken" : "Reminder scheduled for later",

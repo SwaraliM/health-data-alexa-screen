@@ -74,8 +74,7 @@ const AuthCallback = () => {
         }
 
 
-        const todayDate = getCurrentDate();
-        navigate(`/today-activity/${username}/${Math.floor(Math.random() * 9000000000) + 1000000000}`);
+        navigate(`/dashboard/${username}`);
       } catch (error) {
         console.error("error:", error);
         alert(`OAuth Error: ${error.message}. Check console for details.`);

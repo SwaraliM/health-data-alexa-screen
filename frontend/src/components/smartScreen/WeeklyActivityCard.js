@@ -1,15 +1,17 @@
 import React from "react";
 
-const points = [45, 62, 58, 66, 54, 73, 69];
+const defaultPoints = [45, 62, 58, 66, 54, 73, 69];
 
-const WeeklyActivityCard = () => {
+const WeeklyActivityCard = ({ data }) => {
+  const points = Array.isArray(data) && data.length === 7 ? data : defaultPoints;
   const width = 540;
   const height = 180;
+  const maxVal = Math.max(...points, 1);
   const xStep = width / (points.length - 1);
   const path = points
     .map((point, index) => {
       const x = xStep * index;
-      const y = height - (point / 100) * height;
+      const y = height - (point / maxVal) * height;
       return `${index === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
@@ -26,7 +28,7 @@ const WeeklyActivityCard = () => {
         <path d={path} className="ss-line-path" />
         {points.map((point, index) => {
           const x = xStep * index;
-          const y = height - (point / 100) * height;
+          const y = height - (point / maxVal) * height;
           return <circle key={`${point}-${index}`} cx={x} cy={y} r="4" className="ss-line-dot" />;
         })}
         {["M", "T", "W", "Th", "F", "S", "S"].map((label, index) => (
