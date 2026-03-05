@@ -1,116 +1,127 @@
-const { calculateStats, detectAnomalies } = require("./chartInsightService");
-const { buildChartSpec } = require("./chartSpecService");
+/**
+ * Pure Fitbit payload -> chart-friendly series helpers.
+ *
+ * These functions keep the payload small and predictable so the frontend only renders a few clear charts.
+ */
 
-const asDateLabel = (dateStr) => {
+function asDateLabel(dateStr) {
   if (!dateStr) return "";
   const date = new Date(`${dateStr}T00:00:00`);
   if (Number.isNaN(date.getTime())) return String(dateStr);
   return ["S", "M", "T", "W", "Th", "F", "S"][date.getDay()];
-};
+}
+
+function extractNumericValue(value) {
+  if (Number.isFinite(Number(value))) return Number(value);
+  if (!value || typeof value !== "object") return 0;
+  for (const v of Object.values(value)) {
+    if (Number.isFinite(Number(v))) return Number(v);
+  }
+  return 0;
+}
 
 function toSeriesFromResource(payload, resourceKey, maxPoints = 30) {
   const arr = Array.isArray(payload?.[resourceKey]) ? payload[resourceKey].slice(-maxPoints) : [];
   return arr.map((item, idx) => ({
-    date: item.dateTime || null,
-    label: asDateLabel(item.dateTime) || String(idx + 1),
-    value: Number(item.value) || 0,
+    date: item?.dateTime || null,
+    label: asDateLabel(item?.dateTime) || String(idx + 1),
+    fullLabel: item?.dateTime || String(idx + 1),
+    value: extractNumericValue(item?.value),
   }));
 }
 
 function toSleepSeries(payload, maxPoints = 30) {
   const logs = Array.isArray(payload?.sleep) ? payload.sleep : [];
   const byDate = {};
+
   logs.forEach((entry) => {
-    const date = entry.dateOfSleep || entry.dateTime;
+    const date = entry?.dateOfSleep || entry?.dateTime;
     if (!date) return;
+
     const current = byDate[date];
-    const mins = entry.minutesAsleep ?? Math.round((entry.duration || 0) / 60000);
-    if (!current || entry.isMainSleep || mins > current.mins) {
+    const mins = entry?.minutesAsleep ?? Math.round((entry?.duration || 0) / 60000);
+    if (!current || entry?.isMainSleep || mins > current.mins) {
       byDate[date] = {
-        mins,
-        efficiency: Number(entry.efficiency) || 0,
+        mins: Number(mins) || 0,
+        efficiency: Number(entry?.efficiency) || 0,
+        wakeCount: Number(entry?.minutesAwake) || 0,
       };
     }
   });
+
   const dates = Object.keys(byDate).sort().slice(-maxPoints);
+
   return {
     sleep: dates.map((date) => ({
       date,
       label: asDateLabel(date),
-      value: Math.round((byDate[date]?.mins || 0) / 60),
+      fullLabel: date,
+      value: Math.round(((byDate[date]?.mins || 0) / 60) * 10) / 10,
     })),
-    routine: dates.map((date) => ({
+    efficiency: dates.map((date) => ({
       date,
       label: asDateLabel(date),
+      fullLabel: date,
       value: Number(byDate[date]?.efficiency) || 0,
+    })),
+    wakeMinutes: dates.map((date) => ({
+      date,
+      label: asDateLabel(date),
+      fullLabel: date,
+      value: Number(byDate[date]?.wakeCount) || 0,
     })),
   };
 }
 
-function composeChartPayload({ metricType, timeframe, points, goal = null, unit = "" }) {
-  const stats = calculateStats(points, goal);
-  const anomalies = detectAnomalies(points);
-  const chartSpec = buildChartSpec({ metricType, goal, anomalies });
-
-  return {
-    metricType,
-    timeframe,
-    unit,
-    points,
-    goal,
-    stats,
-    chartSpec,
-    anomalies,
-  };
+function toHeartSeries(payload, maxPoints = 30) {
+  const arr = Array.isArray(payload?.["activities-heart"]) ? payload["activities-heart"].slice(-maxPoints) : [];
+  return arr
+    .map((item) => ({
+      date: item?.dateTime || null,
+      label: asDateLabel(item?.dateTime),
+      fullLabel: item?.dateTime || "",
+      value: extractNumericValue(item?.value?.restingHeartRate ?? item?.value),
+    }))
+    .filter((item) => item.date && Number.isFinite(item.value));
 }
 
-function normalizeFrontendChartComponent(component = {}) {
-  const name = component?.component || component?.type;
-  if (!name || !component?.data || typeof component.data !== "object") return component;
+function toHrvSeries(payload, maxPoints = 30) {
+  const arr = Array.isArray(payload?.hrv)
+    ? payload.hrv
+    : Array.isArray(payload?.["activities-hrv"])
+      ? payload["activities-hrv"]
+      : [];
 
-  const data = component.data;
-  if ((name === "CustomLineChart" || name === "CustomPie") && Array.isArray(data.data)) {
-    const points = data.data.map((row, idx) => {
-      const keys = Object.keys(row || {});
-      const xKey = data.xField || data.xLabel || keys.find((k) => /date|time|day|label|x/i.test(k)) || keys[0];
-      const yKey = data.yField || data.yLabel || keys.find((k) => Number.isFinite(Number(row[k])) && k !== xKey) || keys[1] || keys[0];
-      return {
-        date: row.date || row.dateTime || null,
-        label: String(row[xKey] ?? idx + 1),
-        value: Number(row[yKey]) || 0,
-      };
-    });
-    const chartSpec = buildChartSpec({
-      metricType: /sleep/i.test(data.title || "") ? "sleep" : "steps",
-      goal: data.goalLine,
-      anomalies: detectAnomalies(points),
-    });
+  return arr
+    .slice(-maxPoints)
+    .map((item) => ({
+      date: item?.dateTime || item?.date || null,
+      label: asDateLabel(item?.dateTime || item?.date),
+      fullLabel: item?.dateTime || item?.date || "",
+      value: extractNumericValue(item?.value?.dailyRmssd ?? item?.value?.rmssd ?? item?.value),
+    }))
+    .filter((item) => item.date && Number.isFinite(item.value));
+}
 
-    return {
-      ...component,
-      data: {
-        ...data,
-        series: {
-          points,
-          unit: data.unit || "",
-          goal: Number.isFinite(Number(data.goalLine)) ? Number(data.goalLine) : null,
-          stats: calculateStats(points, data.goalLine),
-        },
-        chartSpec,
-        xField: "label",
-        yField: "value",
-      },
-      chartSummary: component.chartSummary || data.insight || data.title || "Health trend chart",
-      explanationText: component.explanationText || data.insight || "This chart shows your health trend over time.",
-    };
-  }
+function toMetricSeries(metricKey, payload, maxPoints = 30) {
+  if (metricKey === "sleep_minutes") return toSleepSeries(payload, maxPoints).sleep;
+  if (metricKey === "resting_hr") return toHeartSeries(payload, maxPoints);
+  if (metricKey === "calories") return toSeriesFromResource(payload, "activities-calories", maxPoints);
+  if (metricKey === "hrv") return toHrvSeries(payload, maxPoints);
+  return toSeriesFromResource(payload, "activities-steps", maxPoints);
+}
 
-  return component;
+function sliceLast(points = [], count = 7) {
+  return (Array.isArray(points) ? points : []).slice(-count);
 }
 
 module.exports = {
+  asDateLabel,
+  extractNumericValue,
   toSeriesFromResource,
   toSleepSeries,
-  composeChartPayload,
-  normalizeFrontendChartComponent,
+  toHeartSeries,
+  toHrvSeries,
+  toMetricSeries,
+  sliceLast,
 };

@@ -1,8 +1,8 @@
 .ring-card {
-  background-color: #ffffff;
-  border-radius: 16px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-  border: 1px solid #e5e7eb;
+  background: linear-gradient(180deg, #f7f9ff 0%, #ffffff 100%);
+  border-radius: 22px;
+  box-shadow: 0 14px 30px rgba(31, 42, 86, 0.1);
+  border: 1px solid rgba(91, 108, 255, 0.16);
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -12,13 +12,12 @@
   min-height: 300px;
   min-width: 0;
   box-sizing: border-box;
-  transition: transform 0.2s, box-shadow 0.2s;
   overflow: hidden;
 }
 
 .ring-card .ant-card-head {
   padding: 0 0 12px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid rgba(91, 108, 255, 0.08);
   margin-bottom: 12px;
   width: 100%;
   min-height: auto;
@@ -30,8 +29,7 @@
 .ring-card .ant-card-head-title {
   padding: 0;
   max-width: 100%;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
   white-space: normal;
 }
 
@@ -47,16 +45,16 @@
 }
 
 .ring-goal {
-  font-size: 16px;
-  color: #64748b;
+  font-size: 15px;
+  color: #6e7da6;
   margin-top: 10px;
-  font-weight: 500;
+  font-weight: 700;
 }
 
 .ring-current {
   font-size: 24px;
-  font-weight: 700;
-  color: #0f172a;
+  font-weight: 900;
+  color: #1f2a56;
   margin-bottom: 5px;
 }
 
@@ -64,5 +62,6 @@
   .ring-card {
     padding: 14px;
     min-height: 260px;
+    border-radius: 18px;
   }
 }

@@ -4,9 +4,10 @@ import DashboardPage from "./DashboardPage";
 import ReminderPage from "./ReminderPage";
 import QnAPage from "./QnAPage";
 
-jest.mock("../components/CustomLineChart", () => () => <div>Mock Line Chart</div>);
-jest.mock("../components/CustomPie", () => () => <div>Mock Pie Chart</div>);
-jest.mock("../components/Ring", () => () => <div>Mock Ring Chart</div>);
+jest.mock("echarts-for-react", () => (props) => (
+  <div data-testid="mock-echart" aria-label={props?.option?.title?.text || "Mock chart"} />
+));
+
 jest.mock("@ant-design/plots", () => ({
   Line: () => <div>Mock Trend Line</div>,
   Column: () => <div>Mock Trend Column</div>,
@@ -25,14 +26,11 @@ describe("Smart screen page smoke tests", () => {
         <DashboardPage />
       </MemoryRouter>
     );
+
     expect(screen.getByRole("heading", { name: "Today's Overview" })).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "Today's Insight" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Adjust step goal" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Open weekly trends" })).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "Reminders" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Ask Alexa" })).toBeNull();
-    expect(screen.queryByText(/Alexa skill/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add reminder" })).toBeNull();
   });
 
   test("renders medication reminder variant by default", () => {
@@ -41,35 +39,40 @@ describe("Smart screen page smoke tests", () => {
         <ReminderPage />
       </MemoryRouter>
     );
+
     expect(screen.getByRole("heading", { name: "Reminders" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Mark taken" })).toBeTruthy();
   });
 
-  test("renders QnA response page", () => {
+  test("renders QnA chart-first shell", () => {
     render(
       <MemoryRouter>
         <QnAPage />
       </MemoryRouter>
     );
+
     expect(screen.getByRole("heading", { name: "Health Assistant" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Ask Question" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send question" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tap to speak" })).toBeTruthy();
+    expect(screen.getByText("Ask a question and I'll summarize it in one or two sentences.")).toBeTruthy();
   });
 
   test("updates QnA page when qnaDataUpdated event is fired", async () => {
     sessionStorage.setItem(
       "qnaData",
       JSON.stringify({
-        summary: { shortText: "Sleep improved." },
-        activeStageIndex: 0,
-        stages: [
-          {
-            id: "stage_1",
-            cue: "Sleep cue",
-            speech: "Sleep improved.",
-            components: [{ component: "SingleValue", data: { title: "Sleep", value: 7 } }],
+        question: "How did I sleep?",
+        voice_answer: "Sleep improved.",
+        chart_spec: {
+          chart_type: "bar",
+          title: "Sleep - Last 7 days",
+          subtitle: "Last 7 days",
+          takeaway: "Sleep improved.",
+          option: {
+            xAxis: { data: ["M", "T", "W"] },
+            yAxis: { type: "value" },
+            series: [{ type: "bar", data: [6.2, 7.1, 7.4] }],
           },
-        ],
+        },
       })
     );
 
@@ -79,21 +82,24 @@ describe("Smart screen page smoke tests", () => {
       </MemoryRouter>
     );
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Sleep" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "Sleep - Last 7 days" })).toBeTruthy();
 
     sessionStorage.setItem(
       "qnaData",
       JSON.stringify({
-        summary: { shortText: "Activity stable." },
-        activeStageIndex: 0,
-        stages: [
-          {
-            id: "stage_1",
-            cue: "Activity cue",
-            speech: "Activity stable.",
-            components: [{ component: "SingleValue", data: { title: "Activity", value: 1 } }],
+        question: "How active was I?",
+        voice_answer: "Activity was steady.",
+        chart_spec: {
+          chart_type: "bar",
+          title: "Steps - Last 7 days",
+          subtitle: "Last 7 days",
+          takeaway: "Activity was steady.",
+          option: {
+            xAxis: { data: ["M", "T", "W"] },
+            yAxis: { type: "value" },
+            series: [{ type: "bar", data: [5600, 6100, 5800] }],
           },
-        ],
+        },
       })
     );
 
@@ -101,126 +107,47 @@ describe("Smart screen page smoke tests", () => {
       window.dispatchEvent(new CustomEvent("qnaDataUpdated"));
     });
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Activity" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "Steps - Last 7 days" })).toBeTruthy();
   });
 
-  test("reveals staged qna visuals on qnaStage event and supports navigation", async () => {
+  test("applies stage chart spec on qnaStage event", async () => {
     sessionStorage.setItem(
       "qnaData",
       JSON.stringify({
-        question: "How did I do this week?",
-        summary: { shortText: "Quick summary." },
+        question: "Show trend",
         activeStageIndex: 0,
         stages: [
           {
             id: "stage_1",
             cue: "First cue",
             speech: "First speech",
-            components: [{ component: "SingleValue", data: { title: "Steps", value: 5000 } }],
+            chart_spec: {
+              chart_type: "line",
+              title: "Stage 1",
+              subtitle: "Now",
+              takeaway: "Stage 1 takeaway",
+              option: {
+                xAxis: { data: ["M", "T"] },
+                yAxis: { type: "value" },
+                series: [{ type: "line", data: [1, 2] }],
+              },
+            },
           },
           {
             id: "stage_2",
             cue: "Second cue",
             speech: "Second speech",
-            components: [{ component: "SingleValue", data: { title: "Sleep", value: 7 } }],
-          },
-        ],
-      })
-    );
-
-    render(
-      <MemoryRouter>
-        <QnAPage />
-      </MemoryRouter>
-    );
-
-    expect(await screen.findByRole("heading", { level: 2, name: "Steps" })).toBeTruthy();
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent("qnaStage", { detail: { stageIndex: 1, cue: "Second cue" } }));
-    });
-
-    expect(await screen.findByRole("heading", { level: 2, name: "Sleep" })).toBeTruthy();
-
-    const prev = screen.getByRole("button", { name: /Previous/i });
-    act(() => {
-      prev.click();
-    });
-    expect(await screen.findByRole("heading", { level: 2, name: "Steps" })).toBeTruthy();
-  });
-
-  test("shows stage speech in chat from qna data", async () => {
-    sessionStorage.setItem(
-      "qnaData",
-      JSON.stringify({
-        question: "How is my week?",
-        summary: { shortText: "Summary." },
-        stages: [
-          {
-            id: "stage_1",
-            cue: "Stage one",
-            speech: "Stage one speech",
-            components: [{ component: "SingleValue", data: { title: "Steps", value: 5000 } }],
-          },
-        ],
-      })
-    );
-
-    render(
-      <MemoryRouter>
-        <QnAPage />
-      </MemoryRouter>
-    );
-
-    expect(await screen.findByText("Stage one speech")).toBeTruthy();
-  });
-
-  test("does not crash when qnaData is malformed JSON", async () => {
-    sessionStorage.setItem("qnaData", "{bad-json");
-
-    render(
-      <MemoryRouter>
-        <QnAPage />
-      </MemoryRouter>
-    );
-
-    expect(await screen.findByRole("heading", { name: "Health Assistant" })).toBeTruthy();
-    expect(screen.getByText("Ask any health question below. Your answer and chart will appear here.")).toBeTruthy();
-  });
-
-  test("auto-advances staged charts in order", async () => {
-    jest.useFakeTimers();
-    const originalFetch = global.fetch;
-    const fetchSpy = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true }),
-    });
-    global.fetch = fetchSpy;
-
-    sessionStorage.setItem(
-      "qnaData",
-      JSON.stringify({
-        question: "Show my trends",
-        summary: { shortText: "Summary", shortSpeech: "Summary speech" },
-        activeStageIndex: 0,
-        stages: [
-          {
-            id: "stage_1",
-            cue: "First",
-            speech: "Stage one speech.",
-            components: [{ component: "SingleValue", data: { title: "Stage 1", value: 1 } }],
-          },
-          {
-            id: "stage_2",
-            cue: "Second",
-            speech: "Stage two speech with a few words.",
-            components: [{ component: "SingleValue", data: { title: "Stage 2", value: 2 } }],
-          },
-          {
-            id: "stage_3",
-            cue: "Third",
-            speech: "Stage three speech with a few words.",
-            components: [{ component: "SingleValue", data: { title: "Stage 3", value: 3 } }],
+            chart_spec: {
+              chart_type: "line",
+              title: "Stage 2",
+              subtitle: "Later",
+              takeaway: "Stage 2 takeaway",
+              option: {
+                xAxis: { data: ["M", "T"] },
+                yAxis: { type: "value" },
+                series: [{ type: "line", data: [3, 4] }],
+              },
+            },
           },
         ],
       })
@@ -234,18 +161,24 @@ describe("Smart screen page smoke tests", () => {
 
     expect(await screen.findByRole("heading", { level: 2, name: "Stage 1" })).toBeTruthy();
 
-    await act(async () => {
-      jest.advanceTimersByTime(6000);
+    act(() => {
+      window.dispatchEvent(new CustomEvent("qnaStage", { detail: { stageIndex: 1, speech: "Second speech" } }));
     });
+
     expect(await screen.findByRole("heading", { level: 2, name: "Stage 2" })).toBeTruthy();
+    expect(screen.getAllByText("Second speech").length).toBeGreaterThan(0);
+  });
 
-    await act(async () => {
-      jest.advanceTimersByTime(6000);
-    });
-    expect(await screen.findByRole("heading", { level: 2, name: "Stage 3" })).toBeTruthy();
+  test("does not crash when qnaData is malformed JSON", async () => {
+    sessionStorage.setItem("qnaData", "{bad-json");
 
-    expect(fetchSpy).toHaveBeenCalled();
-    global.fetch = originalFetch;
-    jest.useRealTimers();
+    render(
+      <MemoryRouter>
+        <QnAPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole("heading", { name: "Health Assistant" })).toBeTruthy();
+    expect(screen.getByText("Ask a question and I'll summarize it in one or two sentences.")).toBeTruthy();
   });
 });

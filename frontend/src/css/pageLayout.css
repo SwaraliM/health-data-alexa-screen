@@ -1,14 +1,26 @@
 .page-layout {
-    width: 1500px; /* for Amazon Fire Max 11 tablet */
-    height: 850px;  /* Maintain aspect ratio */
-    background-image: url(../../public/welcomeBackground.jpg);
-    background-size: 100% 100%;
-    border-radius: 10px; /* Rounded corners, optional */
-    box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); /* Slight shadow effect */
+    width: min(1500px, calc(100vw - 24px));
+    min-height: min(850px, calc(100vh - 24px));
+    background:
+      linear-gradient(140deg, rgba(59, 76, 233, 0.72), rgba(124, 77, 255, 0.44)),
+      url(../../public/welcomeBackground.jpg);
+    background-size: cover;
+    background-position: center;
+    border-radius: 22px;
+    box-shadow: 0 18px 40px rgba(31, 42, 86, 0.18);
     display: flex;
-    margin-top: 10px;
+    margin: 12px auto;
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    
-}
+    overflow: hidden;
+    position: relative;
+  }
+  
+  .page-layout::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at top right, rgba(255, 183, 3, 0.18), transparent 24%);
+    pointer-events: none;
+  }

@@ -1,10 +1,14 @@
 .page-layout-clean {
-    width: 1500px; /* for Amazon Fire Max 11 tablet */
-    height: 850px;  /* Maintain aspect ratio */
-    background-image: url(../../public/welcomeBackground.jpg);
-    background-size: 100% 100%;
-    border-radius: 10px; /* Rounded corners, optional */
-    box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.1); /* Slight shadow effect */
-    margin-top: 10px;
+    width: min(1500px, calc(100vw - 24px));
+    min-height: min(850px, calc(100vh - 24px));
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 248, 255, 0.96)),
+      url(../../public/welcomeBackground.jpg);
+    background-size: cover;
+    background-position: center;
+    border-radius: 22px;
+    box-shadow: 0 18px 40px rgba(31, 42, 86, 0.14);
+    margin: 12px auto;
     overflow: auto;
-}
+    border: 1px solid rgba(91, 108, 255, 0.14);
+  }

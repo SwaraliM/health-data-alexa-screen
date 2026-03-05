@@ -1,8 +1,8 @@
 .line-card {
-  background-color: #ffffff;
-  border-radius: 16px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-  border: 1px solid #e5e7eb;
+  background: linear-gradient(180deg, #f7f9ff 0%, #ffffff 100%);
+  border-radius: 22px;
+  box-shadow: 0 14px 30px rgba(31, 42, 86, 0.1);
+  border: 1px solid rgba(91, 108, 255, 0.16);
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -17,7 +17,7 @@
 
 .line-card .ant-card-head {
   padding: 0 0 12px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid rgba(91, 108, 255, 0.08);
   margin-bottom: 12px;
   width: 100%;
   min-height: auto;
@@ -29,8 +29,7 @@
 .line-card .ant-card-head-title {
   padding: 0;
   max-width: 100%;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
   white-space: normal;
 }
 
@@ -48,29 +47,32 @@
 
 .chart-title-wrap h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  word-break: break-word;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .chart-insight {
-  margin-top: 8px;
+  margin-top: 10px;
   display: block;
-  font-size: 14px;
-  line-height: 1.4;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #f3f7ff;
-  color: #1f5fcf !important;
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, rgba(91, 108, 255, 0.08) 0%, rgba(255, 183, 3, 0.08) 100%);
+  color: #33406a !important;
+  border: 1px solid rgba(91, 108, 255, 0.12);
 }
 
 @media (max-width: 820px) {
   .line-card {
     min-height: 280px;
     padding: 14px;
+    border-radius: 18px;
   }
 
   .chart-title-wrap h2 {
-    font-size: 18px;
+    font-size: 19px;
   }
 }
