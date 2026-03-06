@@ -57,6 +57,7 @@
   letter-spacing: 0.01em;
 }
 
+
 .hd-main-grid {
   flex: 1;
   min-height: 0;
@@ -70,6 +71,26 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.hd-ready-banner {
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.hd-ready-banner.completed {
+  color: #065f46;
+  background: linear-gradient(135deg, #d1fae5, #ecfdf5);
+  border-color: #6ee7b7;
+}
+
+.hd-ready-banner.error {
+  color: #991b1b;
+  background: linear-gradient(135deg, #fee2e2, #fff1f2);
+  border-color: #fca5a5;
 }
 
 .hd-chart-panel,

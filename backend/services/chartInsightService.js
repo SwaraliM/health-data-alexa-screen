@@ -1,8 +1,8 @@
 /**
- * Small, deterministic analytics helpers.
+ * backend/services/chartInsightService.js
  *
- * These functions are intentionally simple because they run inside the Alexa time budget.
- * Anything heavier can be added later as an async enrichment step.
+ * Deterministic analytics only.
+ * GPT should not do the math. This file does the math.
  */
 
 function clamp(value, min, max) {
@@ -13,16 +13,17 @@ function toNumericSeries(points = []) {
   return (Array.isArray(points) ? points : [])
     .map((point, idx) => ({
       idx,
-      date: point?.date || null,
       label: String(point?.label ?? point?.date ?? idx + 1),
+      fullLabel: String(point?.fullLabel ?? point?.label ?? point?.date ?? idx + 1),
+      date: point?.date || null,
       value: Number(point?.value),
     }))
     .filter((point) => Number.isFinite(point.value));
 }
 
-function average(values = []) {
+function avg(values = []) {
   if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
 function calculateStats(points = [], goal = null) {
@@ -31,39 +32,96 @@ function calculateStats(points = [], goal = null) {
 
   if (!values.length) {
     return {
+      count: 0,
       avg: 0,
       high: 0,
       low: 0,
+      min: 0,
+      max: 0,
+      current: 0,
       goal: Number.isFinite(Number(goal)) ? Number(goal) : null,
       wowChangePct: 0,
-      current: 0,
-      previousAvg: 0,
-      currentAvg: 0,
     };
   }
 
-  const avg = Math.round(average(values) * 10) / 10;
   const high = Math.max(...values);
   const low = Math.min(...values);
   const current = values[values.length - 1];
+  const mean = avg(values);
 
   const half = Math.floor(values.length / 2);
-  const previous = values.slice(0, half);
-  const currentWindow = values.slice(half);
-  const previousAvg = previous.length ? average(previous) : 0;
-  const currentAvg = currentWindow.length ? average(currentWindow) : average(values);
-  const wowChangePct = previousAvg > 0 ? Math.round(((currentAvg - previousAvg) / previousAvg) * 100) : 0;
+  const prevValues = values.slice(0, half);
+  const curValues = values.slice(half);
+  const prevAvg = avg(prevValues);
+  const curAvg = avg(curValues);
+  const wowChangePct = prevAvg > 0 ? Math.round(((curAvg - prevAvg) / prevAvg) * 100) : 0;
 
   return {
-    avg,
+    count: values.length,
+    avg: Math.round(mean * 10) / 10,
     high,
     low,
+    min: low,
+    max: high,
     current,
     goal: Number.isFinite(Number(goal)) ? Number(goal) : null,
-    previousAvg: Math.round(previousAvg * 10) / 10,
-    currentAvg: Math.round(currentAvg * 10) / 10,
     wowChangePct,
   };
+}
+
+function comparePeriods(points = [], baseDays = 7) {
+  const normalized = toNumericSeries(points);
+  if (!normalized.length) {
+    return {
+      previousAvg: 0,
+      currentAvg: 0,
+      changePct: 0,
+      direction: "flat",
+      previous: [],
+      current: [],
+    };
+  }
+
+  const current = normalized.slice(-baseDays);
+  const previous = normalized.slice(-(baseDays * 2), -baseDays);
+
+  const currentAvg = avg(current.map((p) => p.value));
+  const previousAvg = avg(previous.map((p) => p.value));
+  const changePct = previousAvg > 0 ? Math.round(((currentAvg - previousAvg) / previousAvg) * 100) : 0;
+
+  let direction = "flat";
+  if (changePct > 4) direction = "up";
+  else if (changePct < -4) direction = "down";
+
+  return {
+    previousAvg: Math.round(previousAvg * 10) / 10,
+    currentAvg: Math.round(currentAvg * 10) / 10,
+    changePct,
+    direction,
+    previous,
+    current,
+  };
+}
+
+function pickHighlight(points = []) {
+  const normalized = toNumericSeries(points);
+  if (!normalized.length) return null;
+
+  const maxPoint = normalized.reduce((best, point) => (point.value > best.value ? point : best), normalized[0]);
+  const minPoint = normalized.reduce((best, point) => (point.value < best.value ? point : best), normalized[0]);
+
+  if (Math.abs(maxPoint.value - minPoint.value) < 1) {
+    return {
+      ...maxPoint,
+      reason: "steady",
+    };
+  }
+
+  const range = Math.abs(maxPoint.value - minPoint.value);
+  if (range / Math.max(1, Math.abs(minPoint.value)) > 0.15) {
+    return { ...minPoint, reason: "lowest" };
+  }
+  return { ...maxPoint, reason: "highest" };
 }
 
 function detectAnomalies(points = []) {
@@ -71,15 +129,15 @@ function detectAnomalies(points = []) {
   if (normalized.length < 5) return [];
 
   const values = normalized.map((point) => point.value);
-  const avg = average(values);
-  const variance = average(values.map((value) => (value - avg) ** 2));
+  const mean = avg(values);
+  const variance = avg(values.map((value) => (value - mean) ** 2));
   const stdDev = Math.sqrt(variance);
-  if (stdDev <= 0) return [];
+  if (!Number.isFinite(stdDev) || stdDev === 0) return [];
 
   return normalized
     .map((point) => {
-      const z = (point.value - avg) / stdDev;
-      if (Math.abs(z) < 1.5) return null;
+      const z = (point.value - mean) / stdDev;
+      if (Math.abs(z) < 1.6) return null;
       return {
         date: point.date,
         label: point.label,
@@ -91,143 +149,151 @@ function detectAnomalies(points = []) {
     .filter(Boolean);
 }
 
-function splitIntoPeriods(points = [], windowDays = 7) {
-  const normalized = toNumericSeries(points);
-  if (!normalized.length) return { previous: [], current: [] };
-  const current = normalized.slice(-windowDays);
-  const previous = normalized.slice(-(windowDays * 2), -windowDays);
-  return { previous, current };
-}
+function pearson(xs = [], ys = []) {
+  if (!xs.length || xs.length !== ys.length) return 0;
+  const xAvg = avg(xs);
+  const yAvg = avg(ys);
+  let num = 0;
+  let xDen = 0;
+  let yDen = 0;
 
-function comparePeriods(points = [], windowDays = 7) {
-  const { previous, current } = splitIntoPeriods(points, windowDays);
-  const previousAvg = average(previous.map((point) => point.value));
-  const currentAvg = average(current.map((point) => point.value));
-  const changePct = previousAvg > 0 ? Math.round(((currentAvg - previousAvg) / previousAvg) * 100) : 0;
-
-  return {
-    previous,
-    current,
-    previousAvg: Math.round(previousAvg * 10) / 10,
-    currentAvg: Math.round(currentAvg * 10) / 10,
-    changePct,
-    direction: changePct > 4 ? "up" : changePct < -4 ? "down" : "steady",
-  };
-}
-
-function pickHighlight(points = []) {
-  const normalized = toNumericSeries(points);
-  if (!normalized.length) return null;
-
-  let highest = normalized[0];
-  let lowest = normalized[0];
-  normalized.forEach((point) => {
-    if (point.value > highest.value) highest = point;
-    if (point.value < lowest.value) lowest = point;
-  });
-
-  const anomalies = detectAnomalies(normalized);
-  if (anomalies.length) {
-    const strongest = [...anomalies].sort((a, b) => b.severity - a.severity)[0];
-    return { ...strongest, mode: "anomaly" };
+  for (let i = 0; i < xs.length; i += 1) {
+    const dx = xs[i] - xAvg;
+    const dy = ys[i] - yAvg;
+    num += dx * dy;
+    xDen += dx * dx;
+    yDen += dy * dy;
   }
 
-  return {
-    label: lowest.label,
-    date: lowest.date,
-    value: lowest.value,
-    reason: "notable_low",
-    mode: "range",
-    highest,
-  };
+  const den = Math.sqrt(xDen * yDen);
+  if (!den) return 0;
+  return num / den;
 }
 
-/**
- * A lightweight relationship summary.
- *
- * Example use:
- * - primary = sleep hours
- * - secondary = next-day steps
- *
- * We split the primary metric into "higher" vs "lower" days around the median and compare
- * the average secondary value for those groups.
- */
-function describeRelationship(primaryPoints = [], secondaryPoints = [], { shiftSecondaryByDays = 0 } = {}) {
-  const primary = toNumericSeries(primaryPoints);
-  const secondary = toNumericSeries(secondaryPoints);
-  if (primary.length < 4 || secondary.length < 4) {
-    return {
-      confidence: "Low",
-      statement: "There is not enough data for a reliable comparison yet.",
-      grouped: [],
-      effectDirection: "unknown",
-    };
-  }
+function shiftDateString(dateString, deltaDays) {
+  if (!dateString) return dateString;
+  const date = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return dateString;
+  date.setDate(date.getDate() + deltaDays);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
-  const secondaryByDate = new Map();
-  secondary.forEach((point) => secondaryByDate.set(String(point.date), point.value));
+function describeRelationship(primaryPoints = [], secondaryPoints = [], opts = {}) {
+  const shiftSecondaryByDays = Number(opts?.shiftSecondaryByDays || 0);
+  const primaryMetricLabel = String(opts?.primaryMetricLabel || "primary metric");
 
-  const aligned = primary
-    .map((point) => {
-      const keyDate = point.date ? new Date(`${point.date}T00:00:00`) : null;
-      if (!keyDate) return null;
-      keyDate.setDate(keyDate.getDate() + shiftSecondaryByDays);
-      const shiftedKey = `${keyDate.getFullYear()}-${String(keyDate.getMonth() + 1).padStart(2, "0")}-${String(keyDate.getDate()).padStart(2, "0")}`;
-      const secondaryValue = secondaryByDate.get(shiftedKey);
-      if (!Number.isFinite(secondaryValue)) return null;
+  const byPrimaryDate = new Map(
+    toNumericSeries(primaryPoints).map((p) => [p.date || p.label, p])
+  );
+
+  const secondaryNormalized = toNumericSeries(secondaryPoints);
+
+  const pairs = secondaryNormalized
+    .map((secondaryPoint) => {
+      const lookupDate = secondaryPoint.date
+        ? shiftDateString(secondaryPoint.date, -shiftSecondaryByDays)
+        : secondaryPoint.label;
+      const primaryPoint = byPrimaryDate.get(lookupDate);
+      if (!primaryPoint) return null;
       return {
-        date: point.date,
-        primary: point.value,
-        secondary: secondaryValue,
+        primary: primaryPoint.value,
+        secondary: secondaryPoint.value,
+        date: secondaryPoint.date || primaryPoint.date || null,
       };
     })
     .filter(Boolean);
 
-  if (aligned.length < 4) {
+  if (pairs.length < 4) {
     return {
-      confidence: "Low",
-      statement: "I can only make a limited comparison from the available days.",
+      statement: "I do not have enough overlapping days to show a reliable relationship yet.",
+      effectDirection: "flat",
+      correlation: 0,
       grouped: [],
-      effectDirection: "unknown",
     };
   }
 
-  const sortedPrimary = aligned.map((item) => item.primary).sort((a, b) => a - b);
-  const median = sortedPrimary[Math.floor(sortedPrimary.length / 2)] || 0;
+  const primaryValues = pairs.map((p) => p.primary).sort((a, b) => a - b);
+  const median = primaryValues[Math.floor(primaryValues.length / 2)];
 
-  const higher = aligned.filter((item) => item.primary >= median);
-  const lower = aligned.filter((item) => item.primary < median);
+  const highBucket = pairs.filter((p) => p.primary >= median);
+  const lowBucket = pairs.filter((p) => p.primary < median);
 
-  const higherAvg = average(higher.map((item) => item.secondary));
-  const lowerAvg = average(lower.map((item) => item.secondary));
-  const deltaPct = lowerAvg > 0 ? Math.round(((higherAvg - lowerAvg) / lowerAvg) * 100) : 0;
+  const highAvg = avg(highBucket.map((p) => p.secondary));
+  const lowAvg = avg(lowBucket.map((p) => p.secondary));
+  const corr = pearson(
+    pairs.map((p) => p.primary),
+    pairs.map((p) => p.secondary)
+  );
 
-  const effectDirection = deltaPct > 5 ? "higher" : deltaPct < -5 ? "lower" : "similar";
-  const confidence = aligned.length >= 10 ? "Medium" : "Low";
+  let effectDirection = "flat";
+  if (highAvg > lowAvg * 1.03) effectDirection = "higher";
+  else if (lowAvg > highAvg * 1.03) effectDirection = "lower";
 
-  let statement = "The two patterns look fairly similar.";
+  let statement = `When ${primaryMetricLabel} was higher, the other metric stayed fairly similar.`;
   if (effectDirection === "higher") {
-    statement = `On higher ${"sleep"} days, the other metric tended to be about ${Math.abs(deltaPct)}% higher.`;
+    statement = `On higher ${primaryMetricLabel} days, the other metric tended to be higher as well.`;
   } else if (effectDirection === "lower") {
-    statement = `On higher ${"sleep"} days, the other metric tended to be about ${Math.abs(deltaPct)}% lower.`;
+    statement = `On higher ${primaryMetricLabel} days, the other metric tended to be lower.`;
   }
 
   return {
-    confidence,
     statement,
     effectDirection,
+    correlation: Math.round(corr * 100) / 100,
     grouped: [
-      { label: "Higher sleep days", value: Math.round(higherAvg * 10) / 10, count: higher.length },
-      { label: "Lower sleep days", value: Math.round(lowerAvg * 10) / 10, count: lower.length },
+      { label: `Lower ${primaryMetricLabel}`, value: Math.round(lowAvg * 10) / 10, count: lowBucket.length },
+      { label: `Higher ${primaryMetricLabel}`, value: Math.round(highAvg * 10) / 10, count: highBucket.length },
     ],
+  };
+}
+
+function alignSeriesMap(metricSeriesMap = {}) {
+  const normalizedMaps = {};
+  const allKeys = new Set();
+
+  Object.entries(metricSeriesMap).forEach(([metricKey, points]) => {
+    const normalized = toNumericSeries(points);
+    const map = new Map();
+    normalized.forEach((point, idx) => {
+      const key = String(point.date || point.fullLabel || point.label || idx);
+      map.set(key, point);
+      allKeys.add(key);
+    });
+    normalizedMaps[metricKey] = map;
+  });
+
+  const orderedKeys = [...allKeys];
+  const labels = orderedKeys.map((key) => {
+    for (const metricKey of Object.keys(normalizedMaps)) {
+      const point = normalizedMaps[metricKey].get(key);
+      if (point) return point.label || point.fullLabel || key;
+    }
+    return key;
+  });
+
+  const valuesByMetric = {};
+  Object.entries(normalizedMaps).forEach(([metricKey, map]) => {
+    valuesByMetric[metricKey] = orderedKeys.map((key) => {
+      const point = map.get(key);
+      return point ? point.value : null;
+    });
+  });
+
+  return {
+    orderedKeys,
+    labels,
+    valuesByMetric,
   };
 }
 
 module.exports = {
   calculateStats,
-  detectAnomalies,
   comparePeriods,
   pickHighlight,
+  detectAnomalies,
   describeRelationship,
-  toNumericSeries,
+  alignSeriesMap,
 };

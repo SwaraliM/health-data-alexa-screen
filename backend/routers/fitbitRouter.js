@@ -443,4 +443,99 @@ fitbitRouter.get("/:username/sleep/range/date/:startDate/:endDate", async (req, 
   }
 });
 
+/** -------------------------------------------------------------------------
+ * New endpoints
+ * ---------------------------------------------------------------------- */
+// profile endpoint
+fitbitRouter.get("/:username/profile", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = "https://api.fitbit.com/1/user/-/profile.json";
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+// devices
+fitbitRouter.get("/:username/devices", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = "https://api.fitbit.com/1/user/-/devices.json";
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+//intraday heart rate
+fitbitRouter.get("/:username/heart/intraday/:date", async (req, res) => {
+  const { date } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url =
+      `https://api.fitbit.com/1/user/-/activities/heart/date/${date}/1d/1min.json`;
+
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+//intraday activity
+fitbitRouter.get("/:username/activities/intraday/:resource/:date", async (req, res) => {
+  const { resource, date } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const validResources = ["steps", "calories", "distance", "floors", "elevation"];
+
+  if (!validResources.includes(resource)) {
+    return res.status(400).json({ message: "Invalid resource" });
+  }
+
+  try {
+    const url =
+      `https://api.fitbit.com/1/user/-/activities/${resource}/date/${date}/1d/1min.json`;
+
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+/**
+ * Generic Fitbit proxy
+ *
+ * GET /:username/raw/*
+ *
+ * Example:
+ * /api/fitbit/amy/raw/1/user/-/devices.json
+ * /api/fitbit/amy/raw/1/user/-/activities/heart/date/2024-01-01/1d.json
+ */
+fitbitRouter.get("/:username/raw/*", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const fitbitPath = req.params[0];
+    const url = `https://api.fitbit.com/${fitbitPath}`;
+
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
 module.exports = fitbitRouter;

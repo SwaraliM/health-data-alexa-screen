@@ -1,85 +1,142 @@
 /**
  * backend/routers/alexaRouter.js
  *
- * Alexa + browser QnA endpoints.
- *
- * Responsibilities:
- * - Keep the voice path fast for Alexa.
- * - Push chart-first payloads to the screen via WebSocket.
- * - Preserve lightweight stage navigation for "next/previous/repeat".
+ * Alexa question turns use a two-layer response flow:
+ * - answerQuestion() returns the best voice answer quickly.
+ * - A deterministic chart payload is pushed to the screen immediately.
+ * - If richer visuals finish later, they are pushed asynchronously.
+ * - Browser-triggered queries can still use full rich-build mode directly.
  */
 
 const express = require("express");
 const alexaRouter = express.Router();
-
 require("dotenv").config();
 
 const { getClients } = require("../websocket");
-const { buildQnaPayload } = require("../services/qnaEngine");
-const { PHIA_QNA_CONFIG } = require("../configs/openAiSystemConfigs");
-const { callOpenAIJson } = require("../services/openAIClient");
+const {
+  buildRichQnaPayload,
+  answerFollowupFromPayload,
+  answerQuestion,
+} = require("../services/qnaengine");
 const { generateSpeech } = require("../services/ttsService");
 
-const INTERNAL_CUTOFF_MS = 6500;
 const qnaSession = new Map();
+const qnaJobs = new Map();
 
-function compressAlexaSpeech(text, fallback = "Here is your quick summary.") {
-  const source = String(text || "").trim();
-  if (!source) return fallback;
-  const firstSentence = source.split(/[.!?]/).map((s) => s.trim()).find(Boolean) || source;
-  const words = firstSentence.split(/\s+/).filter(Boolean).slice(0, 22).join(" ");
-  if (words.length <= 140) return words;
-  return `${words.slice(0, 137).trimEnd()}...`;
-}
+const DEFAULT_VOICE_DEADLINE_MS = Math.max(
+  250,
+  Number(process.env.QNA_VOICE_DEADLINE_MS || 4300)
+);
+const RICH_FAILSAFE_MS = Math.max(
+  8000,
+  Number(process.env.QNA_RICH_FAILSAFE_MS || 25000)
+);
 
-function makeAlexaResponse(text, { shouldEndSession = false, repromptText = "" } = {}) {
-  const response = {
-    version: "1.0",
-    response: {
-      outputSpeech: { type: "PlainText", text: compressAlexaSpeech(text) },
-      shouldEndSession,
-    },
-  };
+const ROUTER_DEBUG = process.env.QNA_ROUTER_DEBUG !== "false";
 
-  if (!shouldEndSession && repromptText) {
-    response.response.reprompt = {
-      outputSpeech: {
-        type: "PlainText",
-        text: compressAlexaSpeech(repromptText),
-      },
-    };
+function routerLog(scope, message, data = null) {
+  if (!ROUTER_DEBUG) return;
+  if (data === null || data === undefined) {
+    console.log(`[AlexaRouter][${scope}] ${message}`);
+    return;
   }
-
-  return response;
+  console.log(`[AlexaRouter][${scope}] ${message}`, data);
 }
 
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
+function routerWarn(scope, message, data = null) {
+  if (data === null || data === undefined) {
+    console.warn(`[AlexaRouter][${scope}] ${message}`);
+    return;
+  }
+  console.warn(`[AlexaRouter][${scope}] ${message}`, data);
+}
+
+function routerError(scope, message, error = null) {
+  if (!error) {
+    console.error(`[AlexaRouter][${scope}] ${message}`);
+    return;
+  }
+  console.error(`[AlexaRouter][${scope}] ${message}`, {
+    message: error?.message || String(error),
+    stack: error?.stack || null,
+  });
+}
+
+function keyForUser(username = "") {
+  return String(username || "").trim().toLowerCase();
+}
+
+function makeRequestKey(username, question) {
+  return `${keyForUser(username)}::${String(question || "")
+    .trim()
+    .toLowerCase()}::${Date.now()}`;
 }
 
 function emitToScreen(username, message) {
-  const socket = getClients().get(String(username || "").toLowerCase());
-  if (!socket) return;
+  const socket = getClients().get(keyForUser(username));
+  if (!socket) {
+    routerWarn("websocket", "no active websocket client for user", {
+      username: keyForUser(username),
+      action: message?.action,
+    });
+    return;
+  }
+
   try {
     socket.send(JSON.stringify(message));
   } catch (error) {
-    console.error("WebSocket send failed:", error.message);
+    routerError("websocket", "websocket send failed", error);
   }
 }
 
-function getStageAtIndex(payload, rawIndex) {
-  const stages = Array.isArray(payload?.stages) && payload.stages.length
-    ? payload.stages
-    : [{ id: "stage_1", cue: payload?.chart_spec?.title || "Chart", voice_answer: payload?.voice_answer || "", chart_spec: payload?.chart_spec }];
+function storeSession(username, built, extra = {}) {
+  const sessionValue = {
+    payload: built?.payload || null,
+    rawData: built?.rawData || null,
+    userContext: built?.userContext || null,
+    planner: built?.planner || null,
+    updatedAt: Date.now(),
+    requestKey: extra.requestKey || null,
+  };
 
-  const index = clamp(Number(rawIndex) || 0, 0, stages.length - 1);
-  return { index, stage: stages[index], stages };
+  qnaSession.set(keyForUser(username), sessionValue);
+
+  routerLog("session", "session stored", {
+    username: keyForUser(username),
+    requestKey: sessionValue.requestKey,
+    stageCount: sessionValue?.payload?.stageCount || 0,
+    question: sessionValue?.payload?.question || null,
+  });
 }
 
-function emitQnaPayload(username, payload) {
-  emitToScreen(username, { action: "navigation", option: "/qna", data: payload });
+function getSession(username) {
+  return qnaSession.get(keyForUser(username)) || null;
+}
 
-  const { index, stage } = getStageAtIndex(payload, payload?.activeStageIndex || 0);
+function getActiveStage(payload) {
+  const stages = Array.isArray(payload?.stages) ? payload.stages : [];
+  const idx = Math.max(
+    0,
+    Math.min(Number(payload?.activeStageIndex || 0), Math.max(0, stages.length - 1))
+  );
+
+  return {
+    index: idx,
+    stage: stages[idx] || null,
+    stages,
+  };
+}
+
+function emitQnaPayload(username, payload, opts = {}) {
+  const action = opts.action || "navigation";
+
+  emitToScreen(username, {
+    action,
+    option: "/qna",
+    data: payload,
+  });
+
+  const { stage, index } = getActiveStage(payload);
   if (!stage) return;
 
   emitToScreen(username, {
@@ -89,18 +146,176 @@ function emitQnaPayload(username, payload) {
     speech: stage.voice_answer || payload?.voice_answer || "",
     data: payload,
   });
+
+  routerLog("screen", "QnA payload emitted", {
+    username: keyForUser(username),
+    action,
+    stageIndex: index,
+    title: stage?.chart_spec?.title || null,
+    stageCount: payload?.stageCount || 0,
+  });
 }
 
-function detectStageCommand(intentName = "", question = "", rawSlotValue = "") {
-  const intent = String(intentName || "");
-  const utterance = `${String(rawSlotValue || "")} ${String(question || "")}`.toLowerCase().trim();
+function emitAnswerReady(username, payload) {
+  emitToScreen(username, {
+    action: "status",
+    type: "ready",
+    message: "Your answer is ready.",
+    suggestion:
+      payload?.suggested_follow_up?.[0] ||
+      "Say explain that for more detail.",
+  });
 
-  if (intent === "AMAZON.StopIntent" || intent === "AMAZON.CancelIntent") return "done";
-  if (/\b(done|finish|end|exit|stop|close|go back)\b/.test(utterance)) return "done";
-  if (/\b(next|continue|forward|show next)\b/.test(utterance)) return "next";
-  if (/\b(previous|back|last one|prior)\b/.test(utterance)) return "previous";
-  if (/\b(repeat|again|say that again|replay)\b/.test(utterance)) return "repeat";
-  return null;
+  routerLog("screen", "answer-ready status emitted", {
+    username: keyForUser(username),
+    suggestion:
+      payload?.suggested_follow_up?.[0] ||
+      "Say explain that for more detail.",
+  });
+}
+
+function stageSpeech(stage, payload) {
+  return (
+    stage?.voice_answer ||
+    stage?.speech ||
+    payload?.voice_answer ||
+    "Here is your summary."
+  );
+}
+
+function startRichBuild(username, question, opts = {}) {
+  const jobKey = `${keyForUser(username)}::${String(question || "")
+    .trim()
+    .toLowerCase()}`;
+  const existing = qnaJobs.get(jobKey);
+  if (existing) {
+    routerLog("jobs", "reusing existing rich-build job", {
+      username: keyForUser(username),
+      jobKey,
+    });
+    return existing;
+  }
+
+  routerLog("jobs", "starting rich-build job", {
+    username: keyForUser(username),
+    question,
+    opts,
+  });
+
+  const job = buildRichQnaPayload({
+    username,
+    question,
+    allowFetchPlannerLLM: true,
+    allowPresenterLLM: true,
+    presentTimeoutMs: RICH_FAILSAFE_MS,
+    ...opts,
+  })
+    .then((built) => {
+      storeSession(username, built, {
+        requestKey: makeRequestKey(username, question),
+      });
+      emitQnaPayload(username, built.payload, { action: "navigation" });
+      return built;
+    })
+    .finally(() => {
+      qnaJobs.delete(jobKey);
+    });
+
+  qnaJobs.set(jobKey, job);
+  return job;
+}
+
+function maybePreserveActiveStage(currentPayload, nextPayload) {
+  const currentIndex = Number(currentPayload?.activeStageIndex || 0);
+  const nextStageCount = Array.isArray(nextPayload?.stages)
+    ? nextPayload.stages.length
+    : 0;
+
+  if (!nextStageCount) {
+    nextPayload.activeStageIndex = 0;
+    return nextPayload;
+  }
+
+  nextPayload.activeStageIndex = Math.max(
+    0,
+    Math.min(currentIndex, nextStageCount - 1)
+  );
+
+  return nextPayload;
+}
+
+function attachVisualContinuation({
+  username,
+  question,
+  requestKey,
+  deterministicResult,
+}) {
+  const visualPromise = deterministicResult?.visualContinuationPromise;
+  if (!visualPromise || typeof visualPromise.then !== "function") {
+    routerLog("continuation", "no visual continuation promise available", {
+      username: keyForUser(username),
+      question,
+    });
+    return;
+  }
+
+  routerLog("continuation", "attaching visual continuation listener", {
+    username: keyForUser(username),
+    question,
+    requestKey,
+  });
+
+  visualPromise
+    .then((richPayload) => {
+      const currentSession = getSession(username);
+
+      if (!currentSession) {
+        routerWarn("continuation", "session missing when rich visuals resolved", {
+          username: keyForUser(username),
+          question,
+        });
+        return;
+      }
+
+      if (currentSession.requestKey !== requestKey) {
+        routerWarn("continuation", "discarding stale rich visual payload", {
+          username: keyForUser(username),
+          question,
+          requestKey,
+          currentRequestKey: currentSession.requestKey,
+        });
+        return;
+      }
+
+      const mergedPayload = maybePreserveActiveStage(
+        currentSession.payload,
+        richPayload
+      );
+
+      storeSession(
+        username,
+        {
+          payload: mergedPayload,
+          rawData: deterministicResult.rawData,
+          userContext: deterministicResult.userContext,
+          planner: deterministicResult.planner,
+        },
+        { requestKey }
+      );
+
+      emitAnswerReady(username, mergedPayload);
+      emitQnaPayload(username, mergedPayload, { action: "updateVisuals" });
+
+      routerLog("continuation", "rich visual payload applied", {
+        username: keyForUser(username),
+        question,
+        requestKey,
+        stageCount: mergedPayload?.stageCount || 0,
+      });
+    })
+    .catch((error) => {
+      routerError("continuation", "rich visual continuation failed", error);
+    });
 }
 
 alexaRouter.post("/tts", async (req, res) => {
@@ -109,43 +324,35 @@ alexaRouter.post("/tts", async (req, res) => {
     if (!text || typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "text is required" });
     }
+
     const audio = await generateSpeech(text.trim());
     return res.json({ audio });
   } catch (error) {
+    routerError("tts", "TTS failed", error);
     return res.status(500).json({ error: error.message || "TTS failed" });
   }
 });
 
-/**
- * Browser route used by the web/tablet client.
- * Returns quickly; screen updates arrive over WebSocket.
- */
 alexaRouter.post("/browser-query", async (req, res) => {
-  const username = String(req.body?.username || "amy").trim().toLowerCase();
+  const username = keyForUser(req.body?.username || "amy");
   const question = String(req.body?.question || "").trim();
-  if (!question) return res.status(400).json({ ok: false, error: "question is required" });
+
+  if (!question) {
+    return res.status(400).json({ ok: false, error: "question is required" });
+  }
 
   res.status(200).json({ ok: true });
 
+  emitToScreen(username, {
+    action: "status",
+    type: "loading",
+    message: "Building your chart...",
+  });
+
   try {
-    const built = await buildQnaPayload({
-      username,
-      question,
-      allowPlannerLLM: true,
-      fetchTimeoutMs: 4200,
-    });
-
-    qnaSession.set(username, {
-      payload: built.payload,
-      rawData: built.rawData,
-      userContext: built.userContext,
-      planner: built.planner,
-      updatedAt: Date.now(),
-    });
-
-    emitQnaPayload(username, built.payload);
+    await startRichBuild(username, question);
   } catch (error) {
-    console.error("browser-query failed:", error.message);
+    routerError("browser-query", "browser query failed", error);
     emitToScreen(username, {
       action: "status",
       type: "error",
@@ -154,16 +361,19 @@ alexaRouter.post("/browser-query", async (req, res) => {
   }
 });
 
-/**
- * Optional follow-up route.
- * Uses stored chart context and does not regenerate charts.
- */
 alexaRouter.post("/qna-follow-up", async (req, res) => {
-  const username = String(req.body?.username || "amy").trim().toLowerCase();
+  const username = keyForUser(req.body?.username || "amy");
   const question = String(req.body?.question || "").trim();
-  if (!question) return res.status(400).json({ error: "question is required", answer: "", suggestions: [] });
 
-  const session = qnaSession.get(username);
+  if (!question) {
+    return res.status(400).json({
+      answer: "",
+      suggestions: [],
+      error: "question is required",
+    });
+  }
+
+  const session = getSession(username);
   if (!session?.payload) {
     return res.status(200).json({
       answer: "I am still preparing the chart. Please check the screen in a moment.",
@@ -171,182 +381,239 @@ alexaRouter.post("/qna-follow-up", async (req, res) => {
     });
   }
 
-  const payload = session.payload;
-  const { stage } = getStageAtIndex(payload, payload.activeStageIndex || 0);
-  const chartSpec = stage?.chart_spec || payload.chart_spec || {};
+  try {
+    const result = await answerFollowupFromPayload({
+      payload: session.payload,
+      question,
+    });
 
-  const parsed = await callOpenAIJson({
-    systemPrompt: PHIA_QNA_CONFIG.followup.systemPrompt,
-    userPayload: {
-      chartTitle: chartSpec?.title || "Current chart",
-      chartTakeaway: chartSpec?.takeaway || payload?.voice_answer || "",
-      chartHighlight: chartSpec?.highlight || null,
-      chartContext: payload?.chart_context || null,
-      userQuestion: question,
-    },
-    model: PHIA_QNA_CONFIG.models.followup,
-    maxTokens: PHIA_QNA_CONFIG.followup.maxTokens,
-    temperature: PHIA_QNA_CONFIG.followup.temperature,
-    timeoutMs: 3000,
-  });
-
-  const answer = typeof parsed?.answer === "string" && parsed.answer.trim()
-    ? parsed.answer.trim()
-    : (stage?.voice_answer || payload?.voice_answer || "Here is what I can tell from your chart.");
-
-  const suggestions = Array.isArray(parsed?.suggestedQuestions) && parsed.suggestedQuestions.length
-    ? parsed.suggestedQuestions.slice(0, 4)
-    : (Array.isArray(chartSpec?.suggested_follow_up) && chartSpec.suggested_follow_up.length
-      ? chartSpec.suggested_follow_up.slice(0, 4)
-      : Array.isArray(payload?.suggested_follow_up)
-        ? payload.suggested_follow_up.slice(0, 4)
-        : []);
-
-  return res.status(200).json({ answer, suggestions });
+    return res.status(200).json({
+      answer: result.answer,
+      suggestions: result.suggestedQuestions,
+    });
+  } catch (error) {
+    routerError("followup", "follow-up answer failed", error);
+    return res.status(200).json({
+      answer: "Sorry, I had trouble answering that follow-up.",
+      suggestions: session?.payload?.suggested_follow_up || [],
+    });
+  }
 });
 
-/**
- * Alexa skill webhook.
- *
- * Voice response path remains quick; if chart build runs long,
- * Alexa still responds while the screen updates asynchronously.
- */
-alexaRouter.post("/", async (req, res) => {
-  const isAlexaRequest = req.body?.version && req.body?.request;
-  if (!isAlexaRequest) return res.status(400).json({ error: "Expected Alexa request payload." });
+async function handleQuestion(username, userInput, res) {
+  const question = String(userInput?.text || "").trim();
+  const voiceDeadlineMs = Math.max(
+    0,
+    Number(userInput?.voiceDeadlineMs) || DEFAULT_VOICE_DEADLINE_MS
+  );
 
-  const requestType = req.body.request.type;
-  if (requestType === "LaunchRequest") {
-    return res.status(200).json(makeAlexaResponse(
-      "Welcome to Health Data. Ask about your sleep, steps, heart rate, or calories.",
-      { shouldEndSession: false, repromptText: "For example: how did I sleep this week?" }
-    ));
+  if (!question) {
+    return res.status(200).json({
+      voice_answer: "What would you like to know about your health data?",
+      stageCount: 0,
+      activeStageIndex: 0,
+    });
   }
 
-  if (requestType !== "IntentRequest") {
-    return res.status(200).json(makeAlexaResponse("Sorry, I can only handle questions right now.", { shouldEndSession: true }));
+  const requestKey = makeRequestKey(username, question);
+
+  routerLog("question", "handling Alexa question", {
+    username,
+    question,
+    voiceDeadlineMs,
+    requestKey,
+  });
+
+  emitToScreen(username, {
+    action: "status",
+    type: "loading",
+    message: "Getting your health data...",
+  });
+
+  try {
+    const result = await answerQuestion({
+      username,
+      question,
+      voiceDeadlineMs,
+      allowFetchPlannerLLM: true,
+      allowPresenterLLM: true,
+      enableVisualContinuation: true,
+    });
+
+    // Push deterministic visuals to the screen immediately.
+    storeSession(
+      username,
+      {
+        payload: result.payload,
+        rawData: result.rawData,
+        userContext: result.userContext,
+        planner: result.planner,
+      },
+      { requestKey }
+    );
+
+    emitQnaPayload(username, result.payload, { action: "navigation" });
+
+    // Kick off async richer visuals if available.
+    attachVisualContinuation({
+      username,
+      question,
+      requestKey,
+      deterministicResult: result,
+    });
+
+    return res.status(200).json({
+      status: result.status,
+      voice_answer:
+        result.voiceAnswer ||
+        result.payload?.voice_answer ||
+        "Here is your summary.",
+      stageCount: result.payload?.stageCount || 1,
+      activeStageIndex: result.payload?.activeStageIndex || 0,
+      suggested_follow_up: result.payload?.suggested_follow_up || [],
+    });
+  } catch (error) {
+    routerError("question", "handleQuestion failed", error);
+    return res.status(200).json({
+      status: "complete",
+      voice_answer: "Sorry, I had trouble getting that. Please try again.",
+      stageCount: 0,
+      activeStageIndex: 0,
+      suggested_follow_up: [],
+    });
+  }
+}
+
+async function handleControl(username, userInput, res) {
+  const action = String(userInput?.action || "").toLowerCase();
+  const session = getSession(username);
+
+  routerLog("control", "handling control action", {
+    username,
+    action,
+    stageIndex: userInput?.stageIndex,
+  });
+
+  if (!session?.payload) {
+    return res.status(200).json({
+      voice_answer: "I do not have a chart loaded yet. Ask a health question first.",
+      stageCount: 0,
+      activeStageIndex: 0,
+    });
   }
 
-  const intentName = req.body.request.intent?.name || "";
-  const username = String(req.body.username || "amy").trim().toLowerCase();
-  const slots = req.body.request.intent?.slots || {};
-  const rawSlotValue = slots?.question?.value ? String(slots.question.value) : "";
-  let question = rawSlotValue.trim();
+  const payload = session.payload;
+  const { stages } = getActiveStage(payload);
 
-  if (question) {
-    if (intentName === "WhatIntent") question = `What ${question}`;
-    else if (intentName === "HowIntent") question = `How ${question}`;
-    else if (intentName === "WhenIntent") question = `When ${question}`;
-    else if (intentName === "WhyIntent") question = `Why ${question}`;
-    else if (intentName === "TellIntent") question = `Tell ${question}`;
-  }
+  if (action === "show_more" || action === "back") {
+    const currentIndex = Number(payload.activeStageIndex || 0);
+    const requestedIndex = Number(userInput?.stageIndex);
+    let nextIndex = currentIndex;
 
-  const stageCommand = detectStageCommand(intentName, question, rawSlotValue);
-  const session = qnaSession.get(username);
-
-  if (stageCommand === "done") {
-    qnaSession.delete(username);
-    emitToScreen(username, { action: "qnaEnd", reason: "user_done" });
-    return res.status(200).json(makeAlexaResponse("Done. Returning to your dashboard.", { shouldEndSession: true }));
-  }
-
-  if (session?.payload && ["next", "previous", "repeat"].includes(stageCommand)) {
-    const { stages } = getStageAtIndex(session.payload, session.payload.activeStageIndex || 0);
-    if (!stages.length) {
-      return res.status(200).json(makeAlexaResponse("I do not have another chart yet. Ask a new health question.", { shouldEndSession: false }));
+    if (Number.isFinite(requestedIndex)) {
+      nextIndex = Math.max(0, Math.min(requestedIndex, stages.length - 1));
+    } else if (action === "show_more") {
+      nextIndex = Math.min(currentIndex + 1, stages.length - 1);
+    } else {
+      nextIndex = Math.max(currentIndex - 1, 0);
     }
 
-    const current = Number.isFinite(Number(session.payload.activeStageIndex))
-      ? Number(session.payload.activeStageIndex)
-      : 0;
-
-    const nextIndex = stageCommand === "next"
-      ? clamp(current + 1, 0, stages.length - 1)
-      : stageCommand === "previous"
-        ? clamp(current - 1, 0, stages.length - 1)
-        : current;
-
-    session.payload.activeStageIndex = nextIndex;
+    payload.activeStageIndex = nextIndex;
     qnaSession.set(username, session);
 
-    const activeStage = stages[nextIndex];
+    const active = stages[nextIndex];
     emitToScreen(username, {
       action: "qnaStageSet",
       stageIndex: nextIndex,
-      cue: activeStage?.cue || activeStage?.chart_spec?.title || "",
-      speech: activeStage?.voice_answer || session.payload?.voice_answer || "",
-      data: session.payload,
+      cue: active?.cue || active?.chart_spec?.title || "",
+      speech: stageSpeech(active, payload),
+      data: payload,
     });
 
-    return res.status(200).json(makeAlexaResponse(
-      activeStage?.voice_answer || session.payload?.voice_answer || "Here is the chart.",
-      { shouldEndSession: false, repromptText: "You can say next, previous, or ask another question." }
-    ));
+    return res.status(200).json({
+      voice_answer: stageSpeech(active, payload),
+      stageCount: stages.length,
+      activeStageIndex: nextIndex,
+      status: "complete",
+    });
   }
 
-  if (!question) {
-    return res.status(200).json(makeAlexaResponse(
-      "What would you like to know about your health data?",
-      { shouldEndSession: false, repromptText: "For example: how did I sleep this week?" }
-    ));
+  if (action === "compare") {
+    const originalQuestion = payload?.question || "my health data";
+    const compareQuestion = /^compare\b/i.test(originalQuestion)
+      ? originalQuestion
+      : `compare ${originalQuestion}`;
+
+    const built = await buildRichQnaPayload({
+      username,
+      question: compareQuestion,
+      allowFetchPlannerLLM: true,
+      allowPresenterLLM: true,
+      presentTimeoutMs: RICH_FAILSAFE_MS,
+    });
+
+    storeSession(username, built, {
+      requestKey: makeRequestKey(username, compareQuestion),
+    });
+    emitQnaPayload(username, built.payload, { action: "navigation" });
+
+    return res.status(200).json({
+      voice_answer: built.payload.voice_answer,
+      stageCount: built.payload.stageCount || 1,
+      activeStageIndex: 0,
+      status: "complete",
+    });
   }
 
-  const buildPromise = buildQnaPayload({
+  if (action === "explain") {
+    const result = await answerFollowupFromPayload({
+      payload,
+      question: "Explain this chart in plain language.",
+    });
+
+    return res.status(200).json({
+      voice_answer: result.answer,
+      stageCount: stages.length,
+      activeStageIndex: payload.activeStageIndex || 0,
+      status: "complete",
+    });
+  }
+
+  return res.status(400).json({
+    error: `Unknown control action: ${action}`,
+  });
+}
+
+alexaRouter.get("/back", (req, res) => {
+  const username = keyForUser(req.query?.username || "amy");
+  qnaSession.delete(username);
+
+  emitToScreen(username, {
+    action: "qnaEnd",
+    reason: "user_done",
+  });
+
+  routerLog("session", "session cleared", { username });
+
+  return res.status(200).json({ ok: true });
+});
+
+alexaRouter.post("/", async (req, res) => {
+  const username = keyForUser(req.body?.username || "amy");
+  const userInput = req.body?.userInput || {};
+  const type = String(userInput?.type || "").toLowerCase();
+
+  routerLog("entry", "incoming Alexa router request", {
     username,
-    question,
-    allowPlannerLLM: false,
-    fetchTimeoutMs: 2600,
+    type,
   });
 
-  const timeoutPromise = new Promise((resolve) => {
-    setTimeout(() => resolve({ _timeout: true }), INTERNAL_CUTOFF_MS);
+  if (type === "question") return handleQuestion(username, userInput, res);
+  if (type === "control") return handleControl(username, userInput, res);
+
+  return res.status(400).json({
+    error: "userInput.type must be 'question' or 'control'",
   });
-
-  const result = await Promise.race([buildPromise, timeoutPromise]);
-
-  if (result && result._timeout) {
-    buildPromise
-      .then((built) => {
-        qnaSession.set(username, {
-          payload: built.payload,
-          rawData: built.rawData,
-          userContext: built.userContext,
-          planner: built.planner,
-          updatedAt: Date.now(),
-        });
-        emitQnaPayload(username, built.payload);
-      })
-      .catch((error) => console.error("Background QnA build failed:", error.message));
-
-    return res.status(200).json(makeAlexaResponse(
-      "Okay. I am building that chart now. Please check your screen in a few seconds.",
-      { shouldEndSession: false, repromptText: "You can ask another question, or say next when the chart appears." }
-    ));
-  }
-
-  try {
-    const built = result;
-    qnaSession.set(username, {
-      payload: built.payload,
-      rawData: built.rawData,
-      userContext: built.userContext,
-      planner: built.planner,
-      updatedAt: Date.now(),
-    });
-
-    emitQnaPayload(username, built.payload);
-
-    return res.status(200).json(makeAlexaResponse(
-      built.payload?.voice_answer || "Here is your chart.",
-      { shouldEndSession: false, repromptText: "You can say next, previous, or ask another question." }
-    ));
-  } catch (error) {
-    console.error("Alexa QnA handler failed:", error.message);
-    return res.status(200).json(makeAlexaResponse(
-      "Sorry, I could not load that right now. Please try a simpler question.",
-      { shouldEndSession: false, repromptText: "Try: how did I sleep this week?" }
-    ));
-  }
 });
 
 module.exports = alexaRouter;

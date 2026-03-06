@@ -621,33 +621,16 @@
   font-weight: 700;
 }
 
-.ss-trends-chart {
-  width: 100%;
-  height: auto;
+.ss-trends-echart-wrap {
   margin-top: 10px;
+  min-height: 300px;
+  height: 300px;
 }
 
-.ss-trends-chart-line {
-  fill: none;
-  stroke: #5a8ad5;
-  stroke-width: 5;
-}
-
-.ss-trends-chart-dot {
-  fill: #5a8ad5;
-}
-
-.ss-trends-x-axis {
-  margin-top: 4px;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(24px, 1fr));
-  gap: 4px;
-  font-size: 20px;
-  color: #5b6f91;
-}
-
-.ss-trends-x-axis span {
-  text-align: center;
+.ss-trends-echart-wrap .hd-echart-wrap,
+.ss-trends-echart-wrap .hd-echart {
+  width: 100%;
+  height: 100%;
 }
 
 .ss-trends-stats {

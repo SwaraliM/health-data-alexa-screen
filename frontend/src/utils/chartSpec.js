@@ -89,6 +89,9 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
   const xAxisInput = Array.isArray(rawOption.xAxis) ? rawOption.xAxis[0] : rawOption.xAxis || {};
   const yAxisInput = Array.isArray(rawOption.yAxis) ? rawOption.yAxis[0] : rawOption.yAxis || {};
   const labels = sanitizeStringArray(xAxisInput.data || xAxisInput.labels || [], MAX_POINTS, 22);
+  const optionColors = Array.isArray(rawOption.color)
+    ? rawOption.color.filter((value) => typeof value === "string" && value.trim()).slice(0, MAX_SERIES)
+    : [];
 
   const desiredSeriesType = chartType === "line" ? "line" : "bar";
   const rawSeries = Array.isArray(rawOption.series) ? rawOption.series.slice(0, MAX_SERIES) : [];
@@ -101,6 +104,15 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
         type: desiredSeriesType,
         name: sanitizeText(seriesItem?.name, 24, `Series ${idx + 1}`),
         data,
+        itemStyle: seriesItem?.itemStyle && typeof seriesItem.itemStyle === "object"
+          ? { ...seriesItem.itemStyle }
+          : undefined,
+        label: seriesItem?.label && typeof seriesItem.label === "object"
+          ? { ...seriesItem.label }
+          : undefined,
+        markLine: seriesItem?.markLine && typeof seriesItem.markLine === "object"
+          ? { ...seriesItem.markLine }
+          : undefined,
       };
     })
     .filter(Boolean);
@@ -130,6 +142,7 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
     : seriesCut.slice(0, 1);
 
   return {
+    color: optionColors.length ? optionColors : undefined,
     tooltip: { trigger: "axis" },
     legend: limitedSeries.length > 1 ? { top: 8 } : undefined,
     xAxis: { type: "category", data: labelsCut },

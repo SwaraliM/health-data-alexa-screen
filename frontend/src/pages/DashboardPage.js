@@ -46,6 +46,56 @@ const getWeekdayLabel = (dateStr) => {
   return ["S", "M", "T", "W", "Th", "F", "S"][weekday];
 };
 
+const roundTo = (value, decimals = 0) => {
+  const factor = 10 ** decimals;
+  return Math.round((Number(value) || 0) * factor) / factor;
+};
+
+const formatRangeLabel = (startDateStr, endDateStr) => {
+  const start = new Date(`${startDateStr}T00:00:00`);
+  const end = new Date(`${endDateStr}T00:00:00`);
+  const startMonth = start.toLocaleString("en-US", { month: "short" });
+  const endMonth = end.toLocaleString("en-US", { month: "short" });
+
+  if (startMonth === endMonth) return `${startMonth} ${start.getDate()}-${end.getDate()}`;
+  return `${startMonth} ${start.getDate()}-${endMonth} ${end.getDate()}`;
+};
+
+const buildDailyTrend = (entries = [], { count = 7, labelFormatter, precision = 0 } = {}) => {
+  const clipped = Array.isArray(entries) ? entries.slice(-count) : [];
+  return {
+    labels: clipped.map((entry) => labelFormatter(entry.date)),
+    points: clipped.map((entry) => roundTo(entry.value, precision)),
+    precision,
+  };
+};
+
+const buildMonthlyBucketTrend = (entries = [], { bucketCount = 4, precision = 0 } = {}) => {
+  const clipped = Array.isArray(entries) ? entries.slice(-30) : [];
+  if (!clipped.length) return { labels: [], points: [], precision };
+
+  const totalBuckets = Math.min(bucketCount, clipped.length);
+  const baseSize = Math.floor(clipped.length / totalBuckets);
+  const remainder = clipped.length % totalBuckets;
+
+  const labels = [];
+  const points = [];
+  let cursor = 0;
+
+  for (let idx = 0; idx < totalBuckets; idx += 1) {
+    const size = baseSize + (idx < remainder ? 1 : 0);
+    const bucket = clipped.slice(cursor, cursor + size);
+    cursor += size;
+    if (!bucket.length) continue;
+
+    const avg = bucket.reduce((sum, entry) => sum + entry.value, 0) / bucket.length;
+    labels.push(formatRangeLabel(bucket[0].date, bucket[bucket.length - 1].date));
+    points.push(roundTo(avg, precision));
+  }
+
+  return { labels, points, precision };
+};
+
 const statusFor = (value, goalValue, hasData = true) => {
   if (!hasData || goalValue <= 0) return { status: "no_data", tone: "no-data" };
   const ratio = value / goalValue;
@@ -87,8 +137,6 @@ const DashboardPage = () => {
   const [activeTrendTab, setActiveTrendTab] = useState("steps");
   const [trendTimeframe, setTrendTimeframe] = useState("week");
   const [actionLoadingById, setActionLoadingById] = useState({});
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiAnswer, setAiAnswer] = useState(null);
 
   const date = getCurrentDate();
   const { startDate: weekStartDate, endDate } = useMemo(() => getDateRange(date, 6), [date]);
@@ -258,12 +306,17 @@ const DashboardPage = () => {
     return baseCategories;
   }, [reminderCategoryCounts]);
 
-  const getPointsFromSeries = (series = [], key = "value", count = 7) => {
-    const clipped = Array.isArray(series) ? series.slice(-count) : [];
-    return clipped.map((entry) => Number(entry?.[key]) || 0);
+  const getStepSeries = (series = [], key = "value") => {
+    if (!Array.isArray(series)) return [];
+    return series
+      .map((entry) => ({
+        date: entry?.dateTime,
+        value: Number(entry?.[key]) || 0,
+      }))
+      .filter((entry) => entry.date);
   };
 
-  const getSleepPoints = (sleepRangeRes, count = 7) => {
+  const getSleepSeries = (sleepRangeRes) => {
     const logs = Array.isArray(sleepRangeRes?.sleep) ? sleepRangeRes.sleep : [];
     const byDate = {};
     logs.forEach((entry) => {
@@ -274,78 +327,121 @@ const DashboardPage = () => {
         byDate[dateKey] = entry;
       }
     });
-    const dates = Object.keys(byDate).sort().slice(-count);
-    return {
-      labels: dates.map(getWeekdayLabel),
-      points: dates.map((dateKey) => Math.round((byDate[dateKey]?.minutesAsleep || 0) / 60)),
-    };
+    return Object.keys(byDate)
+      .sort()
+      .map((dateKey) => ({
+        date: dateKey,
+        value: roundTo((byDate[dateKey]?.minutesAsleep || 0) / 60, 1),
+      }));
   };
 
   const weeklyStepSeries = Array.isArray(weeklySteps?.["activities-steps"]) ? weeklySteps["activities-steps"] : [];
   const monthlyStepSeries = Array.isArray(monthlySteps?.["activities-steps"]) ? monthlySteps["activities-steps"] : [];
 
-  const weekSleep = getSleepPoints(weeklySleep, 7);
-  const monthSleep = getSleepPoints(monthlySleep, 30);
+  const weeklyStepEntries = getStepSeries(weeklyStepSeries);
+  const monthlyStepEntries = getStepSeries(monthlyStepSeries);
+  const weeklySleepEntries = getSleepSeries(weeklySleep);
+  const monthlySleepEntries = getSleepSeries(monthlySleep);
+
+  const weeklyStepsTrend = buildDailyTrend(weeklyStepEntries, { count: 7, labelFormatter: getWeekdayLabel });
+  const weeklySleepTrend = buildDailyTrend(weeklySleepEntries, { count: 7, labelFormatter: getWeekdayLabel, precision: 1 });
+  const weeklyRoutineTrend = buildDailyTrend(
+    weeklyStepEntries.map((entry) => ({
+      ...entry,
+      value: Math.min(100, roundTo((entry.value / Math.max(stepGoal, 1)) * 100)),
+    })),
+    { count: 7, labelFormatter: getWeekdayLabel }
+  );
+  const weeklyActivityTrend = buildDailyTrend(
+    weeklyStepEntries.map((entry) => ({
+      ...entry,
+      value: roundTo(entry.value / 100),
+    })),
+    { count: 7, labelFormatter: getWeekdayLabel }
+  );
+
+  const monthlyStepsTrend = buildMonthlyBucketTrend(monthlyStepEntries);
+  const monthlySleepTrend = buildMonthlyBucketTrend(monthlySleepEntries, { precision: 1 });
+  const monthlyRoutineTrend = buildMonthlyBucketTrend(
+    monthlyStepEntries.map((entry) => ({
+      ...entry,
+      value: Math.min(100, roundTo((entry.value / Math.max(stepGoal, 1)) * 100)),
+    }))
+  );
+  const monthlyActivityTrend = buildMonthlyBucketTrend(
+    monthlyStepEntries.map((entry) => ({
+      ...entry,
+      value: roundTo(entry.value / 100),
+    }))
+  );
 
   const weeklyTrendData = {
     steps: {
       key: "steps",
-      labels: weeklyStepSeries.slice(-7).map((d) => getWeekdayLabel(d.dateTime)),
-      points: getPointsFromSeries(weeklyStepSeries, "value", 7),
+      labels: weeklyStepsTrend.labels,
+      points: weeklyStepsTrend.points,
       goal: stepGoal,
       unit: "steps",
+      precision: weeklyStepsTrend.precision,
     },
     sleep: {
       key: "sleep",
-      labels: weekSleep.labels,
-      points: weekSleep.points,
+      labels: weeklySleepTrend.labels,
+      points: weeklySleepTrend.points,
       goal: 7,
       unit: "hrs",
+      precision: weeklySleepTrend.precision,
     },
     routine: {
       key: "routine",
-      labels: weeklyStepSeries.slice(-7).map((d) => getWeekdayLabel(d.dateTime)),
-      points: getPointsFromSeries(weeklyStepSeries, "value", 7).map((value) => Math.min(100, Math.round((value / Math.max(stepGoal, 1)) * 100))),
+      labels: weeklyRoutineTrend.labels,
+      points: weeklyRoutineTrend.points,
       goal: 80,
       unit: "%",
+      precision: weeklyRoutineTrend.precision,
     },
     activity: {
       key: "activity",
-      labels: weeklyStepSeries.slice(-7).map((d) => getWeekdayLabel(d.dateTime)),
-      points: getPointsFromSeries(weeklyStepSeries, "value", 7).map((value) => Math.round(value / 100)),
+      labels: weeklyActivityTrend.labels,
+      points: weeklyActivityTrend.points,
       goal: Math.round(stepGoal / 100),
       unit: "score",
+      precision: weeklyActivityTrend.precision,
     },
   };
 
   const monthlyTrendData = {
     steps: {
       key: "steps",
-      labels: monthlyStepSeries.slice(-30).map((d, idx) => (idx % 5 === 0 ? String(new Date(`${d.dateTime}T00:00:00`).getDate()) : "")),
-      points: getPointsFromSeries(monthlyStepSeries, "value", 30),
+      labels: monthlyStepsTrend.labels,
+      points: monthlyStepsTrend.points,
       goal: stepGoal,
       unit: "steps",
+      precision: monthlyStepsTrend.precision,
     },
     sleep: {
       key: "sleep",
-      labels: monthSleep.labels.map((label, idx) => (idx % 5 === 0 ? label : "")),
-      points: monthSleep.points,
+      labels: monthlySleepTrend.labels,
+      points: monthlySleepTrend.points,
       goal: 7,
       unit: "hrs",
+      precision: monthlySleepTrend.precision,
     },
     routine: {
       key: "routine",
-      labels: monthlyStepSeries.slice(-30).map((d, idx) => (idx % 5 === 0 ? String(new Date(`${d.dateTime}T00:00:00`).getDate()) : "")),
-      points: getPointsFromSeries(monthlyStepSeries, "value", 30).map((value) => Math.min(100, Math.round((value / Math.max(stepGoal, 1)) * 100))),
+      labels: monthlyRoutineTrend.labels,
+      points: monthlyRoutineTrend.points,
       goal: 80,
       unit: "%",
+      precision: monthlyRoutineTrend.precision,
     },
     activity: {
       key: "activity",
-      labels: monthlyStepSeries.slice(-30).map((d, idx) => (idx % 5 === 0 ? String(new Date(`${d.dateTime}T00:00:00`).getDate()) : "")),
-      points: getPointsFromSeries(monthlyStepSeries, "value", 30).map((value) => Math.round(value / 100)),
+      labels: monthlyActivityTrend.labels,
+      points: monthlyActivityTrend.points,
       goal: Math.round(stepGoal / 100),
       unit: "score",
+      precision: monthlyActivityTrend.precision,
     },
   };
 
@@ -407,47 +503,6 @@ const DashboardPage = () => {
       setActionLoading(item.id, false);
     }
   };
-
-  const handleAskTrendsAi = async (question) => {
-    const selected = trendData[activeTrendTab] || { points: [], labels: [] };
-    setAiLoading(true);
-    try {
-      const response = await fetch(`${baseUrl}/api/ai/trends-explain`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          metricType: activeTrendTab,
-          timeframe: trendTimeframe,
-          aggregatedDataPoints: selected.points.map((value, idx) => ({
-            label: selected.labels[idx] || String(idx + 1),
-            value,
-          })),
-          userQuestion: question,
-        }),
-      });
-      const data = await response.json();
-      setAiAnswer({
-        answer: data?.answer || "I can explain this trend after more data is available.",
-        confidence: data?.confidence || "Moderate",
-        notes: data?.notes || "Based on available dashboard trend data.",
-      });
-    } catch (error) {
-      setAiAnswer({
-        answer: "I could not analyze this trend right now.",
-        confidence: "Low",
-        notes: "Please try again in a moment.",
-      });
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!weeklyOpen) {
-      setAiAnswer(null);
-      setAiLoading(false);
-    }
-  }, [weeklyOpen]);
 
   if (loading && !summary && !sleepData) {
     return (
@@ -541,9 +596,6 @@ const DashboardPage = () => {
         onTimeframeChange={setTrendTimeframe}
         chartData={trendData}
         onClose={() => setWeeklyOpen(false)}
-        onAskAi={handleAskTrendsAi}
-        aiLoading={aiLoading}
-        aiAnswer={aiAnswer}
       />
     </SmartScreenShell>
   );

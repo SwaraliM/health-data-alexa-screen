@@ -32,6 +32,35 @@ const extractStage = (payload, rawIndex = null) => {
   return { stage: stages[idx], index: idx };
 };
 
+const playReadyChime = () => {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.05, now + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+    gain.connect(ctx.destination);
+
+    [784, 1047].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+      osc.connect(gain);
+      osc.start(now + idx * 0.08);
+      osc.stop(now + idx * 0.08 + 0.14);
+    });
+
+    setTimeout(() => {
+      ctx.close().catch(() => {});
+    }, 650);
+  } catch (_) {
+    // no-op: chime is optional
+  }
+};
+
 const QnAPage = () => {
   const [time, setTime] = useState(getCurrentTime());
   const [chartSpec, setChartSpec] = useState(null);
@@ -47,6 +76,7 @@ const QnAPage = () => {
   const [busy, setBusy] = useState(false);
   const [chartLoading, setChartLoading] = useState(false);
   const [loadingPhase, setLoadingPhase] = useState(0);
+  const [statusNotice, setStatusNotice] = useState(null);
   const [listening, setListening] = useState(false);
   const [voiceOk, setVoiceOk] = useState(false);
   const [showKeyboard, setShowKeyboard] = useState(false);
@@ -56,6 +86,8 @@ const QnAPage = () => {
   const loadingTimerRef = useRef(null);
   const loadingTimeoutRef = useRef(null);
   const enrichTimerRef = useRef(null);
+  const statusTimerRef = useRef(null);
+  const readyChimedForAskRef = useRef(false);
 
   const username = localStorage.getItem("username") || "amy";
 
@@ -78,6 +110,58 @@ const QnAPage = () => {
   }, []);
 
   useEffect(() => () => clearLoadingTimers(), []);
+
+  useEffect(() => {
+    const onStatusUpdate = (event) => {
+      const detail = event?.detail || {};
+      const type = String(detail?.type || "").toLowerCase();
+      const message = String(detail?.message || "").trim();
+
+      if (type === "loading") {
+        setStatusNotice(null);
+        readyChimedForAskRef.current = false;
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = null;
+        return;
+      }
+
+      if (type === "completed") {
+        setStatusNotice({
+          type: "completed",
+          message: message || "Your answer is ready.",
+        });
+        if (!readyChimedForAskRef.current) {
+          readyChimedForAskRef.current = true;
+          playReadyChime();
+        }
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => {
+          setStatusNotice(null);
+          statusTimerRef.current = null;
+        }, 5000);
+        return;
+      }
+
+      if (type === "error") {
+        setStatusNotice({
+          type: "error",
+          message: message || "I could not complete that request.",
+        });
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => {
+          setStatusNotice(null);
+          statusTimerRef.current = null;
+        }, 5000);
+      }
+    };
+
+    window.addEventListener("visualStatusUpdate", onStatusUpdate);
+    return () => {
+      window.removeEventListener("visualStatusUpdate", onStatusUpdate);
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = null;
+    };
+  }, []);
 
   const applyQnaPayload = useCallback((payload, stageIndexOverride = null, injectedSpeech = "") => {
     if (!payload || typeof payload !== "object") return;
@@ -161,6 +245,8 @@ const QnAPage = () => {
     setBusy(true);
     setInput("");
     setRecentQuestion(q);
+    setStatusNotice(null);
+    readyChimedForAskRef.current = false;
 
     chartReceivedForAskRef.current = false;
     setChartLoading(true);
@@ -246,6 +332,12 @@ const QnAPage = () => {
 
       <main className="hd-main-grid" aria-label="Chart-first health QnA">
         <section className="hd-left-column" aria-label="Chart and summary">
+          {statusNotice ? (
+            <div className={`hd-ready-banner ${statusNotice.type || ""}`} role="status" aria-live="polite">
+              {statusNotice.message}
+            </div>
+          ) : null}
+
           <section className="hd-chart-panel" aria-label="Health chart">
             <div className="hd-chart-head">
               <FiBarChart2 className="hd-chart-icon" aria-hidden="true" />
