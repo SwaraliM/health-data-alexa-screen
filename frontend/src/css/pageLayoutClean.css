@@ -1,6 +1,6 @@
 .page-layout-clean {
-    width: min(1500px, calc(100vw - 24px));
-    min-height: min(850px, calc(100vh - 24px));
+    width: min(2000px, calc(100vw - 24px));
+    min-height: min(1200px, calc(100vh - 24px));
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 248, 255, 0.96)),
       url(../../public/welcomeBackground.jpg);

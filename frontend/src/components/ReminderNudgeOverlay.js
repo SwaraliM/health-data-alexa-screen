@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import '../css/reminderNudgeOverlay.css';
+import ReminderVisual from './ReminderVisual';
 
 const getBaseUrl = () => {
   const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -155,6 +156,7 @@ const ReminderNudgeOverlay = () => {
   const isMedication = reminder && (reminder.category === 'medication' || reminder.medication);
   const isMovement = reminder?.category === 'movement' || reminder?.action === 'nudge';
   const isCustom = reminder && !isMedication && !isMovement;
+  const isHydrationReminder = reminder && (reminder.category === 'hydration' || reminder.visualKey === 'hydration');
 
   if (!reminder && !nudge && !moodPrompt) {
     return null;
@@ -172,9 +174,17 @@ const ReminderNudgeOverlay = () => {
           >
             ×
           </button>
-          <div className="reminder-header">
-            <span className="reminder-icon">💊</span>
-            <h2>Medication Reminder</h2>
+          <div className="reminder-header reminder-header-visual">
+            <ReminderVisual
+              visualKey="pill"
+              pillVisual={reminder.pillVisual || { iconKey: reminder.medication?.form || 'tablet' }}
+              medicationName={reminder.medication?.name || reminder.title || 'Medication'}
+              size="large"
+            />
+            <div>
+              <h2>Medication Reminder</h2>
+              <p className="reminder-hero-caption">Take this exact pill now</p>
+            </div>
           </div>
           <div className="reminder-content">
             <p className="reminder-medication-name">{reminder.medication?.name || reminder.title || 'General reminder'}</p>
@@ -220,9 +230,19 @@ const ReminderNudgeOverlay = () => {
           >
             ×
           </button>
-          <div className="reminder-header">
-            <span className="reminder-icon">🔔</span>
-            <h2>Reminder</h2>
+          <div className="reminder-header reminder-header-visual">
+            <ReminderVisual
+              visualKey={isHydrationReminder ? 'hydration' : (reminder.visualKey || 'bell')}
+              pillVisual={reminder.pillVisual}
+              medicationName={reminder.title || 'Reminder'}
+              size="large"
+            />
+            <div>
+              <h2>{isHydrationReminder ? 'Hydration Reminder' : 'Reminder'}</h2>
+              <p className="reminder-hero-caption">
+                {isHydrationReminder ? 'Drink a glass of water' : 'Scheduled reminder'}
+              </p>
+            </div>
           </div>
           <div className="reminder-content">
             <p className="reminder-medication-name">{reminder.title || 'General reminder'}</p>

@@ -1,6 +1,10 @@
 let socket = null;
 let droppedMalformedWsCount = 0;
 
+function normalizeUsername(username) {
+  return String(username || "").trim().toLowerCase();
+}
+
 function safeJsonParse(value, fallback = null) {
   if (value == null) return fallback;
   if (typeof value === "object") return value;
@@ -19,10 +23,24 @@ function getSafeQnaData() {
 function connectWebSocket(username, navigate) {
   if (socket) return;
 
-  socket = new WebSocket(process.env.REACT_APP_BACKEND_URL);
+  const normalizedUsername = normalizeUsername(username);
+  const websocketUrl = process.env.REACT_APP_BACKEND_URL;
+  console.log("[frontend websocket] connecting", {
+    websocketUrl,
+    username: normalizedUsername,
+  });
+
+  socket = new WebSocket(websocketUrl);
 
   socket.onopen = () => {
-    socket.send(JSON.stringify({ username }));
+    console.log("[frontend websocket] connected", {
+      websocketUrl,
+      username: normalizedUsername,
+    });
+    socket.send(JSON.stringify({ username: normalizedUsername }));
+    console.log("[frontend websocket] sent registration", {
+      username: normalizedUsername,
+    });
   };
 
   socket.onmessage = (event) => {
@@ -32,12 +50,22 @@ function connectWebSocket(username, navigate) {
       console.warn(`WebSocket - dropped malformed message. count=${droppedMalformedWsCount}`);
       return;
     }
+    if (data.action === "navigation") {
+      console.log("[frontend websocket] received navigation", {
+        option: data.option,
+        username: normalizedUsername,
+        hasData: data.data != null,
+      });
+    }
     handleWebSocketCommand(data, navigate);
   };
 
   socket.onclose = () => {
+    console.warn("[frontend websocket] closed", {
+      username: normalizedUsername,
+    });
     socket = null;
-    setTimeout(() => connectWebSocket(username, navigate), 750);
+    setTimeout(() => connectWebSocket(normalizedUsername, navigate), 750);
   };
 
   socket.onerror = (error) => {
@@ -46,7 +74,7 @@ function connectWebSocket(username, navigate) {
 }
 
 function handleWebSocketCommand(data, navigate) {
-  const username = localStorage.getItem("username") || "amy";
+  const username = normalizeUsername(localStorage.getItem("username") || "amy");
 
   if (data.action === "navigation") {
     const option = data.option;

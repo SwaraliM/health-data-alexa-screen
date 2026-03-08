@@ -1,6 +1,7 @@
 import React from "react";
 import { FiAlertCircle, FiNavigation, FiPackage, FiUser, FiBell, FiDroplet, FiHeart, FiActivity } from "react-icons/fi";
-import { FaPills, FaUserMd } from "react-icons/fa";
+import { FaUserMd } from "react-icons/fa";
+import ReminderVisual from "../ReminderVisual";
 
 const ReminderBanner = ({
   type = "medication",
@@ -17,23 +18,15 @@ const ReminderBanner = ({
   customDetail = "",
   pillVisual = { iconKey: "tablet" },
   visualKey = "bell",
+  customCategory = "custom",
 }) => {
   const greeting = userName ? `Hi ${userName}!` : "Hi!";
-  const pillIcon = pillVisual?.iconKey === "capsule"
-    ? "💊"
-    : pillVisual?.iconKey === "syrup"
-      ? "🧴"
-      : pillVisual?.iconKey === "injection"
-        ? "💉"
-        : pillVisual?.iconKey === "other"
-          ? "🩺"
-          : "💊";
   const renderHeroVisual = () => {
     const key = visualKey || (type === "medication" ? "pill" : type === "movement" ? "activity" : "bell");
-    if (key === "pill") return <FaPills aria-hidden="true" />;
+    if (key === "pill") return <ReminderVisual visualKey="pill" pillVisual={pillVisual} medicationName={medications?.[0]?.name || "Medication"} />;
     if (key === "doctor") return <FaUserMd aria-hidden="true" />;
     if (key === "activity") return <FiActivity aria-hidden="true" />;
-    if (key === "hydration") return <FiDroplet aria-hidden="true" />;
+    if (key === "hydration") return <ReminderVisual visualKey="hydration" />;
     if (key === "sleep") return <FiHeart aria-hidden="true" />;
     return <FiBell aria-hidden="true" />;
   };
@@ -73,8 +66,9 @@ const ReminderBanner = ({
   }
 
   if (type === "custom") {
+    const isHydration = customCategory === "hydration" || visualKey === "hydration";
     return (
-      <section className="ss-card ss-reminder-card" aria-label="Custom reminder">
+      <section className="ss-card ss-reminder-card" aria-label={isHydration ? "Hydration reminder" : "Custom reminder"}>
         <header className="ss-reminder-top">
           <p>{timeText}</p>
           <h1>Reminder</h1>
@@ -87,12 +81,12 @@ const ReminderBanner = ({
             {renderHeroVisual()}
           </div>
           <h2>
-            <FiBell aria-hidden="true" /> {customTitle}
+            {isHydration ? <FiDroplet aria-hidden="true" /> : <FiBell aria-hidden="true" />} {customTitle}
           </h2>
           {customDetail ? <p>{customDetail}</p> : null}
           <div className="ss-reminder-meta">
             <span>Schedule: {dueTime}</span>
-            <span><FiDroplet aria-hidden="true" /> Keep hydrated</span>
+            {isHydration ? <span><FiDroplet aria-hidden="true" /> Drink a glass of water</span> : <span><FiDroplet aria-hidden="true" /> Keep hydrated</span>}
           </div>
         </div>
         <div className="ss-inline-actions">
@@ -126,8 +120,8 @@ const ReminderBanner = ({
         <h2>
           <FiAlertCircle aria-hidden="true" /> Time to take your medication!
         </h2>
-        <p className="ss-pill-visual" aria-label="Medication form">
-          <span aria-hidden="true">{pillIcon}</span> Form: {pillVisual?.iconKey || "tablet"}
+        <p className="ss-pill-visual" aria-label={`Medication form ${pillVisual?.iconKey || "tablet"}`}>
+          Exact pill: {pillVisual?.iconKey || "tablet"}
         </p>
         <p>You have {medications.length || 0} pill{(medications.length || 0) !== 1 ? "s" : ""} scheduled now.</p>
         <div className="ss-reminder-meta">

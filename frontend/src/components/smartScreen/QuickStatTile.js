@@ -1,5 +1,5 @@
 import React from "react";
-import { FiAlertCircle, FiCheckCircle, FiMinusCircle, FiPauseCircle } from "react-icons/fi";
+import { FiAlertCircle, FiCheckCircle, FiChevronRight, FiMinusCircle, FiPauseCircle } from "react-icons/fi";
 
 const STATUS_COPY = {
   on_track: "On track",
@@ -23,11 +23,20 @@ const QuickStatTile = ({
   unit,
   status = "no_data",
   progressTone = "no-data",
+  caption,
+  onOpen,
 }) => {
   const clampedProgress = Math.min(100, Math.max(0, Number(progressPercent) || 0));
-  return (
-    <article className="ss-card ss-tile" aria-label={`${title} quick stat`}>
-      <h3>{title}</h3>
+  const content = (
+    <>
+      <div className="ss-tile-topline">
+        <h3>{title}</h3>
+        {onOpen ? (
+          <span className="ss-tile-open-hint" aria-hidden="true">
+            <FiChevronRight />
+          </span>
+        ) : null}
+      </div>
       <p className="ss-tile-value">
         {value}
         {unit ? <span className="ss-tile-unit"> {unit}</span> : null}
@@ -43,6 +52,21 @@ const QuickStatTile = ({
       >
         <span className="ss-progress-fill" style={{ width: `${clampedProgress}%` }} />
       </div>
+      {caption ? <p className="ss-tile-caption">{caption}</p> : null}
+    </>
+  );
+
+  if (onOpen) {
+    return (
+      <button type="button" className="ss-card ss-tile ss-tile-button" aria-label={`Open ${title} details`} onClick={onOpen}>
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <article className="ss-card ss-tile" aria-label={`${title} quick stat`}>
+      {content}
     </article>
   );
 };

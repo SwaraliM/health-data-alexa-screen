@@ -5,7 +5,6 @@ const InsightCard = ({
   sleepText = "6h 12m",
   activityText = "Moderate",
   suggestionText = "light cardio + hydrate",
-  onAskAi,
 }) => {
   return (
     <section className="ss-card ss-insight-card" aria-label="Today's insight">
@@ -20,9 +19,6 @@ const InsightCard = ({
           <p className="ss-suggestion-pill" aria-label={`Suggestion ${suggestionText}`}>
             Suggestion: {suggestionText}
           </p>
-          <button type="button" className="ss-btn ss-btn-secondary ss-btn-chip" onClick={onAskAi}>
-            Ask AI
-          </button>
         </div>
       </div>
     </section>

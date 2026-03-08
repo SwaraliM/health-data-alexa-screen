@@ -73,6 +73,11 @@
   margin-bottom: 24px;
 }
 
+.reminder-header-visual {
+  align-items: flex-start;
+  gap: 18px;
+}
+
 .reminder-icon,
 .nudge-icon,
 .mood-icon {
@@ -86,6 +91,12 @@
   font-size: 24px;
   font-weight: 700;
   color: #333;
+}
+
+.reminder-hero-caption {
+  margin: 8px 0 0;
+  font-size: 15px;
+  color: #667085;
 }
 
 .reminder-content,
@@ -312,4 +323,3 @@
     width: 100%;
   }
 }
-

@@ -9,7 +9,7 @@ const AuthCallback = () => {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const authCode = urlParams.get("code");
-    const username = localStorage.getItem("username");
+    const username = (localStorage.getItem("username") || "").trim().toLowerCase();
 
     // get Access Token with authcode
     const fetchToken = async (code) => {
@@ -37,7 +37,7 @@ const AuthCallback = () => {
           body: new URLSearchParams({
             client_id: clientId,
             grant_type: "authorization_code",
-            redirect_uri: "http://localhost:5001/auth-callback",
+            redirect_uri: "https://noncryptical-weston-entomophagous.ngrok-free.dev/auth-callback",
             code: code,
           }),
         });
@@ -53,15 +53,16 @@ const AuthCallback = () => {
         const { access_token, refresh_token, expires_in } = data;
 
         //save token
+        const apiBase = process.env.REACT_APP_FETCH_DATA_URL || window.location.origin;
         const saveTokenResponse = await fetch(
-          "http://localhost:5001/api/login/save-token",
+          `${apiBase.replace(/\/$/, "")}/api/login/save-token`,
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              username: username,
+              username: username || undefined,
               accessToken: access_token,
               refreshToken: refresh_token,
               tokenExpiry: expires_in,
@@ -82,10 +83,15 @@ const AuthCallback = () => {
       }
     };
 
+    if (!username) {
+      alert("Please log in first, then connect Fitbit.");
+      navigate("/");
+      return;
+    }
     if (authCode) {
       fetchToken(authCode);
     }
-  }, []);
+  }, [navigate]);
 
   return (
     <PageLayout>

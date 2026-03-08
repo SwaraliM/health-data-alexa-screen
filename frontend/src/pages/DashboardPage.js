@@ -8,6 +8,7 @@ import ReminderIconsPanel from "../components/smartScreen/ReminderIconsPanel";
 import RemindersModal from "../components/smartScreen/RemindersModal";
 import WeeklyTrendsButtonRow from "../components/smartScreen/WeeklyTrendsButtonRow";
 import WeeklyTrendsModal from "../components/smartScreen/WeeklyTrendsModal";
+import MetricDetailModal from "../components/smartScreen/MetricDetailModal";
 import { getCurrentDate } from "../utils/getCurrentDate";
 import { getCurrentTime } from "../utils/getCurrentTime";
 
@@ -136,6 +137,8 @@ const DashboardPage = () => {
   const [weeklyOpen, setWeeklyOpen] = useState(false);
   const [activeTrendTab, setActiveTrendTab] = useState("steps");
   const [trendTimeframe, setTrendTimeframe] = useState("week");
+  const [metricDetailOpen, setMetricDetailOpen] = useState(false);
+  const [activeMetricKey, setActiveMetricKey] = useState("steps");
   const [actionLoadingById, setActionLoadingById] = useState({});
 
   const date = getCurrentDate();
@@ -447,6 +450,122 @@ const DashboardPage = () => {
 
   const trendData = trendTimeframe === "week" ? weeklyTrendData : monthlyTrendData;
 
+  const metricCards = useMemo(
+    () => [
+      {
+        key: "steps",
+        title: "Steps",
+        value: steps.toLocaleString(),
+        displayValue: steps.toLocaleString(),
+        displayUnit: "",
+        unitLabel: "steps",
+        precision: 0,
+        status: stepsStatus.status,
+        goalText: `Goal ${stepGoal.toLocaleString()}`,
+        goalValue: stepGoal,
+        progressPercent: pct(steps, stepGoal),
+        progressTone: stepsStatus.tone,
+        caption: "Tap for daily trend",
+        eyebrow: "Movement",
+        detailCopy: `${activityText} activity today. ${suggestionText}.`,
+        modalNote: "Use this view when you want a bigger read on movement patterns without crowding the dashboard.",
+        weeklyTrend: weeklyTrendData.steps,
+        monthlyTrend: monthlyTrendData.steps,
+      },
+      {
+        key: "sleep",
+        title: "Sleep",
+        value: sleepDisplay,
+        displayValue: sleepDisplay,
+        displayUnit: "",
+        unitLabel: "hrs",
+        precision: 1,
+        status: sleepStatus.status,
+        goalText: "Goal 7h",
+        goalValue: 7,
+        progressPercent: pct(sleepMinutes, sleepGoalMinutes),
+        progressTone: sleepStatus.tone,
+        caption: "Tap for recovery trend",
+        eyebrow: "Recovery",
+        detailCopy: sleepMinutes > 0 ? `You logged ${sleepDisplay} of sleep today.` : "Sleep data will appear after a synced night of sleep.",
+        modalNote: "A larger sleep view makes it easier to compare recent nights on a tablet screen.",
+        weeklyTrend: weeklyTrendData.sleep,
+        monthlyTrend: monthlyTrendData.sleep,
+      },
+      {
+        key: "distance",
+        title: "Distance",
+        value: Number(distanceMi).toFixed(1),
+        displayValue: Number(distanceMi).toFixed(1),
+        displayUnit: "mi",
+        unitLabel: "mi",
+        precision: 1,
+        status: distanceStatus.status,
+        goalText: `Goal ${distanceGoal} mi`,
+        goalValue: distanceGoal,
+        progressPercent: pct(distanceMi, distanceGoal),
+        progressTone: distanceStatus.tone,
+        caption: "Tap for movement trend",
+        eyebrow: "Cardio load",
+        detailCopy: `You are at ${Number(distanceMi).toFixed(1)} miles today.`,
+        modalNote: "This expanded card keeps the dashboard quiet while still letting users inspect cardio progress when needed.",
+        weeklyTrend: weeklyTrendData.activity,
+        monthlyTrend: monthlyTrendData.activity,
+      },
+      {
+        key: "floors",
+        title: "Floors",
+        value: String(floors),
+        displayValue: String(floors),
+        displayUnit: "",
+        unitLabel: "floors",
+        precision: 0,
+        status: floorsStatus.status,
+        goalText: `Goal ${floorGoal}`,
+        goalValue: floorGoal,
+        progressPercent: pct(floors, floorGoal),
+        progressTone: floorsStatus.tone,
+        caption: "Tap for routine trend",
+        eyebrow: "Daily routine",
+        detailCopy: `Climbing progress can help indicate overall routine consistency.`,
+        modalNote: "Floors are paired with the broader routine trend to keep the expanded view useful even when floor counts are low.",
+        weeklyTrend: weeklyTrendData.routine,
+        monthlyTrend: monthlyTrendData.routine,
+      },
+    ],
+    [
+      steps,
+      stepsStatus.status,
+      stepsStatus.tone,
+      stepGoal,
+      activityText,
+      suggestionText,
+      sleepDisplay,
+      sleepMinutes,
+      sleepStatus.status,
+      sleepStatus.tone,
+      sleepGoalMinutes,
+      distanceMi,
+      distanceStatus.status,
+      distanceStatus.tone,
+      distanceGoal,
+      floors,
+      floorsStatus.status,
+      floorsStatus.tone,
+      floorGoal,
+      weeklyTrendData.steps,
+      monthlyTrendData.steps,
+      weeklyTrendData.sleep,
+      monthlyTrendData.sleep,
+      weeklyTrendData.activity,
+      monthlyTrendData.activity,
+      weeklyTrendData.routine,
+      monthlyTrendData.routine,
+    ]
+  );
+
+  const activeMetric = metricCards.find((metric) => metric.key === activeMetricKey) || metricCards[0];
+
   const setActionLoading = (id, isLoading) => {
     setActionLoadingById((prev) => {
       const next = { ...prev };
@@ -519,62 +638,46 @@ const DashboardPage = () => {
     <SmartScreenShell>
       <TopBar timeText={currentTime} title="Today's Overview" showAlexa={false} />
 
-      <section className="ss-overview-top-row" aria-label="Insight and reminders">
-        <InsightCard
-          sleepText={sleepDisplay}
-          activityText={activityText}
-          suggestionText={suggestionText}
-          onAskAi={() => {
-            setWeeklyOpen(true);
-            setActiveTrendTab("routine");
-          }}
-        />
-        <ReminderIconsPanel
-          categories={reminderCategories.slice(0, 5)}
-          onOpenCategory={(categoryKey) => {
-            setActiveReminderCategory(categoryKey === "more" ? "appointments" : categoryKey);
-            setRemindersOpen(true);
-          }}
-        />
-      </section>
+      <div className="ss-dashboard-board">
+        <section className="ss-dashboard-main" aria-label="Daily overview">
+          <InsightCard
+            sleepText={sleepDisplay}
+            activityText={activityText}
+            suggestionText={suggestionText}
+          />
 
-      <section className="ss-grid-4" aria-label="Daily metric cards">
-        <QuickStatTile
-          title="Steps"
-          value={steps.toLocaleString()}
-          status={stepsStatus.status}
-          goalText={`Goal ${stepGoal.toLocaleString()}`}
-          progressPercent={pct(steps, stepGoal)}
-          progressTone={stepsStatus.tone}
-        />
-        <QuickStatTile
-          title="Sleep"
-          value={sleepDisplay}
-          status={sleepStatus.status}
-          goalText="Goal 7h"
-          progressPercent={pct(sleepMinutes, sleepGoalMinutes)}
-          progressTone={sleepStatus.tone}
-        />
-        <QuickStatTile
-          title="Distance"
-          value={Number(distanceMi).toFixed(1)}
-          unit="mi"
-          status={distanceStatus.status}
-          goalText={`Goal ${distanceGoal} mi`}
-          progressPercent={pct(distanceMi, distanceGoal)}
-          progressTone={distanceStatus.tone}
-        />
-        <QuickStatTile
-          title="Floors"
-          value={String(floors)}
-          status={floorsStatus.status}
-          goalText={`Goal ${floorGoal}`}
-          progressPercent={pct(floors, floorGoal)}
-          progressTone={floorsStatus.tone}
-        />
-      </section>
+          <section className="ss-dashboard-metrics" aria-label="Daily metric cards">
+            {metricCards.map((metric) => (
+              <QuickStatTile
+                key={metric.key}
+                title={metric.title}
+                value={metric.value}
+                unit={metric.displayUnit}
+                status={metric.status}
+                goalText={metric.goalText}
+                progressPercent={metric.progressPercent}
+                progressTone={metric.progressTone}
+                caption={metric.caption}
+                onOpen={() => {
+                  setActiveMetricKey(metric.key);
+                  setMetricDetailOpen(true);
+                }}
+              />
+            ))}
+          </section>
+        </section>
 
-      <WeeklyTrendsButtonRow onOpen={() => setWeeklyOpen(true)} />
+        <aside className="ss-dashboard-side" aria-label="Dashboard shortcuts">
+          <ReminderIconsPanel
+            categories={reminderCategories.slice(0, 5)}
+            onOpenCategory={(categoryKey) => {
+              setActiveReminderCategory(categoryKey === "more" ? "appointments" : categoryKey);
+              setRemindersOpen(true);
+            }}
+          />
+          <WeeklyTrendsButtonRow onOpen={() => setWeeklyOpen(true)} />
+        </aside>
+      </div>
 
       <RemindersModal
         open={remindersOpen}
@@ -596,6 +699,14 @@ const DashboardPage = () => {
         onTimeframeChange={setTrendTimeframe}
         chartData={trendData}
         onClose={() => setWeeklyOpen(false)}
+      />
+
+      <MetricDetailModal
+        open={metricDetailOpen}
+        metric={activeMetric}
+        timeframe={trendTimeframe}
+        onTimeframeChange={setTrendTimeframe}
+        onClose={() => setMetricDetailOpen(false)}
       />
     </SmartScreenShell>
   );

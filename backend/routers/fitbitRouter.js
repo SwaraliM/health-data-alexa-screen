@@ -17,6 +17,14 @@ const fitbitRouter = express.Router();
 const User = require("../models/Users");
 const { USER_NOT_FOUNT, SERVER_ERROR, TOKEN_INVALID } = require("../../utils/constants");
 
+const FITBIT_ROUTER_DEBUG = process.env.FITBIT_ROUTER_DEBUG !== "false";
+
+function fitbitLog(message, data = null) {
+  if (!FITBIT_ROUTER_DEBUG) return;
+  if (data == null) return console.log(`[FitbitRouter] ${message}`);
+  console.log(`[FitbitRouter] ${message}`, data);
+}
+
 /** -------------------------------------------------------------------------
  * Token refresh
  * ---------------------------------------------------------------------- */
@@ -26,6 +34,9 @@ const { USER_NOT_FOUNT, SERVER_ERROR, TOKEN_INVALID } = require("../../utils/con
  * Updates the User document in MongoDB.
  */
 const renewAccessToken = async (user) => {
+  fitbitLog("refreshing access token", {
+    username: user?.username || null,
+  });
   const clientId = process.env.FITBIT_CLIENT_ID;
   const clientSecret = process.env.FITBIT_CLIENT_SECRET;
 
@@ -70,6 +81,10 @@ const renewAccessToken = async (user) => {
  * Returns parsed JSON.
  */
 async function fitbitGetJson(user, url) {
+  fitbitLog("proxy fetch start", {
+    username: user?.username || null,
+    url,
+  });
   let accessToken = user.accessToken;
 
   const doFetch = async (token) => {
@@ -90,11 +105,21 @@ async function fitbitGetJson(user, url) {
   // If token expired, refresh and retry exactly once.
   const errorType = attempt?.data?.errors?.[0]?.errorType;
   if (!attempt.ok && errorType === "expired_token") {
+    fitbitLog("expired token detected, refreshing and retrying", {
+      username: user?.username || null,
+    });
     accessToken = await renewAccessToken(user);
     attempt = await doFetch(accessToken);
   }
 
-  if (attempt.ok) return attempt.data;
+  if (attempt.ok) {
+    fitbitLog("proxy fetch success", {
+      username: user?.username || null,
+      url,
+      status: attempt.status,
+    });
+    return attempt.data;
+  }
 
   // Normalize errors to a single shape for callers.
   const details = attempt?.data?.errors?.[0]?.message || "Fitbit request failed";
@@ -105,13 +130,21 @@ async function fitbitGetJson(user, url) {
 }
 
 /**
- * Load a User from MongoDB. Returns a 404 response if not found.
+ * Load a User from MongoDB by username (case-insensitive). Returns 404 if not found.
  */
 async function requireUser(req, res) {
   const username = String(req.params?.username || "").trim().toLowerCase();
-  const user = await User.findOne({ username });
+  if (!username) {
+    res.status(404).json({ message: USER_NOT_FOUNT });
+    return null;
+  }
+  const user = await User.findOne({ username: new RegExp(`^${username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") });
   if (!user) {
     res.status(404).json({ message: USER_NOT_FOUNT });
+    return null;
+  }
+  if (!user.accessToken || !String(user.accessToken).trim()) {
+    res.status(401).json({ message: TOKEN_INVALID, error: "No Fitbit token. Re-authorize with Fitbit." });
     return null;
   }
   return user;
@@ -321,6 +354,75 @@ fitbitRouter.get("/:username/body/log/:goalType/goal", async (req, res) => {
   }
 });
 
+/**
+ * GET /:username/body/log/:resource/date/:date
+ * Fitbit: /1/user/-/body/log/:resource/date/:date.json
+ */
+fitbitRouter.get("/:username/body/log/:resource/date/:date", async (req, res) => {
+  const { resource, date } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const validResources = ["weight", "fat"];
+  if (!validResources.includes(resource)) {
+    return res.status(400).json({ message: `Invalid resource. Valid: ${validResources.join(", ")}` });
+  }
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/body/log/${resource}/date/${date}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+/**
+ * GET /:username/body/log/:resource/date/:startDate/:endDate
+ * Fitbit: /1/user/-/body/log/:resource/date/:startDate/:endDate.json
+ */
+fitbitRouter.get("/:username/body/log/:resource/date/:startDate/:endDate", async (req, res) => {
+  const { resource, startDate, endDate } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const validResources = ["weight", "fat"];
+  if (!validResources.includes(resource)) {
+    return res.status(400).json({ message: `Invalid resource. Valid: ${validResources.join(", ")}` });
+  }
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/body/log/${resource}/date/${startDate}/${endDate}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+/**
+ * GET /:username/body/time-series/:resource/date/:startDate/:endDate
+ * Fitbit: /1/user/-/body/:resource/date/:startDate/:endDate.json
+ */
+fitbitRouter.get("/:username/body/time-series/:resource/date/:startDate/:endDate", async (req, res) => {
+  const { resource, startDate, endDate } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const validResources = ["bmi", "fat", "weight"];
+  if (!validResources.includes(resource)) {
+    return res.status(400).json({ message: `Invalid resource. Valid: ${validResources.join(", ")}` });
+  }
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/body/${resource}/date/${startDate}/${endDate}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
 /** -------------------------------------------------------------------------
  * Heart endpoints
  * ---------------------------------------------------------------------- */
@@ -391,6 +493,70 @@ fitbitRouter.get("/:username/hrv/range/date/:startDate/:endDate", async (req, re
 
   try {
     const url = `https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${endDate}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+/** -------------------------------------------------------------------------
+ * Breathing rate endpoints
+ * ---------------------------------------------------------------------- */
+
+fitbitRouter.get("/:username/br/single-day/date/:date", async (req, res) => {
+  const { date } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/br/date/${date}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+fitbitRouter.get("/:username/br/range/date/:startDate/:endDate", async (req, res) => {
+  const { startDate, endDate } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/br/date/${startDate}/${endDate}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+/** -------------------------------------------------------------------------
+ * Blood oxygen endpoints
+ * ---------------------------------------------------------------------- */
+
+fitbitRouter.get("/:username/spo2/single-day/date/:date", async (req, res) => {
+  const { date } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/spo2/date/${date}.json`;
+    const json = await fitbitGetJson(user, url);
+    return res.status(200).json(json);
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+fitbitRouter.get("/:username/spo2/range/date/:startDate/:endDate", async (req, res) => {
+  const { startDate, endDate } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/spo2/date/${startDate}/${endDate}.json`;
     const json = await fitbitGetJson(user, url);
     return res.status(200).json(json);
   } catch (error) {

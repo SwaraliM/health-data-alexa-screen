@@ -52,7 +52,7 @@ aiRouter.post("/qna-ask", async (req, res) => {
       username,
       question,
       allowPlannerLLM: true,
-      fetchTimeoutMs: 3500,
+      fetchTimeoutMs: null,
     });
 
     const payload = {

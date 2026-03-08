@@ -248,6 +248,7 @@ const ReminderPage = () => {
         customDetail={reminderData?.voicePrompt || reminderData?.cta || ""}
         pillVisual={reminderData?.pillVisual || { iconKey: medication?.form || "tablet" }}
         visualKey={reminderData?.visualKey || customVisual}
+        customCategory={reminderData?.category || "custom"}
         onPrimary={handlePrimary}
         onSecondary={handleSecondary}
         onTertiary={handleTertiary}
