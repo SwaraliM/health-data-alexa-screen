@@ -17,13 +17,13 @@ const {
   metricToPalette,
   FETCH_PLANNER_CONFIG,
   PRESENT_CONFIG,
-  SPEECH_CONFIG,
   FOLLOWUP_CONFIG,
 } = require("../configs/openAiSystemConfigs");
-const { callOpenAIJson, callOpenAIStreaming } = require("./openAIClient");
+const { callOpenAIJson } = require("./openAIClient");
 const {
   calculateStats,
   comparePeriods,
+  compareNPeriods,
   buildSyntheticPeriodComparison,
   pickHighlight,
   detectAnomalies,
@@ -37,6 +37,9 @@ const {
   summarizeSleepQuality,
 } = require("./chartInsightService");
 const {
+  buildEstimatedIntradaySeries,
+  getIntradayAvailability,
+  isIntradayMetric,
   toMetricSeries,
   toSleepSeries,
   toSleepStageBreakdown,
@@ -58,6 +61,7 @@ const DEFAULT_VOICE_DEADLINE_MS = Number.isFinite(Number(process.env.QNA_VOICE_D
 
 const QNA_DEBUG = process.env.QNA_DEBUG !== "false";
 const QNA_TRACE_DEBUG = process.env.QNA_DEBUG_TRACES !== "false";
+const SYNTHETIC_INTRADAY_NOTE = "Estimated from Fitbit daily summary and logged activities because minute-level intraday detail was unavailable.";
 
 const PANEL_SLOT_PALETTES = [
   { primary: "#2563EB", secondary: "#60A5FA", accent: "#93C5FD", series: ["#2563EB", "#60A5FA", "#93C5FD"], background: "#EFF6FF", text: "#1E3A8A" },
@@ -143,6 +147,10 @@ function attachDebugPayload(payload, debug) {
   };
 }
 
+function didTraceUseFallback(debug, stage) {
+  return Boolean(debug?.gpt_trace?.[stage]?.used_fallback);
+}
+
 function setPayloadVoiceState(payload, voiceAnswer = "", voiceAnswerSource = "fallback", answerReady = voiceAnswerSource === "gpt", debug = null) {
   const normalizedSource = voiceAnswerSource === "gpt"
     ? "gpt"
@@ -170,16 +178,21 @@ function setPayloadVoiceState(payload, voiceAnswer = "", voiceAnswerSource = "fa
   }, debug);
 }
 
+function verbalizeSpeechNumbers(text = "") {
+  return String(text || "").replace(/(\d+)\.(\d+)/g, (_, whole, fraction) => `${whole} point ${fraction.split("").join(" ")}`);
+}
+
 function compressAlexaSpeech(text = "", fallback = "Here is your health summary.") {
   const source = sanitizePlainText(text, VISUAL_SYSTEM.voice.maxChars, fallback);
-  const sentences = source
+  const protectedSource = source.replace(/(\d+)\.(\d+)/g, (_, whole, fraction) => `${whole}__DECIMAL__${fraction}`);
+  const sentences = protectedSource
     .split(/[.!?]/)
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, VISUAL_SYSTEM.voice.maxSentences);
-  const combined = sentences.length ? `${sentences.join(". ")}.` : source;
+  const combined = (sentences.length ? `${sentences.join(". ")}.` : protectedSource).replace(/__DECIMAL__/g, ".");
   const words = combined.split(/\s+/).filter(Boolean).slice(0, VISUAL_SYSTEM.voice.maxWords);
-  const limited = words.join(" ");
+  const limited = verbalizeSpeechNumbers(words.join(" "));
   return limited.length <= VISUAL_SYSTEM.voice.maxChars
     ? limited
     : `${limited.slice(0, VISUAL_SYSTEM.voice.maxChars - 3).trimEnd()}...`;
@@ -335,6 +348,34 @@ function detectOverviewIntent(question = "") {
   return /\b(overall|overview|report|summary|how am i doing|how have i been doing|what should i know|what stands out|check in|big picture|lately)\b/i.test(question);
 }
 
+function isActivityMetric(metricKey = "") {
+  return ["steps", "calories", "distance", "floors", "elevation"].includes(baseMetricForIntraday(metricKey));
+}
+
+function enrichActivityOnlyMetrics(metricsNeeded = [], timeScope = "last_7_days") {
+  const current = (Array.isArray(metricsNeeded) ? metricsNeeded : []).filter(Boolean);
+  if (!current.length || !current.every((metricKey) => isActivityMetric(metricKey))) {
+    return current.slice(0, 4);
+  }
+
+  const focusMetric = current[0];
+  const focusBaseMetric = baseMetricForIntraday(focusMetric);
+  const ordered = [];
+  const push = (metricKey) => {
+    if (metricKey && !ordered.includes(metricKey)) ordered.push(metricKey);
+  };
+
+  if (isSingleDayScope(timeScope)) {
+    push(intradayMetricForMetric(focusBaseMetric) || focusMetric);
+  } else {
+    push(focusBaseMetric);
+  }
+  push(focusBaseMetric);
+  ["steps", "calories", "floors", "distance"].forEach(push);
+
+  return ordered.slice(0, 4);
+}
+
 function extractMentionedMetrics(question = "") {
   const q = String(question).toLowerCase();
   const metrics = [];
@@ -396,7 +437,8 @@ function extractMentionedMetrics(question = "") {
 function inferHeuristicFetchPlan(question = "") {
   const q = String(question).toLowerCase();
   const isOverview = detectOverviewIntent(q);
-  const metrics_needed = extractMentionedMetrics(q);
+  const requestedMetrics = extractMentionedMetrics(q);
+  const requestedMetricCount = requestedMetrics.length;
   let question_type = isOverview ? "overview_report" : "single_metric_status";
   if (/\bcompare|versus|vs|better|worse|previous|changed|than before\b/.test(q)) question_type = "comparison_report";
   if (/\bpattern|trend|over time|usually|consisten|stand out|anomaly|unusual|spike|dip\b/.test(q)) question_type = "anomaly_explanation";
@@ -408,32 +450,33 @@ function inferHeuristicFetchPlan(question = "") {
   if (isOverview && /\bdetail|deeper|deep dive\b/.test(q)) question_type = "deep_dive";
 
   const time_scope = inferTimeScope(q);
+  const enrichedMetrics = enrichActivityOnlyMetrics(requestedMetrics, time_scope);
   const singleDayScope = isSingleDayScope(time_scope);
-  const shouldBiasIntraday = singleDayScope && metrics_needed.some((metric) => intradayMetricForMetric(metric));
+  const shouldBiasIntraday = singleDayScope && enrichedMetrics.some((metric) => intradayMetricForMetric(metric));
   const comparison_mode = question_type === "comparison_report"
     ? "previous_period"
-    : question_type === "relationship_report" || metrics_needed.length > 1
+    : question_type === "relationship_report" || requestedMetricCount > 1
       ? "metric_vs_metric"
       : "none";
   const evidence_scope = [];
-  if (metrics_needed.some((metric) => ["sleep_minutes", "sleep_efficiency", "wake_minutes", "breathing_rate", "spo2"].includes(metric))) {
+  if (enrichedMetrics.some((metric) => ["sleep_minutes", "sleep_efficiency", "wake_minutes", "breathing_rate", "spo2"].includes(metric))) {
     evidence_scope.push("sleep_core");
     evidence_scope.push("sleep_timing_and_stages");
   }
   if (/\bquality|restful|restless|stages|rem|deep|light|bedtime|wake up|wake-up\b/.test(q)) evidence_scope.push("sleep_timing_and_stages");
-  if (metrics_needed.some((metric) => String(metric).endsWith("_intraday"))) evidence_scope.push("daily_activity_breakdown");
+  if (enrichedMetrics.some((metric) => String(metric).endsWith("_intraday"))) evidence_scope.push("daily_activity_breakdown");
   if (shouldBiasIntraday) evidence_scope.push("daily_activity_breakdown");
-  if (metrics_needed.some((metric) => metric === "resting_hr" || metric === "hrv" || metric === "heart_intraday")) evidence_scope.push("heart_recovery");
+  if (enrichedMetrics.some((metric) => metric === "resting_hr" || metric === "hrv" || metric === "heart_intraday")) evidence_scope.push("heart_recovery");
   if (question_type === "relationship_report") evidence_scope.push("relationship_bundle");
   if (/\bunusual|anomaly|off|consisten|variability|stand out|spike|dip\b/.test(q)) evidence_scope.push("weekly_anomaly_scan");
   if (/\bchart|screen|seeing|showing|explain\b/.test(q)) evidence_scope.push("screen_context_expansion");
   if (isOverview) evidence_scope.push("sleep_core", "activity_core", "heart_recovery", "weekly_anomaly_scan");
-  if (!evidence_scope.length && !metrics_needed.some((metric) => ["weight", "body_fat", "breathing_rate", "spo2"].includes(metric))) {
+  if (!evidence_scope.length && !enrichedMetrics.some((metric) => ["weight", "body_fat", "breathing_rate", "spo2"].includes(metric))) {
     evidence_scope.push("activity_core");
   }
 
   let preferred_chart = isOverview ? "composed_summary" : "bar";
-  if (metrics_needed.length > 1) preferred_chart = isOverview ? "composed_summary" : "multi_line";
+  if (requestedMetricCount > 1) preferred_chart = isOverview ? "composed_summary" : "multi_line";
   if (question_type === "goal_progress") preferred_chart = "gauge";
   if (question_type === "comparison_report") preferred_chart = "grouped_bar";
   if (question_type === "anomaly_explanation") preferred_chart = isOverview ? "composed_summary" : "area";
@@ -444,12 +487,12 @@ function inferHeuristicFetchPlan(question = "") {
   const response_mode = (question_type === "overview_report"
     || question_type === "relationship_report"
     || question_type === "deep_dive"
-    || (question_type === "comparison_report" && metrics_needed.length > 1))
+    || (question_type === "comparison_report" && requestedMetricCount > 1))
     ? "multi_panel_report"
     : "single_view";
   if (shouldBiasIntraday && response_mode !== "multi_panel_report") preferred_chart = detectIntradayIntent(q) ? "timeline" : "area";
   const visual_goals = response_mode === "multi_panel_report"
-    ? [question_type, "comparison_report", metrics_needed.length > 1 ? "relationship_report" : "single_metric_status"].slice(0, 4)
+    ? [question_type, "comparison_report", requestedMetricCount > 1 ? "relationship_report" : "single_metric_status"].slice(0, 4)
     : [question_type];
   const layout_hint = response_mode === "single_view"
     ? "single_focus"
@@ -462,7 +505,7 @@ function inferHeuristicFetchPlan(question = "") {
   return {
     question_type,
     response_mode,
-    metrics_needed: metrics_needed.slice(0, 4),
+    metrics_needed: enrichedMetrics.slice(0, 4),
     time_scope,
     comparison_mode,
     needs_previous_period: comparison_mode === "previous_period",
@@ -475,7 +518,7 @@ function inferHeuristicFetchPlan(question = "") {
     preferred_chart,
     visual_goals,
     layout_hint,
-    drill_down_candidates: defaultSuggestedQuestions(metrics_needed[0], question_type),
+    drill_down_candidates: defaultSuggestedQuestions(enrichedMetrics[0], question_type),
   };
 }
 
@@ -509,9 +552,16 @@ function getStaticDefaultPlan() {
 function normalizeFetchPlan(rawPlan, fallbackPlan) {
   const plan = rawPlan && typeof rawPlan === "object" ? rawPlan : {};
   const fallback = fallbackPlan ?? getStaticDefaultPlan();
-  const metrics_needed = Array.isArray(plan.metrics_needed)
+  const requestedMetrics = Array.isArray(plan.metrics_needed)
     ? plan.metrics_needed.map(normalizeMetric).filter(Boolean).slice(0, 4)
     : [];
+  const time_scope = VISUAL_SYSTEM.app.supportedTimeScopes.includes(plan.time_scope)
+    ? plan.time_scope
+    : fallback.time_scope;
+  const metrics_needed = enrichActivityOnlyMetrics(
+    requestedMetrics.length ? requestedMetrics : fallback.metrics_needed,
+    time_scope,
+  );
 
   return {
     question_type: VISUAL_SYSTEM.allowed.questionTypes.includes(plan.question_type)
@@ -521,9 +571,7 @@ function normalizeFetchPlan(rawPlan, fallbackPlan) {
       ? plan.response_mode
       : fallback.response_mode,
     metrics_needed: metrics_needed.length ? metrics_needed : fallback.metrics_needed,
-    time_scope: VISUAL_SYSTEM.app.supportedTimeScopes.includes(plan.time_scope)
-      ? plan.time_scope
-      : fallback.time_scope,
+    time_scope,
     comparison_mode: VISUAL_SYSTEM.allowed.comparisonModes.includes(plan.comparison_mode)
       ? plan.comparison_mode
       : fallback.comparison_mode,
@@ -554,6 +602,7 @@ function normalizeFetchPlan(rawPlan, fallbackPlan) {
     drill_down_candidates: sanitizeListText(plan.drill_down_candidates, 4, 80).length
       ? sanitizeListText(plan.drill_down_candidates, 4, 80)
       : fallback.drill_down_candidates,
+    num_comparison_periods: Math.min(4, Math.max(2, Number(plan.num_comparison_periods) || 2)),
   };
 }
 
@@ -623,8 +672,35 @@ async function fetchJsonWithTimeout(url, timeoutMs = null) {
   }
 }
 
+function normalizeInternalApiBase(candidate = "") {
+  const value = String(candidate || "").trim();
+  if (!value) return "";
+  return value.replace(/\/+$/, "").replace(/\/api$/, "");
+}
+
+function resolveInternalApiBaseUrl() {
+  // Prefer REACT_APP_FETCH_DATA_URL when set so QnA internal fetches (Fitbit summaries, etc.) use that base.
+  const configuredBase = [
+    process.env.REACT_APP_FETCH_DATA_URL,
+    process.env.QNA_INTERNAL_API_URL,
+    process.env.INTERNAL_API_URL,
+    process.env.BACKEND_URL,
+    process.env.API_URL,
+    process.env.RENDER_EXTERNAL_URL,
+    process.env.PUBLIC_BASE_URL,
+  ]
+    .map((value) => normalizeInternalApiBase(value))
+    .find(Boolean);
+
+  if (configuredBase) return configuredBase;
+
+  const port = Number.parseInt(process.env.PORT, 10);
+  const safePort = Number.isFinite(port) && port > 0 ? port : 5001;
+  return `http://127.0.0.1:${safePort}`;
+}
+
 function buildFitbitInternalUrl({ username, metricKey, startDate, endDate, timeScope = "last_7_days" }) {
-  const base = process.env.INTERNAL_API_URL || process.env.API_URL || process.env.NGROK_URL || "http://localhost:5001";
+  const base = resolveInternalApiBaseUrl();
   const user = String(username || "").toLowerCase();
   if (["sleep_minutes", "sleep_efficiency", "wake_minutes"].includes(metricKey)) {
     if (isSingleDayScope(timeScope)) {
@@ -663,7 +739,7 @@ function buildFitbitInternalUrl({ username, metricKey, startDate, endDate, timeS
 }
 
 function buildActivitySummaryUrl({ username, date }) {
-  const base = process.env.INTERNAL_API_URL || process.env.API_URL || process.env.NGROK_URL || "http://localhost:5001";
+  const base = resolveInternalApiBaseUrl();
   const user = String(username || "").toLowerCase();
   return `${base}/api/fitbit/${user}/activities/summary/${date}`;
 }
@@ -679,6 +755,51 @@ function toMetricPoints(metricKey, rawPayload, windowDays) {
   if (metricKey === "sleep_efficiency") return toSleepSeries(rawPayload, windowDays).efficiency;
   if (metricKey === "wake_minutes") return toSleepSeries(rawPayload, windowDays).wakeMinutes;
   return toMetricSeries(metricKey, rawPayload, windowDays);
+}
+
+function hydrateIntradayMetricData({
+  metricKey,
+  rawPayload,
+  activitySummaryRaw = null,
+  targetDate = null,
+  fallbackStatus = null,
+  fallbackReason = "",
+}) {
+  let points = toMetricPoints(metricKey, rawPayload, 1);
+  let availability = getIntradayAvailability(metricKey, rawPayload);
+  if (fallbackStatus) {
+    availability = {
+      ...availability,
+      status: fallbackStatus,
+      reason: fallbackReason || availability.reason,
+    };
+  }
+
+  let isSynthetic = false;
+  if ((!points.length || availability.status !== "available") && activitySummaryRaw) {
+    const syntheticPoints = buildEstimatedIntradaySeries({
+      metricKey,
+      activitySummaryPayload: activitySummaryRaw,
+      date: targetDate,
+    });
+    if (syntheticPoints.length) {
+      points = syntheticPoints;
+      isSynthetic = true;
+    }
+  }
+
+  return {
+    points,
+    intraday_status: availability.status,
+    intraday_reason: availability.reason,
+    is_synthetic: isSynthetic,
+    data_quality_note: isSynthetic ? SYNTHETIC_INTRADAY_NOTE : "",
+    source: isSynthetic
+      ? "fitbit_summary_estimate"
+      : availability.status === "summary_only"
+        ? "fitbit_summary_only"
+        : "fitbit_intraday",
+  };
 }
 
 function defaultSuggestedQuestions(primaryMetric, questionType = "single_metric_status") {
@@ -742,10 +863,11 @@ async function fetchRequestedData({ username, plan, fetchTimeoutMs = null }) {
   const comparisonNeeded = Boolean(plan.needs_previous_period)
     || plan.comparison_mode === "previous_period"
     || (plan.evidence_scope || []).includes("weekly_anomaly_scan");
-  const window = computeDateWindow(plan.time_scope, comparisonNeeded ? 2 : 1);
+  const numComparisonPeriods = Math.min(4, Math.max(2, Number(plan.num_comparison_periods) || 2));
+  const window = computeDateWindow(plan.time_scope, comparisonNeeded ? numComparisonPeriods : 1);
 
   qnaLog("fetch", "starting evidence bundle fetch", {
-    username,
+      username,
     metrics_needed,
     evidence_scope: plan.evidence_scope,
     time_scope: plan.time_scope,
@@ -753,39 +875,6 @@ async function fetchRequestedData({ username, plan, fetchTimeoutMs = null }) {
   });
 
   const metricsData = {};
-  for (const metricKey of metrics_needed) {
-    const url = buildFitbitInternalUrl({
-      username,
-      metricKey,
-      startDate: window.startDate,
-      endDate: window.endDate,
-      timeScope: plan.time_scope,
-    });
-    qnaLog("fetch", "fetching metric", { metricKey, url, startDate: window.startDate, endDate: window.endDate });
-    try {
-      const raw = await fetchJsonWithTimeout(url, fetchTimeoutMs);
-      const allPoints = toMetricPoints(metricKey, raw, window.windowDays);
-      metricsData[metricKey] = {
-        raw,
-        all: allPoints,
-        current: sliceLast(allPoints, window.baseDays),
-        previous: comparisonNeeded ? allPoints.slice(0, Math.max(0, allPoints.length - window.baseDays)) : [],
-      };
-    } catch (err) {
-      qnaWarn("fetch", "metric fetch failed, continuing with others", { metricKey, message: err?.message || String(err) });
-      metricsData[metricKey] = {
-        raw: null,
-        all: [],
-        current: [],
-        previous: [],
-      };
-    }
-  }
-
-  const requestedOrder = plan.metrics_needed && plan.metrics_needed.length ? plan.metrics_needed : metrics_needed;
-  const withData = requestedOrder.filter((k) => metricsData[k]?.raw != null || (Array.isArray(metricsData[k]?.all) && metricsData[k].all.length > 0));
-  const primaryMetric = withData[0] || requestedOrder[0] || metrics_needed[0] || "steps";
-  const secondaryMetric = withData[1] || requestedOrder[1] || null;
   const contextData = {};
   if (needsDailyActivitySummary(plan)) {
     const activitySummaryUrl = buildActivitySummaryUrl({ username, date: window.endDate });
@@ -797,6 +886,73 @@ async function fetchRequestedData({ username, plan, fetchTimeoutMs = null }) {
       contextData.activitySummaryRaw = null;
     }
   }
+
+  for (const metricKey of metrics_needed) {
+    const url = buildFitbitInternalUrl({
+        username,
+      metricKey,
+      startDate: window.startDate,
+      endDate: window.endDate,
+      timeScope: plan.time_scope,
+    });
+    qnaLog("fetch", "fetching metric", { metricKey, url, startDate: window.startDate, endDate: window.endDate });
+    try {
+      const raw = await fetchJsonWithTimeout(url, fetchTimeoutMs);
+      const intradayMeta = isIntradayMetric(metricKey)
+        ? hydrateIntradayMetricData({
+            metricKey,
+            rawPayload: raw,
+            activitySummaryRaw: contextData.activitySummaryRaw || null,
+            targetDate: window.endDate,
+          })
+        : null;
+      const allPoints = intradayMeta?.points || toMetricPoints(metricKey, raw, window.windowDays);
+      const currentPoints = isIntradayMetric(metricKey)
+        ? allPoints
+        : sliceLast(allPoints, window.baseDays);
+      metricsData[metricKey] = {
+        raw,
+        all: allPoints,
+        current: currentPoints,
+        previous: isIntradayMetric(metricKey)
+          ? []
+          : (comparisonNeeded ? allPoints.slice(0, Math.max(0, allPoints.length - window.baseDays)) : []),
+        intraday_status: intradayMeta?.intraday_status || null,
+        intraday_reason: intradayMeta?.intraday_reason || "",
+        is_synthetic: Boolean(intradayMeta?.is_synthetic),
+        data_quality_note: intradayMeta?.data_quality_note || "",
+        source: intradayMeta?.source || null,
+      };
+    } catch (err) {
+      qnaWarn("fetch", "metric fetch failed, continuing with others", { metricKey, message: err?.message || String(err) });
+      const intradayMeta = isIntradayMetric(metricKey)
+        ? hydrateIntradayMetricData({
+            metricKey,
+            rawPayload: null,
+            activitySummaryRaw: contextData.activitySummaryRaw || null,
+            targetDate: window.endDate,
+            fallbackStatus: "fetch_error",
+            fallbackReason: err?.message || "Fitbit intraday fetch failed.",
+          })
+        : null;
+      metricsData[metricKey] = {
+        raw: null,
+        all: intradayMeta?.points || [],
+        current: intradayMeta?.points || [],
+        previous: [],
+        intraday_status: intradayMeta?.intraday_status || null,
+        intraday_reason: intradayMeta?.intraday_reason || "",
+        is_synthetic: Boolean(intradayMeta?.is_synthetic),
+        data_quality_note: intradayMeta?.data_quality_note || "",
+        source: intradayMeta?.source || null,
+      };
+    }
+  }
+
+  const requestedOrder = plan.metrics_needed && plan.metrics_needed.length ? plan.metrics_needed : metrics_needed;
+  const withData = requestedOrder.filter((k) => metricsData[k]?.raw != null || (Array.isArray(metricsData[k]?.all) && metricsData[k].all.length > 0));
+  const primaryMetric = withData[0] || requestedOrder[0] || metrics_needed[0] || "steps";
+  const secondaryMetric = withData[1] || requestedOrder[1] || null;
   return {
     metrics_needed,
     metricsData,
@@ -902,13 +1058,9 @@ function buildActivitySummaryFacts(raw = null) {
   if (totalActiveZoneMinutes > 0) {
     takeaways.push(`You earned ${totalActiveZoneMinutes} active zone minutes.`);
   }
-  if (topActivity?.name) takeaways.push(`${topActivity.name} was your main logged activity.`);
-  if (activities.length > 0 && exerciseMinutes > 0) {
-    takeaways.push(`You logged ${activities.length} exercise session${activities.length === 1 ? "" : "s"} for about ${exerciseMinutes} minutes total.`);
-  }
-  if (Number.isFinite(stepGoalPct)) {
-    if (stepGoalPct >= 100) takeaways.push(`You reached your step goal at about ${stepGoalPct} percent.`);
-    else takeaways.push(`You reached about ${stepGoalPct} percent of your step goal.`);
+  if (activeMinutes > 0) {
+    if (activeMinutesGoal > 0) takeaways.push(`You had ${activeMinutes} active minutes (goal ${activeMinutesGoal}).`);
+    else takeaways.push(`You had ${activeMinutes} active minutes.`);
   }
   if (floors > 0 || floorsGoal > 0) {
     if (floorsGoal > 0) takeaways.push(`You climbed ${floors} floors (goal ${floorsGoal}).`);
@@ -919,9 +1071,13 @@ function buildActivitySummaryFacts(raw = null) {
     if (distanceGoal > 0) takeaways.push(`You walked ${milesText} (goal ${distanceGoal} mi).`);
     else takeaways.push(`You walked ${milesText}.`);
   }
-  if (activeMinutes > 0) {
-    if (activeMinutesGoal > 0) takeaways.push(`You had ${activeMinutes} active minutes (goal ${activeMinutesGoal}).`);
-    else takeaways.push(`You had ${activeMinutes} active minutes.`);
+  if (activities.length > 0 && exerciseMinutes > 0) {
+    takeaways.push(`You logged ${activities.length} exercise session${activities.length === 1 ? "" : "s"} for about ${exerciseMinutes} minutes total.`);
+  }
+  if (topActivity?.name) takeaways.push(`${topActivity.name} was your main logged activity.`);
+  if (Number.isFinite(stepGoalPct)) {
+    if (stepGoalPct >= 100) takeaways.push(`You reached your step goal at about ${stepGoalPct} percent.`);
+    else takeaways.push(`You reached about ${stepGoalPct} percent of your step goal.`);
   }
   if (dominantZone?.name && dominantZone?.minutes > 0) {
     takeaways.push(`Most heart-zone time was in ${dominantZone.name.toLowerCase()}.`);
@@ -979,28 +1135,58 @@ function buildSummaryBundle({ plan, fetched, userContext }) {
   const metricAnomaliesMap = {};
   const intradaySummaryMap = {};
   const intradayInsightsMap = {};
+  const intradayAvailabilityMap = {};
   (fetched.metrics_needed || []).forEach((metricKey) => {
     const series = fetched.metricsData?.[metricKey]?.current || [];
     metricSeriesMap[metricKey] = series;
     metricStatsMap[metricKey] = calculateStats(series, getGoalForMetric(metricKey, userContext));
     metricComparisonMap[metricKey] = comparePeriods(fetched.metricsData?.[metricKey]?.all || [], fetched.primaryWindow.baseDays);
     metricAnomaliesMap[metricKey] = detectAnomalies(series).slice(0, 5);
-    if (String(metricKey).endsWith("_intraday")) {
+    if (isIntradayMetric(metricKey)) {
+      intradayAvailabilityMap[metricKey] = {
+        intraday_status: fetched.metricsData?.[metricKey]?.intraday_status || "available",
+        intraday_reason: fetched.metricsData?.[metricKey]?.intraday_reason || "",
+        is_synthetic: Boolean(fetched.metricsData?.[metricKey]?.is_synthetic),
+        data_quality_note: fetched.metricsData?.[metricKey]?.data_quality_note || "",
+        source: fetched.metricsData?.[metricKey]?.source || "fitbit_intraday",
+      };
       const intradaySummary = summarizeIntradayWindows(series);
-      intradaySummaryMap[metricKey] = intradaySummary;
-      intradayInsightsMap[metricKey] = summarizeIntradayFacts(series, intradaySummary);
+      intradaySummaryMap[metricKey] = intradaySummary
+        ? { ...intradaySummary, ...intradayAvailabilityMap[metricKey] }
+        : null;
+      const intradayInsights = summarizeIntradayFacts(series, intradaySummary);
+      intradayInsightsMap[metricKey] = intradayInsights
+        ? { ...intradayInsights, ...intradayAvailabilityMap[metricKey] }
+        : null;
     }
   });
 
   const primaryMetric = fetched.primaryMetric;
   const primarySeries = fetched.primaryCurrent || [];
   const primaryStats = metricStatsMap[primaryMetric] || calculateStats([]);
-  const comparisonStats = metricComparisonMap[primaryMetric] || comparePeriods(fetched.primaryAll || [], fetched.primaryWindow.baseDays);
+  const numComparisonPeriods = Math.min(4, Math.max(2, Number(plan.num_comparison_periods) || 2));
+  const useMultiPeriod = numComparisonPeriods > 2
+    && (Boolean(plan.needs_previous_period) || plan.comparison_mode === "previous_period")
+    && (fetched.primaryAll || []).length >= fetched.primaryWindow.baseDays * numComparisonPeriods;
+  const multiPeriodResult = useMultiPeriod
+    ? compareNPeriods(fetched.primaryAll || [], fetched.primaryWindow.baseDays, numComparisonPeriods)
+    : null;
+  const comparisonStats = multiPeriodResult
+    ? {
+        periods: multiPeriodResult.periods,
+        changePct: multiPeriodResult.changePct,
+        currentAvg: multiPeriodResult.currentAvg,
+        earliestAvg: multiPeriodResult.earliestAvg,
+        current: multiPeriodResult.periods[multiPeriodResult.periods.length - 1]?.points || [],
+        previous: multiPeriodResult.periods[0]?.points || [],
+        enoughHistory: multiPeriodResult.enoughHistory,
+      }
+    : (metricComparisonMap[primaryMetric] || comparePeriods(fetched.primaryAll || [], fetched.primaryWindow.baseDays));
   const anomalies = metricAnomaliesMap[primaryMetric] || detectAnomalies(primarySeries).slice(0, 5);
   const highlight = pickHighlight(primarySeries);
   const relationship = fetched.secondaryCurrent?.length
     ? describeRelationship(primarySeries, fetched.secondaryCurrent, {
-        primaryMetricLabel: metricLabel(primaryMetric),
+      primaryMetricLabel: metricLabel(primaryMetric),
         secondaryMetricLabel: metricLabel(fetched.secondaryMetric),
       })
     : null;
@@ -1016,6 +1202,9 @@ function buildSummaryBundle({ plan, fetched, userContext }) {
   const sleepStageTimeline = sleepRaw ? toSleepStageTimeline(sleepRaw) : null;
   const sleepStageTrendSeries = sleepRaw ? toSleepStageTrendSeries(sleepRaw, fetched.primaryWindow.windowDays) : null;
   const preferredIntradayMetric = intradayMetricForMetric(primaryMetric);
+  const intradayAvailability = intradayAvailabilityMap[primaryMetric]
+    || (preferredIntradayMetric ? intradayAvailabilityMap[preferredIntradayMetric] : null)
+    || null;
   const intradayWindowSummary = intradaySummaryMap[primaryMetric]
     || (preferredIntradayMetric ? intradaySummaryMap[preferredIntradayMetric] : null)
     || (String(primaryMetric || "").endsWith("_intraday") ? summarizeIntradayWindows(primarySeries) : null);
@@ -1060,6 +1249,12 @@ function buildSummaryBundle({ plan, fetched, userContext }) {
     highlight,
     anomalyCount: anomalies.length,
     progressiveViewsAvailable: 0,
+    intradayAvailabilityMap,
+    intraday_status: intradayAvailability?.intraday_status || null,
+    intraday_reason: intradayAvailability?.intraday_reason || "",
+    is_synthetic: Boolean(intradayAvailability?.is_synthetic),
+    data_quality_note: intradayAvailability?.data_quality_note || "",
+    source: intradayAvailability?.source || null,
   };
 
   const summaryBundle = {
@@ -1093,6 +1288,7 @@ function buildSummaryBundle({ plan, fetched, userContext }) {
     metricAnomaliesMap,
     intradaySummaryMap,
     intradayInsightsMap,
+    intradayAvailabilityMap,
     intradayInsights,
     relationshipRankings,
     relationshipMap,
@@ -1100,11 +1296,11 @@ function buildSummaryBundle({ plan, fetched, userContext }) {
     chartContext,
     drillDownSuggestions: defaultSuggestedQuestions(primaryMetric, plan.question_type),
     storyCandidates: buildStoryCandidates({
-      primaryMetric,
-      primaryStats,
-      comparisonStats,
-      anomalies,
-      relationship,
+    primaryMetric,
+    primaryStats,
+    comparisonStats,
+    anomalies,
+    relationship,
       sleepQuality,
       intradayInsights,
       reportFacts,
@@ -1168,9 +1364,22 @@ function buildMicroAnswer({ questionType, summaryBundle }) {
   const comparison = summaryBundle.previousPeriodComparison;
   const subject = metricLabel(metric);
   const timeLabel = summaryBundle.timeLabel;
+  const intradayAvailability = summaryBundle.intradayAvailabilityMap?.[metric]
+    || summaryBundle.intradayAvailabilityMap?.[intradayMetricForMetric(metric)]
+    || null;
+  const intradayEstimatePrefix = intradayAvailability?.is_synthetic
+    ? "Fitbit did not provide minute-by-minute detail, so this is an estimated pattern based on your daily summary and logged activities. "
+    : "";
 
   if (questionType === "relationship_report" && summaryBundle.crossMetricRelationships?.statement) {
     return compressAlexaSpeech(summaryBundle.crossMetricRelationships.statement);
+  }
+  if (intradayAvailability?.is_synthetic
+    && ["single_metric_status", "chart_explanation", "anomaly_explanation"].includes(questionType)
+    && summaryBundle.intradayInsights?.takeaway
+    && isSingleDayScope(summaryBundle.timeScope)
+    && (String(metric).endsWith("_intraday") || intradayMetricForMetric(metric))) {
+    return compressAlexaSpeech(`${intradayEstimatePrefix}${summaryBundle.intradayInsights.takeaway}`);
   }
   if (summaryBundle.activitySummary?.takeaway
     && ["steps", "calories", "distance", "floors", "elevation", "resting_hr"].includes(baseMetricForIntraday(metric))) {
@@ -1280,8 +1489,8 @@ function getVisualAlternatives(goal, metrics = [], plan = {}, summaryBundle = {}
   if (goal === "goal_progress") return ["gauge", "bar", "line"];
   if (goal === "relationship_report") {
     return hasRelationship && summaryBundle.crossMetricRelationships?.grouped?.length
-      ? ["scatter", "grouped_bar", "multi_line"]
-      : ["scatter", "multi_line", "line"];
+      ? ["grouped_bar", "scatter", "multi_line"]
+      : ["multi_line","grouped_bar", "scatter", "line"];
   }
   if (goal === "comparison_report") {
     return includesIntraday
@@ -1509,7 +1718,7 @@ function buildDefaultReportPlan(question, plan, summaryBundle) {
     }
   }
 
-  const trimmedPanels = panels.slice(0, isSingle ? 1 : 4);
+  const trimmedPanels = prioritizeTimelinePanelForThreePanelView(panels.slice(0, isSingle ? 1 : 4));
   const next_views = [];
   if (sleepStageMetric.length && (hasSleepStageTimeline || summaryBundle.sleepStageBreakdown?.length)) {
     next_views.push(buildNextView("sleep_detail", "Sleep detail", "deep_dive", sleepStageMetric, {
@@ -1548,6 +1757,21 @@ function buildDefaultReportPlan(question, plan, summaryBundle) {
   };
 }
 
+function prioritizeTimelinePanelForThreePanelView(panels = []) {
+  if (!Array.isArray(panels) || panels.length !== 3) return Array.isArray(panels) ? panels : [];
+  const timelineIndex = panels.findIndex((panel) => panel?.visual_family === "timeline");
+  if (timelineIndex === -1) return panels;
+  const reordered = panels.slice();
+  if (timelineIndex > 0) {
+    const [timelinePanel] = reordered.splice(timelineIndex, 1);
+    reordered.unshift(timelinePanel);
+  }
+  return reordered.map((panel, index) => ({
+    ...panel,
+    emphasis: index === 0 ? "hero" : "standard",
+  }));
+}
+
 function normalizePresentationPlan(rawPlan, fallbackPlan) {
   const plan = rawPlan && typeof rawPlan === "object" ? rawPlan : {};
   const panels = Array.isArray(plan.panels) ? plan.panels : [];
@@ -1564,7 +1788,9 @@ function normalizePresentationPlan(rawPlan, fallbackPlan) {
     subtitle: sanitizePlainText(panel?.subtitle, 120, fallbackPlan.panels[index]?.subtitle || fallbackPlan.report_title),
     emphasis: panel?.emphasis === "hero" ? "hero" : "standard",
   })).filter((panel) => panel.metrics.length);
-  const chosenPanels = normalizedPanels.length ? normalizedPanels.slice(0, 4) : fallbackPlan.panels;
+  const chosenPanels = prioritizeTimelinePanelForThreePanelView(
+    normalizedPanels.length ? normalizedPanels.slice(0, 4) : fallbackPlan.panels
+  );
   const nextViews = Array.isArray(plan.next_views) ? plan.next_views : [];
   const normalizedNextViews = nextViews.map((view, index) => ({
     id: sanitizePlainText(view?.id, 64, fallbackPlan.next_views[index]?.id || `next_view_${index + 1}`).replace(/[^a-z0-9_]+/gi, "_").toLowerCase(),
@@ -1605,8 +1831,8 @@ async function maybeBuildPresentation(question, plan, summaryBundle, userContext
     userPayload: {
       question,
       plan,
-      userContext: {
-        age: userContext?.age || null,
+    userContext: {
+      age: userContext?.age || null,
         healthGoals: userContext?.healthGoals || [],
       },
       summaryBundle: {
@@ -1651,11 +1877,11 @@ async function maybeBuildPresentation(question, plan, summaryBundle, userContext
         chartContext: summaryBundle.chartContext,
       },
     },
-    model: PRESENT_CONFIG.model,
-    maxTokens: PRESENT_CONFIG.maxTokens,
-    temperature: PRESENT_CONFIG.temperature,
-    timeoutMs,
-    jsonSchema: PRESENT_CONFIG.jsonSchema,
+      model: PRESENT_CONFIG.model,
+      maxTokens: PRESENT_CONFIG.maxTokens,
+      temperature: PRESENT_CONFIG.temperature,
+      timeoutMs,
+      jsonSchema: PRESENT_CONFIG.jsonSchema,
     onTrace: (trace) => recordTrace(debug, "presenter", trace, false),
   });
 
@@ -1693,7 +1919,7 @@ function buildOverviewCards(summaryBundle) {
     : [summaryBundle.primaryMetric];
   return metrics.slice(0, 4).map((metricKey) => {
     const stats = summaryBundle.metricStatsMap?.[metricKey] || {};
-    return {
+  return {
       label: toTitleCase(metricLabel(metricKey)),
       value: metricKey === "sleep_minutes"
         ? formatSleepDurationSpeech(stats.current || stats.avg)
@@ -1795,12 +2021,17 @@ function buildRelationshipScatterSpec({ summaryBundle, base }) {
     .filter((pair) => Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
   const relationship = summaryBundle.crossMetricRelationships || {};
   const corr = Number(relationship.correlation || 0);
+  const palettePrimary = metricToPalette(summaryBundle.primaryMetric);
+  const paletteSecondary = metricToPalette(summaryBundle.secondaryMetric);
+  const colorPrimary = palettePrimary.primary;
+  const colorSecondary = paletteSecondary.primary;
   return validateChartSpec({
     ...base,
     chart_type: "scatter",
     subtitle: `${base.subtitle}${base.subtitle ? " | " : ""}Correlation ${corr.toFixed(1)}`,
     takeaway: relationship.statement || base.takeaway,
     option: {
+      color: [colorPrimary, colorSecondary],
       grid: { left: 56, right: 24, top: 56, bottom: 52 },
       tooltip: {
         trigger: "item",
@@ -1812,6 +2043,7 @@ function buildRelationshipScatterSpec({ summaryBundle, base }) {
         type: "scatter",
         symbolSize: 12,
         data,
+        itemStyle: { color: colorPrimary },
       }],
     },
   }, base.title);
@@ -1835,10 +2067,20 @@ function buildRelationshipBucketSpec(summaryBundle, title = "Relationship summar
 
 function buildSleepTimelineSpec(summaryBundle, title = "Sleep stages through the night") {
   const STAGE_COLORS = { Deep: "#3B82F6", Light: "#A78BFA", REM: "#06B6D4", Wake: "#FB923C" };
-  const timeline = Array.isArray(summaryBundle.sleepStageTimeline) ? summaryBundle.sleepStageTimeline.slice(0, 32) : [];
-  const labels = timeline.map((item) => item.clockLabel || item.label || "");
+  const rawTimeline = Array.isArray(summaryBundle.sleepStageTimeline) ? summaryBundle.sleepStageTimeline.slice(0, 32) : [];
+  const labels = rawTimeline.map((item) => item.clockLabel || item.label || "");
+  const keep = labels.map((l) => {
+    const s = String(l || "").trim();
+    return s !== "0" && s !== "";
+  });
+  const timeline = rawTimeline.filter((_, i) => keep[i]);
+  const filteredLabels = labels.filter((_, i) => keep[i]);
   const stageNames = ["Deep", "Light", "REM", "Wake"];
   const stageToKey = { Deep: "deep", Light: "light", REM: "rem", Wake: "wake" };
+  const readStageMinutes = (item, stageKey) => {
+    const stageMap = item?.stages || item?.stageMinutes || {};
+    return Number(stageMap?.[stageKey] || 0);
+  };
   return validateChartSpec({
     chart_type: "stacked_bar",
     title,
@@ -1847,14 +2089,15 @@ function buildSleepTimelineSpec(summaryBundle, title = "Sleep stages through the
     option: {
       color: stageNames.map((name) => STAGE_COLORS[name]),
       legend: { top: 4 },
-      xAxis: { type: "category", data: labels },
+      xAxis: { type: "category", data: filteredLabels },
       yAxis: { type: "value", name: "minutes" },
       series: stageNames.map((name) => ({
         type: "bar",
         stack: "sleep",
         name,
-        data: timeline.map((item) => Number(item?.stages?.[stageToKey[name]] || 0)),
+        data: timeline.map((item) => readStageMinutes(item, stageToKey[name])),
         itemStyle: { color: STAGE_COLORS[name] },
+        label: { show: false },
       })),
     },
     suggested_follow_up: ["Compare sleep stages with my baseline.", "Explain what stands out."],
@@ -1881,6 +2124,8 @@ function buildSleepStageComparisonSpec(summaryBundle, title = "Sleep stages vs b
   }, title);
 }
 
+const SLEEP_STAGE_TREND_COLORS = { Deep: "#3B82F6", Light: "#A78BFA", REM: "#06B6D4", Wake: "#FB923C" };
+
 function buildSleepStageTrendSpec(summaryBundle, base) {
   const stageTrend = summaryBundle.sleepStageTrendSeries || {};
   const labels = stageTrend.deep?.map((point) => point.label) || [];
@@ -1890,31 +2135,63 @@ function buildSleepStageTrendSpec(summaryBundle, base) {
     ["rem", "REM"],
     ["wake", "Wake"],
   ];
+  const filtered = stageKeys.filter(([key]) => Array.isArray(stageTrend[key]) && stageTrend[key].length);
+  const colors = filtered.map(([, label]) => SLEEP_STAGE_TREND_COLORS[label] || "#94A3B8");
   return validateChartSpec({
     ...base,
     chart_type: "multi_line",
     takeaway: summaryBundle.sleepQuality?.takeaway || base.takeaway,
     option: {
+      color: colors,
       legend: { top: 8 },
       xAxis: { type: "category", data: labels },
       yAxis: { type: "value", name: "minutes" },
-      series: stageKeys
-        .filter(([key]) => Array.isArray(stageTrend[key]) && stageTrend[key].length)
-        .map(([key, label]) => ({
+      series: filtered.map(([key, label], idx) => {
+        const color = colors[idx];
+        return {
           ...seriesToLine(`sleep_${key}`, stageTrend[key].map((point) => Number(point.value || 0))),
           name: label,
-        })),
+          lineStyle: { width: VISUAL_SYSTEM.chartDefaults.lineWidth, color },
+          itemStyle: { color },
+        };
+      }),
     },
   }, base.title);
 }
 
+function getIntradayPresentationMeta(summaryBundle, metricKey = "") {
+  const resolvedMetric = metricKey || summaryBundle.primaryMetric;
+  return summaryBundle.intradayAvailabilityMap?.[resolvedMetric]
+    || summaryBundle.intradayAvailabilityMap?.[intradayMetricForMetric(resolvedMetric)]
+    || null;
+}
+
+function applyIntradayPresentationMeta(base, summaryBundle, metricKey = "") {
+  const intradayMeta = getIntradayPresentationMeta(summaryBundle, metricKey);
+  if (!intradayMeta) return base;
+  return {
+    ...base,
+    subtitle: intradayMeta.is_synthetic
+      ? [base.subtitle, "Estimated pattern"].filter(Boolean).join(" | ")
+      : base.subtitle,
+    is_synthetic: Boolean(intradayMeta.is_synthetic),
+    data_quality_note: intradayMeta.data_quality_note || "",
+    source: intradayMeta.source || null,
+    intraday_status: intradayMeta.intraday_status || null,
+    intraday_reason: intradayMeta.intraday_reason || "",
+  };
+}
+
 function buildIntradayWindowSpec(summaryBundle, title = "Intraday pattern") {
   const buckets = summaryBundle.intradayWindowSummary?.buckets || [];
-  return validateChartSpec({
+  const base = applyIntradayPresentationMeta({
     chart_type: "bar",
     title,
     subtitle: summaryBundle.timeLabel,
     takeaway: summaryBundle.intradayWindowSummary?.takeaway || "This shows which part of the day was most active.",
+  }, summaryBundle, summaryBundle.primaryMetric);
+  return validateChartSpec({
+    ...base,
     option: {
       xAxis: { type: "category", data: buckets.map((row) => row.label) },
       yAxis: { type: "value" },
@@ -1924,29 +2201,53 @@ function buildIntradayWindowSpec(summaryBundle, title = "Intraday pattern") {
   }, title);
 }
 
+function buildMultiPeriodComparisonSpec(summaryBundle, base) {
+  const periods = summaryBundle.previousPeriodComparison?.periods || [];
+  if (periods.length < 3) return null;
+  const labels = periods.map((p) => p.label);
+  const values = periods.map((p) => Number(p.value) || 0);
+  return validateChartSpec({
+    ...base,
+    chart_type: "bar",
+    option: {
+      xAxis: { type: "category", data: labels },
+      yAxis: { type: "value", name: summaryBundle.unit },
+      series: [{ type: "bar", data: values, label: { show: false } }],
+    },
+  }, base.title);
+}
+
 function buildComparisonSpec(summaryBundle, base) {
+  const palette = metricToPalette(summaryBundle.primaryMetric);
+  const colorPrevious = palette.secondary;
+  const colorCurrent = palette.primary;
   return validateChartSpec({
     ...base,
     chart_type: "grouped_bar",
     option: {
+      color: [colorPrevious, colorCurrent],
       xAxis: {
         type: "category",
         data: summaryBundle.previousPeriodComparison.current.map((point) => point.label),
       },
       yAxis: { type: "value", name: summaryBundle.unit },
       series: [
-        { type: "bar", name: "Previous", data: summaryBundle.previousPeriodComparison.previous.map((point) => point.value) },
-        { type: "bar", name: "Current", data: summaryBundle.previousPeriodComparison.current.map((point) => point.value) },
+        { type: "bar", name: "Previous", data: summaryBundle.previousPeriodComparison.previous.map((point) => point.value), itemStyle: { color: colorPrevious } },
+        { type: "bar", name: "Current", data: summaryBundle.previousPeriodComparison.current.map((point) => point.value), itemStyle: { color: colorCurrent } },
       ],
     },
   }, base.title);
 }
 
 function buildComparisonTrendSpec(summaryBundle, base, chartType = "line") {
+  const palette = metricToPalette(summaryBundle.primaryMetric);
+  const colorPrevious = palette.secondary;
+  const colorCurrent = palette.primary;
   return validateChartSpec({
     ...base,
     chart_type: chartType === "area" ? "area" : "line",
     option: {
+      color: [colorPrevious, colorCurrent],
       legend: { top: 8 },
       xAxis: {
         type: "category",
@@ -1957,12 +2258,16 @@ function buildComparisonTrendSpec(summaryBundle, base, chartType = "line") {
         {
           ...seriesToLine(`${summaryBundle.primaryMetric}_previous`, summaryBundle.previousPeriodComparison.previous.map((point) => point.value)),
           name: "Previous",
-          areaStyle: chartType === "area" ? { opacity: 0.1 } : undefined,
+          lineStyle: { width: VISUAL_SYSTEM.chartDefaults.lineWidth, color: colorPrevious },
+          itemStyle: { color: colorPrevious },
+          areaStyle: chartType === "area" ? { opacity: 0.1, color: colorPrevious } : undefined,
         },
         {
           ...seriesToLine(summaryBundle.primaryMetric, summaryBundle.previousPeriodComparison.current.map((point) => point.value)),
           name: "Current",
-          areaStyle: chartType === "area" ? { opacity: 0.16 } : undefined,
+          lineStyle: { width: VISUAL_SYSTEM.chartDefaults.lineWidth, color: colorCurrent },
+          itemStyle: { color: colorCurrent },
+          areaStyle: chartType === "area" ? { opacity: 0.16, color: colorCurrent } : undefined,
         },
       ],
     },
@@ -2027,6 +2332,23 @@ function buildRadarSpec(summaryBundle, base, metrics) {
   }, base.title);
 }
 
+function stripZeroLabelsFromSeries(normalizedSeries) {
+  const labels = normalizedSeries?.labels || [];
+  if (!labels.length) return normalizedSeries;
+  const keep = labels.map((l) => l !== "0" && String(l).trim() !== "0");
+  if (keep.every(Boolean)) return normalizedSeries;
+  const filteredLabels = labels.filter((_, i) => keep[i]);
+  const valuesByMetric = normalizedSeries?.valuesByMetric || {};
+  const filteredValuesByMetric = Object.fromEntries(
+    Object.entries(valuesByMetric).map(([k, arr]) => [k, (arr || []).filter((_, i) => keep[i])])
+  );
+  return {
+    ...normalizedSeries,
+    labels: filteredLabels,
+    valuesByMetric: filteredValuesByMetric,
+  };
+}
+
 function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
   const focusMetrics = Array.isArray(presentation?.focus_metrics) && presentation.focus_metrics.length
     ? presentation.focus_metrics.filter((metricKey) => (summaryBundle.metricsShown || []).includes(metricKey))
@@ -2035,8 +2357,10 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
   const primaryMetric = activeMetrics[0] || summaryBundle.primaryMetric;
   const secondaryMetric = activeMetrics[1] || summaryBundle.secondaryMetric;
   const palette = metricToPalette(primaryMetric);
-  const labels = summaryBundle.normalizedSeries.labels || [];
-  const primaryValues = summaryBundle.normalizedSeries.valuesByMetric?.[primaryMetric] || [];
+  const normalizedSeries = stripZeroLabelsFromSeries(summaryBundle.normalizedSeries || {});
+  summaryBundle = { ...summaryBundle, normalizedSeries };
+  const labels = normalizedSeries.labels || [];
+  const primaryValues = normalizedSeries.valuesByMetric?.[primaryMetric] || [];
   const preferred = presentation.visual_family || plan.visual_family || plan.preferred_chart || "bar";
   const goal = primaryMetric === summaryBundle.primaryMetric ? summaryBundle.goalProgress.goal : getGoalForMetric(primaryMetric, null);
   const title = presentation.chart_title;
@@ -2048,6 +2372,9 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
     takeaway,
     suggested_follow_up: presentation.suggested_drill_downs,
   };
+  const chartBase = isIntradayMetric(primaryMetric)
+    ? applyIntradayPresentationMeta(base, summaryBundle, primaryMetric)
+    : base;
 
   const hasSleepScope = ["sleep_minutes", "sleep_efficiency", "wake_minutes"].includes(primaryMetric);
   const usesSleepStageBreakdown = primaryMetric === "sleep_minutes" && Array.isArray(summaryBundle.sleepStageBreakdown) && summaryBundle.sleepStageBreakdown.length;
@@ -2055,16 +2382,21 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
 
   if (plan.question_type === "relationship_report" && secondaryMetric) {
     const relationshipSummary = { ...summaryBundle, primaryMetric, secondaryMetric };
-    return buildRelationshipScatterSpec({ summaryBundle: relationshipSummary, base });
+    const grouped = summaryBundle.crossMetricRelationships?.grouped || [];
+    const useBucketChart = grouped.length >= 2 && preferred !== "scatter";
+    if (useBucketChart) {
+      return buildRelationshipBucketSpec(relationshipSummary, chartBase.title || "Relationship");
+    }
+    return buildRelationshipScatterSpec({ summaryBundle: relationshipSummary, base: chartBase });
   }
 
   if (preferred === "radar" && activeMetrics.length >= 2) {
-    const radarSpec = buildRadarSpec(summaryBundle, base, activeMetrics.length ? activeMetrics : summaryBundle.metricsShown);
+    const radarSpec = buildRadarSpec(summaryBundle, chartBase, activeMetrics.length ? activeMetrics : summaryBundle.metricsShown);
     if (radarSpec) return radarSpec;
   }
 
   if (preferred === "heatmap" && labels.length >= 1 && primaryValues.length >= 1) {
-    const heatmapSpec = buildWeekdayHeatmapSpec(summaryBundle, base, primaryMetric, labels, primaryValues);
+    const heatmapSpec = buildWeekdayHeatmapSpec(summaryBundle, chartBase, primaryMetric, labels, primaryValues);
     if (heatmapSpec) return heatmapSpec;
   }
 
@@ -2094,7 +2426,7 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
         : { width: 16 };
     return validateChartSpec(
       {
-        ...base,
+        ...chartBase,
         chart_type: "gauge",
         option: {
           series: [
@@ -2124,9 +2456,9 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
   if (usesSleepStageBreakdown && preferred === "pie") {
     const PIE_STAGE_COLORS = { Deep: "#3B82F6", Light: "#A78BFA", REM: "#06B6D4", Wake: "#FB923C" };
     return validateChartSpec({
-      ...base,
+      ...chartBase,
       chart_type: "pie",
-      takeaway: summaryBundle.sleepQuality?.takeaway || base.takeaway,
+      takeaway: summaryBundle.sleepQuality?.takeaway || chartBase.takeaway,
       option: {
         color: summaryBundle.sleepStageBreakdown.map((slice) => PIE_STAGE_COLORS[slice.name] || "#94A3B8"),
         legend: { bottom: 14, left: "center", orient: "horizontal", textStyle: { fontSize: 14 } },
@@ -2147,19 +2479,24 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
 
   if (preferred === "scatter" && secondaryMetric) {
     const relationshipSummary = { ...summaryBundle, primaryMetric, secondaryMetric };
-    return buildRelationshipScatterSpec({ summaryBundle: relationshipSummary, base });
+    return buildRelationshipScatterSpec({ summaryBundle: relationshipSummary, base: chartBase });
   }
 
   if (preferred === "stacked_bar" && secondaryMetric) {
+    const palPrimary = metricToPalette(primaryMetric);
+    const palSecondary = metricToPalette(secondaryMetric);
+    const colorPrimary = palPrimary.primary;
+    const colorSecondary = palSecondary.primary === colorPrimary ? palPrimary.secondary : palSecondary.primary;
     return validateChartSpec({
-      ...base,
+      ...chartBase,
       chart_type: "stacked_bar",
       option: {
+        color: [colorPrimary, colorSecondary],
         xAxis: { type: "category", data: labels },
         yAxis: { type: "value" },
         series: [
-          { type: "bar", name: toTitleCase(metricLabel(primaryMetric)), stack: "total", data: primaryValues },
-          { type: "bar", name: toTitleCase(metricLabel(secondaryMetric)), stack: "total", data: summaryBundle.normalizedSeries.valuesByMetric?.[secondaryMetric] || [] },
+          { type: "bar", name: toTitleCase(metricLabel(primaryMetric)), stack: "total", data: primaryValues, itemStyle: { color: colorPrimary } },
+          { type: "bar", name: toTitleCase(metricLabel(secondaryMetric)), stack: "total", data: summaryBundle.normalizedSeries.valuesByMetric?.[secondaryMetric] || [], itemStyle: { color: colorSecondary } },
         ],
       },
     }, title);
@@ -2167,22 +2504,29 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
 
   if (preferred === "composed_summary" || ((activeMetrics || []).length > 1 && ["overview_report", "anomaly_explanation", "deep_dive"].includes(plan.question_type))) {
     const overviewSummary = { ...summaryBundle, primaryMetric, metricsShown: activeMetrics.length ? activeMetrics : summaryBundle.metricsShown };
-    return buildOverviewComposedSpec({ plan, summaryBundle: overviewSummary, presentation, labels, primaryValues, base });
+    return buildOverviewComposedSpec({ plan, summaryBundle: overviewSummary, presentation, labels, primaryValues, base: chartBase });
   }
 
   if (preferred === "multi_line" || (activeMetrics || []).length > 1) {
+    const metricKeys = (activeMetrics.length ? activeMetrics : Object.keys(summaryBundle.normalizedSeries.valuesByMetric || {})).slice(0, 4);
+    const fallbackPalette = metricToPalette("fallback");
+    const seriesColors = fallbackPalette.series && fallbackPalette.series.length
+      ? fallbackPalette.series
+      : [fallbackPalette.primary, fallbackPalette.secondary, fallbackPalette.accent, "#8B5CF6"];
+    const colors = metricKeys.map((_, idx) => seriesColors[idx % seriesColors.length]);
     return validateChartSpec({
-      ...base,
+      ...chartBase,
       chart_type: "multi_line",
       option: {
+        color: colors,
         xAxis: { type: "category", data: labels },
         yAxis: { type: "value" },
-        series: (activeMetrics.length ? activeMetrics : Object.keys(summaryBundle.normalizedSeries.valuesByMetric || {})).slice(0, 4).map((metricKey) => {
-          const pal = metricToPalette(metricKey);
+        series: metricKeys.map((metricKey, idx) => {
+          const color = colors[idx];
           return {
             ...seriesToLine(metricKey, summaryBundle.normalizedSeries.valuesByMetric?.[metricKey] || []),
-            lineStyle: { width: VISUAL_SYSTEM.chartDefaults.lineWidth, color: pal.primary },
-            itemStyle: { color: pal.primary },
+            lineStyle: { width: VISUAL_SYSTEM.chartDefaults.lineWidth, color },
+            itemStyle: { color },
           };
         }),
       },
@@ -2192,9 +2536,9 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
   if ((preferred === "area" || preferred === "timeline") && summaryBundle.intradayWindowSummary?.buckets?.length) {
     if (String(primaryMetric).endsWith("_intraday")) {
       return validateChartSpec({
-        ...base,
+        ...chartBase,
         chart_type: preferred === "timeline" ? "timeline" : "area",
-        takeaway: summaryBundle.intradayInsights?.takeaway || base.takeaway,
+        takeaway: summaryBundle.intradayInsights?.takeaway || chartBase.takeaway,
         option: {
           xAxis: { type: "category", data: labels },
           yAxis: { type: "value", name: metricUnit(primaryMetric) || summaryBundle.unit },
@@ -2209,12 +2553,12 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
   }
 
   if ((preferred === "line" || preferred === "area") && plan.question_type === "comparison_report" && summaryBundle.previousPeriodComparison?.current?.length) {
-    return buildComparisonTrendSpec(summaryBundle, base, preferred);
+    return buildComparisonTrendSpec(summaryBundle, chartBase, preferred);
   }
 
   if (preferred === "area" || preferred === "timeline" || preferred === "line") {
     return validateChartSpec({
-      ...base,
+      ...chartBase,
       chart_type: preferred === "timeline" ? "timeline" : preferred === "line" ? "line" : "area",
       option: {
         xAxis: { type: "category", data: labels },
@@ -2227,8 +2571,13 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
     }, title);
   }
 
+  if (plan.question_type === "comparison_report" && summaryBundle.previousPeriodComparison?.periods?.length >= 3) {
+    const multiSpec = buildMultiPeriodComparisonSpec({ ...summaryBundle, primaryMetric }, chartBase);
+    if (multiSpec) return multiSpec;
+  }
+
   if (preferred === "grouped_bar" && summaryBundle.previousPeriodComparison?.current?.length) {
-    return buildComparisonSpec({ ...summaryBundle, primaryMetric }, base);
+    return buildComparisonSpec({ ...summaryBundle, primaryMetric }, chartBase);
   }
 
   if (preferred === "grouped_bar" && labels.length >= 2 && primaryValues.length >= 2) {
@@ -2240,18 +2589,18 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
         primaryMetric,
         previousPeriodComparison: synthetic,
         unit: summaryBundle.unit || metricUnit(primaryMetric),
-      }, base);
+      }, chartBase);
     }
   }
 
   if (usesSleepStageBreakdown) {
     if (summaryBundle.sleepStageBreakdown?.length) {
       const PIE_STAGE_COLORS = { Deep: "#3B82F6", Light: "#A78BFA", REM: "#06B6D4", Wake: "#FB923C" };
-      return validateChartSpec({
-        ...base,
-        chart_type: "pie",
-        takeaway: summaryBundle.sleepQuality?.takeaway || base.takeaway,
-        option: {
+    return validateChartSpec({
+      ...chartBase,
+      chart_type: "pie",
+      takeaway: summaryBundle.sleepQuality?.takeaway || chartBase.takeaway,
+      option: {
           color: summaryBundle.sleepStageBreakdown.map((slice) => PIE_STAGE_COLORS[slice.name] || "#94A3B8"),
           legend: { bottom: 14, left: "center", orient: "horizontal", textStyle: { fontSize: 14 } },
           series: [{
@@ -2271,7 +2620,7 @@ function buildPrimaryChartSpec(plan, summaryBundle, presentation) {
   }
 
   return validateChartSpec({
-    ...base,
+    ...chartBase,
     chart_type: "bar",
     highlight: summaryBundle.chartContext.highlight,
     option: {
@@ -2326,6 +2675,7 @@ function buildMetricScopedSummary(summaryBundle, metrics = []) {
       || summaryBundle.intradayInsightsMap?.[scopedIntradayMetric]
       || (inheritsPrimaryIntraday ? summaryBundle.intradayInsights : null)
       || null,
+    intradayAvailabilityMap: summaryBundle.intradayAvailabilityMap || {},
     sleepSeriesBundle: scopedMetrics.some((m) => ["sleep_minutes", "sleep_efficiency", "wake_minutes"].includes(m)) ? summaryBundle.sleepSeriesBundle : null,
     sleepStageBreakdown: scopedMetrics.some((m) => ["sleep_minutes", "sleep_efficiency", "wake_minutes"].includes(m)) ? summaryBundle.sleepStageBreakdown : null,
     sleepStageComparison: scopedMetrics.some((m) => ["sleep_minutes", "sleep_efficiency", "wake_minutes"].includes(m)) ? summaryBundle.sleepStageComparison : null,
@@ -2383,7 +2733,7 @@ function validateReportPlan(reportPlan, summaryBundle, plan) {
   const fallback = buildDefaultReportPlan("", plan, summaryBundle);
   const sourcePanels = normalizedPanels.length ? normalizedPanels : fallback.panels;
   const usedVisuals = new Set();
-  const chosenPanels = sourcePanels.map((panel, index) => {
+  const chosenPanels = prioritizeTimelinePanelForThreePanelView(sourcePanels.map((panel, index) => {
     let visualFamily = panel.visual_family;
     if (usedVisuals.has(visualFamily) || sourcePanels.length > 1) {
       visualFamily = chooseVisualFamily(panel.goal, panel.metrics, plan, summaryBundle, usedVisuals);
@@ -2394,7 +2744,7 @@ function validateReportPlan(reportPlan, summaryBundle, plan) {
       visual_family: visualFamily,
       emphasis: panel.emphasis || (sourcePanels.length === 3 && index === 0 ? "hero" : "standard"),
     };
-  });
+  }));
   const response_mode = chosenPanels.length > 1 ? "multi_panel_report" : "single_view";
   const nextViews = Array.isArray(reportPlan?.next_views)
     ? reportPlan.next_views
@@ -2468,6 +2818,12 @@ function buildPayload({
     chartType: primaryPanel?.chart_spec?.chart_type || "",
     metricsShown: summaryBundle.metricsShown,
     timeWindow: summaryBundle.timeWindow,
+    intradayAvailabilityMap: summaryBundle.intradayAvailabilityMap || {},
+    intraday_status: primaryPanel?.chart_spec?.intraday_status || summaryBundle.chartContext?.intraday_status || null,
+    intraday_reason: primaryPanel?.chart_spec?.intraday_reason || summaryBundle.chartContext?.intraday_reason || "",
+    is_synthetic: Boolean(primaryPanel?.chart_spec?.is_synthetic || summaryBundle.chartContext?.is_synthetic),
+    data_quality_note: primaryPanel?.chart_spec?.data_quality_note || summaryBundle.chartContext?.data_quality_note || "",
+    source: primaryPanel?.chart_spec?.source || summaryBundle.chartContext?.source || null,
     suggestedDrillDowns,
     followupMode: reportPlan.followup_mode,
     panels: builtPanels.map((panel, index) => ({
@@ -2601,98 +2957,26 @@ function buildBridgeSpeech(plan) {
   return compressAlexaSpeech(`I am checking your ${metricLabel(primaryMetric)} for ${timeLabel} now.`);
 }
 
-async function buildSpeechAnswer({ question, plan, summaryBundle, microAnswer, debug = null, continuationHint = null }) {
-  qnaLog("present", "requesting GPT speech answer", {
-    question,
-    question_type: plan.question_type,
-    metrics: plan.metrics_needed,
-    continuation: Boolean(continuationHint),
-  });
-  try {
-    const userPayload = {
-      question,
-      questionType: plan.question_type,
-      primaryMetric: summaryBundle.primaryMetric,
-        secondaryMetric: summaryBundle.secondaryMetric || null,
-        timeLabel: summaryBundle.timeLabel,
-        currentPeriodStats: summaryBundle.currentPeriodStats,
-        previousPeriodComparison: summaryBundle.previousPeriodComparison,
-        relationship: summaryBundle.crossMetricRelationships,
-        sleepQuality: summaryBundle.sleepQuality,
-        sleepStageBreakdown: summaryBundle.sleepStageBreakdown,
-        sleepStageComparison: summaryBundle.sleepStageComparison,
-        sleepTimingSummary: summaryBundle.sleepTimingSummary,
-        intradayInsights: summaryBundle.intradayInsights,
-        activitySummary: summaryBundle.activitySummary,
-        goalProgress: summaryBundle.goalProgress,
-        anomalies: (summaryBundle.anomalies || []).slice(0, 3),
-        consistency: summaryBundle.consistency,
-        weekdayVsWeekend: summaryBundle.weekdayVsWeekend,
-        storyCandidates: summaryBundle.storyCandidates,
-        reportFacts: summaryBundle.reportFacts,
-      };
-    if (continuationHint) userPayload.continuationHint = continuationHint;
-    const text = await callOpenAIStreaming({
-      systemPrompt: SPEECH_CONFIG.systemPrompt,
-      userMessage: JSON.stringify(userPayload),
-      model: SPEECH_CONFIG.model,
-      maxTokens: SPEECH_CONFIG.maxTokens,
-      temperature: SPEECH_CONFIG.temperature,
-      timeoutMs: Math.max(SPEECH_CONFIG.timeoutMs || 0, DEFAULT_VOICE_DEADLINE_MS),
-      onTrace: (trace) => recordTrace(debug, "speech", trace, false),
-    });
-    if (text) {
-      qnaLog("present", "GPT speech succeeded", { length: text.length });
-      return compressAlexaSpeech(text, microAnswer);
-    }
-    qnaLog("present", "GPT speech returned empty, using microAnswer");
-    if (debug?.gpt_trace?.speech) debug.gpt_trace.speech.used_fallback = true;
-    return null;
-  } catch (error) {
-    qnaError("present", "GPT speech failed", error);
-    recordTrace(debug, "speech", {
-      status: "error",
-      request_summary: summarizeForTrace({ question, questionType: plan.question_type }),
-      response_summary: "",
-      error_message: error?.message || String(error),
-    }, true);
-    return null;
-  }
-}
-
-async function selectVoiceAnswer({ microAnswer, speechPromise, deadlineMs = DEFAULT_VOICE_DEADLINE_MS }) {
-  if (!speechPromise || typeof speechPromise.then !== "function") {
-    return { status: "partial", voiceAnswer: microAnswer };
-  }
-  if (!Number.isFinite(Number(deadlineMs)) || Number(deadlineMs) <= 0) {
-    try {
-      const speech = await speechPromise;
-      return speech
-        ? { status: "complete", voiceAnswer: speech }
-        : { status: "partial", voiceAnswer: microAnswer };
-    } catch (_) {
-      return { status: "partial", voiceAnswer: microAnswer };
-    }
-  }
-  const result = await Promise.race([
-    speechPromise.then((speech) => ({ type: "speech", speech })).catch(() => ({ type: "error" })),
-    new Promise((resolve) => setTimeout(() => resolve({ type: "timeout" }), Math.max(0, Number(deadlineMs) || 0))),
-  ]);
-  if (result?.type === "speech" && result.speech) {
-    qnaLog("voice", "using GPT speech", { length: result.speech?.length });
-    return { status: "complete", voiceAnswer: result.speech };
-  }
-  qnaLog("voice", "using microAnswer", { reason: result?.type === "timeout" ? "timeout" : result?.type === "error" ? "error" : "no-speech" });
-  return { status: "partial", voiceAnswer: microAnswer };
-}
-
 async function buildVisualPayload({ requestId = null, question, plan, fetched, summaryBundle, userContext, allowPresenterLLM = true, debug = null }) {
   qnaLog("visual", "buildVisualPayload start", { allowPresenterLLM });
   try {
     const presentation = allowPresenterLLM
       ? await maybeBuildPresentation(question, plan, summaryBundle, userContext, PRESENT_CONFIG.timeoutMs, debug)
       : buildDefaultReportPlan(question, plan, summaryBundle);
-    const payload = buildPayload({ requestId, question, plan, fetched, summaryBundle, presentation, debug });
+    const voiceAnswerSource = allowPresenterLLM && !didTraceUseFallback(debug, "presenter")
+      ? "gpt"
+      : "fallback";
+    const payload = buildPayload({
+      requestId,
+      question,
+      plan,
+      fetched,
+      summaryBundle,
+      presentation,
+      voiceAnswerSource,
+      answerReady: true,
+      debug,
+    });
     qnaLog("visual", "buildVisualPayload done", { stageCount: payload?.stageCount ?? 0 });
     return payload;
   } catch (err) {
@@ -2742,7 +3026,7 @@ async function answerQuestion({
       requestId,
       question: q,
       plan,
-      title: "Reminder help",
+        title: "Reminder help",
       spokenAnswer: "The reminder flow handles medication schedules. Ask me here about sleep, activity, heart trends, or comparisons.",
       takeaway: "The reminder flow handles medication schedules.",
       suggestedLabels: ["Sleep this week"],
@@ -2809,75 +3093,38 @@ async function answerQuestion({
     ? await maybeBuildPresentation(q, plan, summaryBundle, ctx, PRESENT_CONFIG.timeoutMs, debug)
     : null;
   if (!presentation) presentation = buildDefaultReportPlan(q, plan, summaryBundle);
-  const payloadFromPresentation = buildPayload({
+  const voiceAnswerSource = allowPresenterLLM && !didTraceUseFallback(debug, "presenter")
+    ? "gpt"
+    : "fallback";
+  const finalPayload = buildPayload({
     requestId,
     question: q,
     plan,
     fetched,
     summaryBundle,
     presentation,
-    voiceAnswerOverride: microAnswer,
-    voiceAnswerSource: "fallback",
-    answerReady: false,
+    voiceAnswerOverride: "",
+    voiceAnswerSource,
+    answerReady: true,
     debug,
   });
 
-  const speechPromise = buildSpeechAnswer({ question: q, plan, summaryBundle, microAnswer, debug });
-  const speechReadyPromise = Promise.resolve(speechPromise)
-    .then((speech) => {
-      if (!speech) return null;
-      return buildPayload({
-        requestId,
-        question: q,
-        plan,
-        fetched,
-        summaryBundle,
-        presentation,
-        voiceAnswerOverride: speech,
-        voiceAnswerSource: "gpt",
-        answerReady: true,
-        debug,
-      });
-    })
-    .catch(() => null);
-
-  const voiceResult = await selectVoiceAnswer({
-    microAnswer,
-    speechPromise,
-    deadlineMs: voiceDeadlineMs,
-  });
-
-  const immediatePayload = voiceResult.status === "complete"
-    ? buildPayload({
-        requestId,
-        question: q,
-        plan,
-        fetched,
-        summaryBundle,
-        presentation,
-        voiceAnswerOverride: voiceResult.voiceAnswer,
-        voiceAnswerSource: "gpt",
-        answerReady: true,
-        debug,
-      })
-    : payloadFromPresentation;
-
   qnaLog("pipeline", "answerQuestion returning", {
-    status: voiceResult.status,
-    voiceAnswerLength: voiceResult.voiceAnswer?.length ?? 0,
-  });
+    status: "complete",
+    voiceAnswerLength: finalPayload.voice_answer?.length ?? microAnswer.length ?? 0,
+    });
 
-  return {
-    status: voiceResult.status === "complete" ? "complete" : "pending",
-    answerReady: voiceResult.status === "complete",
-    voiceAnswerSource: voiceResult.status === "complete" ? "gpt" : "fallback",
-    voiceAnswer: voiceResult.status === "complete" ? voiceResult.voiceAnswer : "",
-    payload: immediatePayload,
-    planner: plan,
-    rawData: fetched,
-    userContext: ctx,
+    return {
+      status: "complete",
+    answerReady: true,
+    voiceAnswerSource,
+    voiceAnswer: finalPayload.voice_answer || microAnswer,
+    payload: finalPayload,
+      planner: plan,
+      rawData: fetched,
+      userContext: ctx,
     visualContinuationPromise: null,
-    speechReadyPromise: voiceResult.status === "complete" ? null : speechReadyPromise,
+    speechReadyPromise: null,
   };
 }
 
@@ -2919,7 +3166,20 @@ async function buildRichQnaPayload({
   const presentation = allowPresenterLLM
     ? await maybeBuildPresentation(q, plan, summaryBundle, ctx, PRESENT_CONFIG.timeoutMs, debug)
     : buildDefaultReportPlan(q, plan, summaryBundle);
-  const payload = buildPayload({ requestId, question: q, plan, fetched, summaryBundle, presentation, debug });
+  const voiceAnswerSource = allowPresenterLLM && !didTraceUseFallback(debug, "presenter")
+    ? "gpt"
+    : "fallback";
+  const payload = buildPayload({
+    requestId,
+    question: q,
+    plan,
+    fetched,
+    summaryBundle,
+    presentation,
+    voiceAnswerSource,
+    answerReady: true,
+    debug,
+  });
   qnaLog("present", "built rich payload", {
     requestId,
     chartType: payload.primary_visual?.chart_type,
@@ -3028,20 +3288,7 @@ async function answerFollowupFromPayload({ payload, question }) {
       suggested_followup_prompt: derivedPresentation.suggested_followup_prompt,
       followup_mode: "chart_aware",
     };
-
-    let gptSpeech = null;
-    try {
-      gptSpeech = await buildSpeechAnswer({
-        question: payload?.question || question || "",
-        plan: derivedPlan,
-        summaryBundle,
-        microAnswer: fallbackAnswer,
-        debug,
-        continuationHint: options.continuationHint || null,
-      });
-    } catch (_) {
-      qnaWarn("present", "follow-up GPT speech failed, keeping visual update only", { question: question?.slice(0, 40) });
-    }
+    const followupVoiceSource = !didTraceUseFallback(debug, "presenter") ? "gpt" : "fallback";
 
     const nextPayload = buildPayload({
       requestId: payload?.requestId || null,
@@ -3050,18 +3297,18 @@ async function answerFollowupFromPayload({ payload, question }) {
       fetched: null,
       summaryBundle,
       presentation,
-      voiceAnswerOverride: gptSpeech || fallbackAnswer,
-      voiceAnswerSource: gptSpeech ? "gpt" : "fallback",
-      answerReady: Boolean(gptSpeech),
+      voiceAnswerOverride: "",
+      voiceAnswerSource: followupVoiceSource,
+      answerReady: true,
       activePanelId: target.id || target.panel_id || buildPanelId(targetGoal, targetMetrics),
       debug,
     });
 
     return buildFollowupResponse({
       nextPayload,
-      answer: gptSpeech || "",
-      answerReady: Boolean(gptSpeech),
-      voiceAnswerSource: gptSpeech ? "gpt" : "fallback",
+      answer: nextPayload.voice_answer || fallbackAnswer,
+      answerReady: true,
+      voiceAnswerSource: nextPayload.voice_answer_source || followupVoiceSource,
       chartSpec: nextPayload.chart_spec,
       suggestedQuestions: sanitizeListText((nextPayload.next_views || []).map((view) => view.label), 2, 80),
     });
@@ -3075,32 +3322,18 @@ async function answerFollowupFromPayload({ payload, question }) {
       time_scope: payload?.time_scope || "last_7_days",
       comparison_mode: payload?.comparison_mode || "none",
     };
-    let fullSpeech = null;
-    try {
-      const speech = await buildSpeechAnswer({
-        question: originalQuestion,
-        plan: currentPlan,
-        summaryBundle,
-        microAnswer: fallbackAnswer,
-        debug,
-        continuationHint: "The user heard only a brief answer due to a timeout. Give the full 3–4 sentence spoken summary for this same data and chart. Do not change the topic; expand on what is already shown.",
-      });
-      if (speech) fullSpeech = speech;
-    } catch (_) {
-      qnaWarn("present", "continue-after-timeout speech failed, waiting for GPT", { question: question?.slice(0, 40) });
-    }
     const currentChartSpec = activePanel?.chart_spec || payload?.chart_spec || payload?.primary_visual;
     const resumedPayload = setPayloadVoiceState({
       ...payload,
       primary_visual: currentChartSpec,
       chart_spec: currentChartSpec,
       activeStageIndex: Math.max(0, panels.findIndex((p) => p.panel_id === activePanelId)),
-    }, fullSpeech || fallbackAnswer, fullSpeech ? "gpt" : "fallback", Boolean(fullSpeech), debug);
+    }, payload?.spoken_answer || payload?.voice_answer || fallbackAnswer, payload?.voice_answer_source || "fallback", true, debug);
     return buildFollowupResponse({
       nextPayload: resumedPayload,
-      answer: fullSpeech || "",
-      answerReady: Boolean(fullSpeech),
-      voiceAnswerSource: fullSpeech ? "gpt" : "fallback",
+      answer: resumedPayload.voice_answer || fallbackAnswer,
+      answerReady: true,
+      voiceAnswerSource: resumedPayload.voice_answer_source || "fallback",
       chartSpec: currentChartSpec,
     });
   }
@@ -3234,10 +3467,10 @@ async function answerFollowupFromPayload({ payload, question }) {
   });
 
   return callOpenAIJson({
-    systemPrompt: FOLLOWUP_CONFIG.systemPrompt,
-    userPayload: {
-      userQuestion: question,
-      summary: payload?.summary || null,
+      systemPrompt: FOLLOWUP_CONFIG.systemPrompt,
+      userPayload: {
+        userQuestion: question,
+        summary: payload?.summary || null,
       chartContext,
       summaryBundle: summaryBundle
         ? {
@@ -3251,12 +3484,12 @@ async function answerFollowupFromPayload({ payload, question }) {
             storyCandidates: summaryBundle.storyCandidates,
           }
         : null,
-    },
-    model: FOLLOWUP_CONFIG.model,
-    maxTokens: FOLLOWUP_CONFIG.maxTokens,
-    temperature: FOLLOWUP_CONFIG.temperature,
-    timeoutMs: FOLLOWUP_CONFIG.timeoutMs,
-    jsonSchema: FOLLOWUP_CONFIG.jsonSchema,
+      },
+      model: FOLLOWUP_CONFIG.model,
+      maxTokens: FOLLOWUP_CONFIG.maxTokens,
+      temperature: FOLLOWUP_CONFIG.temperature,
+      timeoutMs: FOLLOWUP_CONFIG.timeoutMs,
+      jsonSchema: FOLLOWUP_CONFIG.jsonSchema,
     onTrace: (trace) => recordTrace(debug, "followup", trace, false),
   }).then((parsed) => {
     if (!parsed?.answer) {
@@ -3298,8 +3531,8 @@ module.exports = {
   validateReportPlan,
   buildBridgeSpeech,
   buildMicroAnswer,
-  buildSpeechAnswer,
   buildVisualPayload,
-  selectVoiceAnswer,
   buildFitbitInternalUrl,
+  hydrateIntradayMetricData,
+  resolveInternalApiBaseUrl,
 };

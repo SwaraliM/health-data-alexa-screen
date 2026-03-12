@@ -44,3 +44,22 @@ test("cartesian validation preserves series colors from the payload", () => {
   expect(spec.option.series[0].itemStyle.color).toBe("#2563EB");
   expect(spec.option.series[0].lineStyle.color).toBe("#2563EB");
 });
+
+test("stacked sleep timelines keep bucket alignment and suppress bogus zero-only x-axis labels", () => {
+  const spec = validateChartSpec({
+    chart_type: "stacked_bar",
+    title: "Sleep stages",
+    option: {
+      xAxis: { data: ["23:00", 0, "23:30", "", "00:00"] },
+      yAxis: { type: "value", name: "minutes" },
+      series: [
+        { type: "bar", name: "Deep", data: [20, 0, 18, 0, 15] },
+        { type: "bar", name: "Light", data: [35, 42, 40, 38, 34] },
+      ],
+    },
+  }, "Sleep stages");
+
+  expect(spec.chart_type).toBe("stacked_bar");
+  expect(spec.option.xAxis.data).toEqual(["23:00", "", "23:30", "", "00:00"]);
+  expect(spec.option.xAxis.axisLabel.hideOverlap).toBe(true);
+});

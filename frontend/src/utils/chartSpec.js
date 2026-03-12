@@ -31,6 +31,8 @@ const MAX_TAKEAWAY = 220;
 const MAX_FOLLOW_UP = 4;
 const MAX_SERIES = 4;
 const MAX_LIST_ITEMS = 8;
+const TIME_AXIS_LABEL_RE = /^(?:\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\s?(?:AM|PM))$/i;
+const ZERO_ONLY_LABEL_RE = /^0(?:\.0+)?$/;
 
 const toNum = (value, fallback = 0) => {
   const n = Number(value);
@@ -45,6 +47,20 @@ const sanitizeText = (value, max = 80, fallback = "") => {
 const sanitizeStringArray = (values, maxItems = MAX_POINTS, maxLen = 24) => {
   if (!Array.isArray(values)) return [];
   return values.map((value) => sanitizeText(value, maxLen, "")).filter(Boolean).slice(0, maxItems);
+};
+
+const sanitizeAxisLabels = (values, desiredLength, maxLen = 24) => {
+  if (!Array.isArray(values) || !values.length) return [];
+  const safeLength = Number.isFinite(desiredLength) && desiredLength > 0
+    ? Math.min(MAX_POINTS, desiredLength)
+    : Math.min(MAX_POINTS, values.length);
+  const labels = values
+    .slice(0, safeLength)
+    .map((value) => sanitizeText(value, maxLen, ""));
+  const hasTimeAxis = labels.filter((label) => TIME_AXIS_LABEL_RE.test(label)).length >= 2;
+  const cleaned = labels.map((label) => (hasTimeAxis && ZERO_ONLY_LABEL_RE.test(label) ? "" : label));
+  while (cleaned.length < safeLength) cleaned.push("");
+  return cleaned;
 };
 
 const sanitizeFollowUps = (values) => {
@@ -164,7 +180,6 @@ function sanitizePieOption(rawOption = {}) {
 }
 
 function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
-  const labels = sanitizeStringArray(rawOption?.xAxis?.data || [], MAX_POINTS, 22);
   const yAxisName = sanitizeText(rawOption?.yAxis?.name, 20, "");
   const typeMap = {
     bar: "bar",
@@ -180,9 +195,23 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
   const rawSeries = Array.isArray(rawOption.series) ? rawOption.series : [];
   const parsedSeries = sanitizeSeries(rawSeries, seriesType);
   if (!parsedSeries.length) return null;
-  const xLabels = labels.length
-    ? labels
-    : Array.from({ length: Math.min(MAX_POINTS, parsedSeries[0].data.length) }, (_, idx) => String(idx + 1));
+  const maxSeriesLength = Math.min(
+    MAX_POINTS,
+    Math.max(...parsedSeries.map((item) => (Array.isArray(item.data) ? item.data.length : 0)))
+  );
+  const rawXAxis = rawOption?.xAxis && typeof rawOption.xAxis === "object" ? { ...rawOption.xAxis } : {};
+  const rawAxisLabels = Array.isArray(rawXAxis.data) ? rawXAxis.data : [];
+  const xLabels = rawAxisLabels.length
+    ? sanitizeAxisLabels(rawAxisLabels, maxSeriesLength, 22)
+    : Array.from({ length: maxSeriesLength }, (_, idx) => String(idx + 1));
+  const hasTimeAxis = xLabels.filter((label) => TIME_AXIS_LABEL_RE.test(label)).length >= 2;
+  const axisLabel = rawXAxis.axisLabel && typeof rawXAxis.axisLabel === "object" ? { ...rawXAxis.axisLabel } : undefined;
+  if (hasTimeAxis) {
+    rawXAxis.axisLabel = {
+      ...(axisLabel || {}),
+      hideOverlap: axisLabel?.hideOverlap ?? true,
+    };
+  }
 
   const series = parsedSeries.map((item) => ({
     ...item,
@@ -201,7 +230,7 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
     grid: rawOption?.grid && typeof rawOption.grid === "object" ? { ...rawOption.grid } : undefined,
     xAxis: chartType === "scatter"
       ? { ...(rawOption?.xAxis || {}), type: "value", name: sanitizeText(rawOption?.xAxis?.name, 20, "") }
-      : { ...(rawOption?.xAxis || {}), type: "category", data: xLabels },
+      : { ...rawXAxis, type: "category", data: xLabels },
     yAxis: { ...(rawOption?.yAxis || {}), type: rawOption?.yAxis?.type || "value", name: yAxisName },
     series,
   };

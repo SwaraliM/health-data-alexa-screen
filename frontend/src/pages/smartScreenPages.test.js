@@ -15,9 +15,25 @@ jest.mock("@ant-design/plots", () => ({
 }));
 
 describe("Smart screen page smoke tests", () => {
+  let speechSynthesisMock;
+
   beforeEach(() => {
     sessionStorage.clear();
     jest.restoreAllMocks();
+    speechSynthesisMock = {
+      speak: jest.fn(),
+      cancel: jest.fn(),
+    };
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: speechSynthesisMock,
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: jest.fn(function SpeechSynthesisUtterance(text) {
+        this.text = text;
+      }),
+    });
   });
 
   test("renders dashboard page shell", async () => {
@@ -156,8 +172,90 @@ describe("Smart screen page smoke tests", () => {
     });
 
     expect(await screen.findByRole("heading", { level: 2, name: "Steps report" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 3, name: "Steps - Last 7 days" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 3, name: "Steps - Last 7 days" })).toBeNull();
     expect(document.querySelector(".hd-panel-grid-single_focus")).toBeTruthy();
+    expect(document.querySelector(".hd-main-single-panel")).toBeTruthy();
+    expect(document.querySelector(".hd-panel-card-single-panel")).toBeTruthy();
+    expect(document.querySelector(".hd-panel-chart-single-panel")).toBeTruthy();
+  });
+
+  test("shows the slow-status banner when a delayed update arrives", async () => {
+    render(
+      <MemoryRouter>
+        <QnAPage />
+      </MemoryRouter>
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("visualStatusUpdate", {
+        detail: {
+          type: "slow",
+          message: "This is taking a little longer. I will read the answer as soon as it is ready.",
+        },
+      }));
+    });
+
+    expect(await screen.findByText("This is taking a little longer. I will read the answer as soon as it is ready.")).toBeTruthy();
+    expect(document.querySelector(".hd-ready-banner.slow")).toBeTruthy();
+  });
+
+  test("auto-speaks a ready answer once per request", async () => {
+    jest.useFakeTimers();
+    sessionStorage.setItem(
+      "qnaData",
+      JSON.stringify({
+        requestId: "req-auto-speak",
+        answer_ready: true,
+        response_mode: "single_view",
+        layout: "single_focus",
+        report_title: "Sleep detail",
+        takeaway: "Sleep improved.",
+        spoken_answer: "Sleep improved.",
+        panels: [{
+          panel_id: "sleep_detail",
+          title: "Sleep detail",
+          subtitle: "Last night",
+          goal: "single_metric_status",
+          metrics: ["sleep_minutes"],
+          visual_family: "line",
+          chart_spec: {
+            chart_type: "line",
+            title: "Sleep detail",
+            subtitle: "Last night",
+            takeaway: "Sleep improved.",
+            option: {
+              xAxis: { data: ["11 PM", "1 AM"] },
+              yAxis: { type: "value" },
+              series: [{ type: "line", data: [1, 2] }],
+            },
+          },
+        }],
+      })
+    );
+
+    render(
+      <MemoryRouter>
+        <QnAPage />
+      </MemoryRouter>
+    );
+
+    await screen.findByRole("heading", { level: 2, name: "Sleep detail" });
+
+    act(() => {
+      jest.advanceTimersByTime(250);
+    });
+
+    expect(window.speechSynthesis.cancel).toHaveBeenCalledTimes(1);
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+    expect(window.speechSynthesis.speak.mock.calls[0][0].text).toBe("Sleep improved.");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("qnaDataUpdated"));
+      jest.advanceTimersByTime(250);
+    });
+
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
   });
 
   test("renders multi-panel report payload", async () => {

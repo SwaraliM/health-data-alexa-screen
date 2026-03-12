@@ -1,9 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FiUser } from "react-icons/fi";
 import EChartCard from "../components/EChartCard";
 import { getCurrentTime } from "../utils/getCurrentTime";
 import { validateChartSpec } from "../utils/chartSpec";
 import "../css/chartViewer.css";
+
+const QNA_SPOKEN_REQUEST_STORAGE_KEY = "qnaLastSpokenRequestId";
+const VISUAL_STATUS_STORAGE_KEY = "visualStatus";
+const VISUAL_STATUS_TTL_MS = 30 * 1000;
 
 const safeJsonParse = (value, fallback = null) => {
   if (value == null) return fallback;
@@ -32,9 +36,27 @@ const derivePanelsFromLegacy = (payload) => {
   }];
 };
 
+const prioritizeTimelinePanelForThreePanelView = (panels) => {
+  if (!Array.isArray(panels) || panels.length !== 3) return Array.isArray(panels) ? panels : [];
+  const timelineIndex = panels.findIndex((panel) => {
+    const visualFamily = panel?.visual_family || panel?.chart_spec?.chart_type || panel?.chart_type;
+    return visualFamily === "timeline";
+  });
+  if (timelineIndex === -1) return panels;
+  const reordered = panels.slice();
+  if (timelineIndex > 0) {
+    const [timelinePanel] = reordered.splice(timelineIndex, 1);
+    reordered.unshift(timelinePanel);
+  }
+  return reordered.map((panel, index) => ({
+    ...panel,
+    emphasis: index === 0 ? "hero" : "standard",
+  }));
+};
+
 function normalizePayload(payload) {
   if (!payload || typeof payload !== "object") return null;
-  const rawPanels = derivePanelsFromLegacy(payload);
+  const rawPanels = prioritizeTimelinePanelForThreePanelView(derivePanelsFromLegacy(payload));
   const panels = rawPanels.map((panel, index) => ({
     ...panel,
     chart_spec: validateChartSpec(
@@ -73,12 +95,43 @@ function normalizePayload(payload) {
   };
 }
 
+function getPayloadSpeechText(nextPayload) {
+  return String(
+    nextPayload?.spoken_answer
+    || nextPayload?.voice_answer
+    || nextPayload?.takeaway
+    || nextPayload?.summary?.shortSpeech
+    || ""
+  ).trim();
+}
+
+function getPayloadSpeechKey(nextPayload) {
+  const requestId = String(nextPayload?.requestId || "").trim();
+  if (requestId) return requestId;
+  const speechText = getPayloadSpeechText(nextPayload);
+  if (!speechText) return "";
+  return `${String(nextPayload?.report_title || "health-report").trim()}::${speechText}`;
+}
+
+function speakAnswer(text) {
+  if (!text || typeof window === "undefined") return false;
+  const synth = window.speechSynthesis;
+  const Utterance = window.SpeechSynthesisUtterance;
+  if (!synth || typeof synth.speak !== "function" || typeof Utterance !== "function") return false;
+  synth.cancel?.();
+  const utterance = new Utterance(text);
+  utterance.rate = 1;
+  synth.speak(utterance);
+  return true;
+}
+
 const QnAPage = () => {
   const [time, setTime] = useState(getCurrentTime());
   const [payload, setPayload] = useState(null);
   const [summary, setSummary] = useState("Chart view will appear here when a health question is answered.");
   const [chartLoading, setChartLoading] = useState(false);
   const [statusNotice, setStatusNotice] = useState(null);
+  const spokenRequestRef = useRef(sessionStorage.getItem(QNA_SPOKEN_REQUEST_STORAGE_KEY) || "");
   const username = localStorage.getItem("username") || "amy";
 
   useEffect(() => {
@@ -91,6 +144,7 @@ const QnAPage = () => {
       setPayload({ loading: true, question: nextPayload.question });
       setSummary("Preparing chart view.");
       setChartLoading(true);
+      setStatusNotice(null);
       return;
     }
     const normalized = normalizePayload(nextPayload);
@@ -106,6 +160,19 @@ const QnAPage = () => {
   }, [applyPayload]);
 
   useEffect(() => {
+    const storedStatus = safeJsonParse(sessionStorage.getItem(VISUAL_STATUS_STORAGE_KEY), null);
+    if (!storedStatus?.message) return;
+    if (Date.now() - Number(storedStatus.timestamp || 0) > VISUAL_STATUS_TTL_MS) {
+      sessionStorage.removeItem(VISUAL_STATUS_STORAGE_KEY);
+      return;
+    }
+    setStatusNotice({
+      type: String(storedStatus.type || "info").trim(),
+      message: String(storedStatus.message || "").trim(),
+    });
+  }, []);
+
+  useEffect(() => {
     const onUpdate = () => {
       const parsed = safeJsonParse(sessionStorage.getItem("qnaData"), null);
       if (parsed) applyPayload(parsed);
@@ -117,12 +184,12 @@ const QnAPage = () => {
         setChartLoading(true);
         return;
       }
-      if (detail?.type === "completed" || detail?.type === "error") {
+      if (detail?.message) {
         setStatusNotice({
-          type: detail.type,
+          type: String(detail.type || "info").trim(),
           message: String(detail.message || "").trim(),
         });
-        if (detail.type === "completed") setChartLoading(false);
+        if (detail.type === "completed" || detail.type === "error") setChartLoading(false);
       }
     };
     window.addEventListener("qnaDataUpdated", onUpdate);
@@ -133,6 +200,21 @@ const QnAPage = () => {
     };
   }, [applyPayload]);
 
+  useEffect(() => {
+    if (!payload || payload.loading || chartLoading || !payload.answer_ready) return undefined;
+    const speechText = getPayloadSpeechText(payload);
+    const speechKey = getPayloadSpeechKey(payload);
+    if (!speechText || !speechKey || spokenRequestRef.current === speechKey) return undefined;
+
+    const speechTimer = setTimeout(() => {
+      spokenRequestRef.current = speechKey;
+      sessionStorage.setItem(QNA_SPOKEN_REQUEST_STORAGE_KEY, speechKey);
+      speakAnswer(speechText);
+    }, 180);
+
+    return () => clearTimeout(speechTimer);
+  }, [chartLoading, payload]);
+
   const panels = useMemo(() => payload?.panels || [], [payload]);
   const activePanel = useMemo(
     () => panels.find((panel) => panel.panel_id === payload?.activePanelId) || panels[0] || null,
@@ -142,6 +224,7 @@ const QnAPage = () => {
     ? (activePanel ? [activePanel] : panels.slice(0, 1))
     : panels;
   const panelCount = visiblePanels.length || 1;
+  const isSinglePanel = panelCount === 1;
   const gridHeroClass = panelCount === 2 && visiblePanels[0]?.emphasis === "hero" ? "hd-grid-hero-first" : "";
 
   return (
@@ -153,14 +236,14 @@ const QnAPage = () => {
           <div className="hd-user"><FiUser /> {username}</div>
         </header>
 
-        <main className={`hd-main hd-main-chart-only hd-layout-${payload?.layout || "single_focus"}`}>
+        <main className={`hd-main hd-main-chart-only hd-layout-${payload?.layout || "single_focus"} ${isSinglePanel ? "hd-main-single-panel" : ""}`.trim()}>
           {statusNotice?.message ? (
             <div className={`hd-ready-banner ${statusNotice.type}`}>
               {statusNotice.message}
             </div>
           ) : null}
 
-          <section className="hd-report-header hd-report-header-compact">
+          <section className={`hd-report-header hd-report-header-compact ${isSinglePanel ? "hd-report-header-single-panel" : ""}`.trim()}>
             <div>
               <p className="hd-report-eyebrow">{payload?.response_mode === "multi_panel_report" ? "Visual report" : "Focused answer"}</p>
               <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
@@ -168,7 +251,7 @@ const QnAPage = () => {
             <p className="hd-report-takeaway">{payload?.takeaway || summary}</p>
           </section>
 
-          <section className={`hd-panel-grid hd-panel-grid-${payload?.layout || "single_focus"} hd-panel-count-${panelCount} ${gridHeroClass}`.trim()}>
+          <section className={`hd-panel-grid hd-panel-grid-${payload?.layout || "single_focus"} hd-panel-count-${panelCount} ${gridHeroClass} ${isSinglePanel ? "hd-panel-grid-single-panel" : ""}`.trim()}>
             {chartLoading ? (
               <div className="hd-chart-loading hd-loading-panel">
                 <div className="hd-loading-bar"><div className="hd-loading-fill" /></div>
@@ -178,19 +261,21 @@ const QnAPage = () => {
               visiblePanels.map((panel, index) => (
                 <article
                   key={panel.panel_id || index}
-                  className={`hd-panel-card hd-panel-slot-${index + 1} hd-panel-emphasis-${panel.emphasis || "standard"} ${panel.panel_id === payload?.activePanelId ? "is-active" : ""}`.trim()}
+                  className={`hd-panel-card hd-panel-slot-${index + 1} hd-panel-emphasis-${panel.emphasis || "standard"} ${panel.panel_id === payload?.activePanelId ? "is-active" : ""} ${isSinglePanel ? "hd-panel-card-single-panel" : ""}`.trim()}
                   style={{
                     "--hd-panel-accent": panel?.chart_spec?.panel_theme?.accentColor || "",
                     "--hd-panel-border": panel?.chart_spec?.panel_theme?.borderColor || "",
                     "--hd-panel-bg": panel?.chart_spec?.panel_theme?.backgroundColor || "",
                   }}
                 >
-                  <div className="hd-panel-copy">
-                    <h3>{panel.title}</h3>
-                    {panel.subtitle ? <p>{panel.subtitle}</p> : null}
-                  </div>
-                  <div className="hd-panel-chart">
-                    <EChartCard chartSpec={panel.chart_spec} />
+                  {!isSinglePanel ? (
+                    <div className="hd-panel-copy">
+                      <h3>{panel.title}</h3>
+                      {panel.subtitle ? <p>{panel.subtitle}</p> : null}
+                    </div>
+                  ) : null}
+                  <div className={`hd-panel-chart ${isSinglePanel ? "hd-panel-chart-single-panel" : ""}`.trim()}>
+                    <EChartCard chartSpec={panel.chart_spec} className={isSinglePanel ? "hd-echart-single-panel" : ""} />
                   </div>
                 </article>
               ))

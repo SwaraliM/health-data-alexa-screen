@@ -22,6 +22,8 @@ const { generateSpeech } = require("../services/ttsService");
 
 const qnaSession = new Map();
 const qnaJobs = new Map();
+const resumableJobs = new Map();
+const SLOW_RESPONSE_STATUS_MS = 7000;
 
 const ROUTER_DEBUG = process.env.QNA_ROUTER_DEBUG !== "false";
 
@@ -90,6 +92,50 @@ function getSession(username) {
   return qnaSession.get(keyForUser(username)) || null;
 }
 
+function getResumableJob(username) {
+  return resumableJobs.get(keyForUser(username)) || null;
+}
+
+function setResumableJob(username, patch) {
+  const userKey = keyForUser(username);
+  const next = {
+    requestId: null,
+    status: "pending",
+    delivered: false,
+    updatedAt: Date.now(),
+    ...(getResumableJob(userKey) || {}),
+    ...(patch || {}),
+  };
+  resumableJobs.set(userKey, next);
+  return next;
+}
+
+function syncResumableJob(username, requestId, patch) {
+  const userKey = keyForUser(username);
+  const current = getResumableJob(userKey);
+  if (!current || current.requestId !== String(requestId || "").trim()) return null;
+  return setResumableJob(userKey, patch);
+}
+
+function clearResumableJob(username, requestId = null) {
+  const userKey = keyForUser(username);
+  const current = getResumableJob(userKey);
+  if (!current) return false;
+  if (requestId && current.requestId !== String(requestId || "").trim()) return false;
+  resumableJobs.delete(userKey);
+  return true;
+}
+
+function buildNoPendingResumeResponse(message = "There is no pending answer right now. Ask me a health question first.") {
+  return {
+    status: "error",
+    payload_ready: false,
+    answer_ready: false,
+    voice_answer_source: "fallback",
+    voice_answer: message,
+  };
+}
+
 function emitQnaPayload(username, payload, action = "navigation") {
   emitToScreen(username, {
     action,
@@ -124,6 +170,14 @@ function serializeJob(job) {
   };
 }
 
+function clearJobTimers(job) {
+  if (!job) return;
+  if (job.slowStatusTimer) {
+    clearTimeout(job.slowStatusTimer);
+    job.slowStatusTimer = null;
+  }
+}
+
 /**
  * Launches the backend QnA job immediately so Alexa can poll it.
  */
@@ -142,13 +196,27 @@ function startQuestionJob({ username, question, voiceDeadlineMs = 4200 }) {
     visualPayload: null,
     error: null,
     createdAt: Date.now(),
+    slowStatusTimer: null,
   };
 
   qnaJobs.set(requestId, job);
+  setResumableJob(userKey, {
+    requestId,
+    status: "pending",
+    delivered: false,
+  });
   routerLog("jobs", "starting QnA job", { requestId, username: userKey, question });
 
   emitStatus(userKey, "loading", "Analyzing your health data...");
   emitQnaPayload(userKey, { loading: true, question }, "navigation");
+
+  job.slowStatusTimer = setTimeout(() => {
+    const activeJob = qnaJobs.get(requestId);
+    if (!activeJob || activeJob.status !== "pending") return;
+    emitStatus(userKey, "slow", "This is taking a little longer. I will read the answer as soon as it is ready.", {
+      requestId,
+    });
+  }, SLOW_RESPONSE_STATUS_MS);
 
   answerQuestion({
     requestId,
@@ -167,13 +235,23 @@ function startQuestionJob({ username, question, voiceDeadlineMs = 4200 }) {
       }
 
       if (result.answerReady && result.payload?.answer_ready) {
+        clearJobTimers(job);
         job.status = "ready";
         job.result = result.payload;
+        syncResumableJob(userKey, requestId, {
+          status: "ready",
+          delivered: false,
+        });
         emitStatus(userKey, "completed", "Your answer is ready.", {
+          requestId,
           suggestion: result.payload?.next_views?.[0]?.label || result.payload?.suggestedDrillDowns?.[0] || null,
         });
       } else {
         job.status = "pending";
+        syncResumableJob(userKey, requestId, {
+          status: "pending",
+          delivered: false,
+        });
       }
 
       const speechReadyPromise = result.speechReadyPromise;
@@ -181,12 +259,18 @@ function startQuestionJob({ username, question, voiceDeadlineMs = 4200 }) {
         speechReadyPromise
           .then((gptPayload) => {
             if (!qnaJobs.has(requestId) || !gptPayload?.answer_ready) return;
+            clearJobTimers(job);
             job.status = "ready";
             job.result = gptPayload;
             job.visualPayload = gptPayload;
+            syncResumableJob(userKey, requestId, {
+              status: "ready",
+              delivered: false,
+            });
             storeSession(userKey, gptPayload);
             emitQnaPayload(userKey, gptPayload, "updateVisuals");
             emitStatus(userKey, "completed", "Your answer is ready.", {
+              requestId,
               suggestion: gptPayload?.next_views?.[0]?.label || gptPayload?.suggestedDrillDowns?.[0] || null,
             });
           })
@@ -202,6 +286,10 @@ function startQuestionJob({ username, question, voiceDeadlineMs = 4200 }) {
             if (!qnaJobs.has(requestId)) return;
             job.visualPayload = richPayload;
             if (richPayload?.answer_ready) job.result = richPayload;
+            syncResumableJob(userKey, requestId, {
+              status: richPayload?.answer_ready ? "ready" : job.status,
+              delivered: false,
+            });
             storeSession(userKey, richPayload);
             emitQnaPayload(userKey, richPayload, "updateVisuals");
           })
@@ -211,9 +299,11 @@ function startQuestionJob({ username, question, voiceDeadlineMs = 4200 }) {
       }
     })
     .catch((error) => {
+      clearJobTimers(job);
       job.status = "error";
       job.error = error?.message || "Unknown error";
-      emitStatus(userKey, "error", "I could not complete that request.");
+      clearResumableJob(userKey, requestId);
+      emitStatus(userKey, "error", "I could not complete that request.", { requestId });
       routerError("jobs", "QnA job failed", error);
     });
 
@@ -340,7 +430,7 @@ async function handleControl(username, userInput, res) {
   const action = String(userInput?.action || "").toLowerCase();
   routerLog("control", "handling control action", { username, action, requestId: userInput?.requestId });
 
-  if (action === "poll_pending" || action === "resume_pending") {
+  if (action === "poll_pending") {
     const job = getJob(userInput?.requestId);
     if (!job) {
       return res.status(200).json({
@@ -352,7 +442,7 @@ async function handleControl(username, userInput, res) {
       });
     }
     const payload = job.result || job.visualPayload || null;
-    if (job.status !== "ready" || !payload?.answer_ready || payload?.voice_answer_source !== "gpt") {
+    if (job.status !== "ready" || !payload?.answer_ready) {
       return res.status(200).json({
         status: job.status,
         requestId: job.requestId,
@@ -363,6 +453,50 @@ async function handleControl(username, userInput, res) {
         voice_answer: "",
       });
     }
+    clearResumableJob(username, job.requestId);
+    return res.status(200).json({
+      status: "ready",
+      requestId: job.requestId,
+      payload_ready: true,
+      answer_ready: true,
+      voice_answer_source: payload.voice_answer_source || "gpt",
+      voice_answer: payload.voice_answer || "",
+      payload,
+    });
+  }
+
+  if (action === "resume_pending") {
+    const requestedId = String(userInput?.requestId || "").trim();
+    const activeResume = getResumableJob(username);
+    if (!activeResume) {
+      return res.status(200).json(buildNoPendingResumeResponse());
+    }
+
+    if (requestedId && activeResume.requestId !== requestedId) {
+      return res.status(200).json(buildNoPendingResumeResponse());
+    }
+
+    const job = getJob(activeResume.requestId);
+    if (!job) {
+      clearResumableJob(username, activeResume.requestId);
+      return res.status(200).json(buildNoPendingResumeResponse("I could not find that pending answer. Please ask again."));
+    }
+
+    const payload = job.result || job.visualPayload || null;
+    if (job.status !== "ready" || !payload?.answer_ready) {
+      syncResumableJob(username, activeResume.requestId, { status: job.status || "pending" });
+      return res.status(200).json({
+        status: job.status,
+        requestId: job.requestId,
+        payload_ready: Boolean(payload),
+        answer_ready: false,
+        voice_answer_source: payload?.voice_answer_source || "bridge",
+        payload,
+        voice_answer: "",
+      });
+    }
+
+    clearResumableJob(username, activeResume.requestId);
     return res.status(200).json({
       status: "ready",
       requestId: job.requestId,
@@ -450,6 +584,7 @@ async function handleControl(username, userInput, res) {
 alexaRouter.get("/back", (req, res) => {
   const username = keyForUser(req.query?.username || "amy");
   qnaSession.delete(username);
+  clearResumableJob(username);
   emitToScreen(username, { action: "qnaEnd", reason: "user_done" });
   routerLog("session", "session cleared", { username });
   return res.status(200).json({ ok: true });
@@ -468,3 +603,19 @@ alexaRouter.post("/", async (req, res) => {
 });
 
 module.exports = alexaRouter;
+module.exports._test = {
+  buildNoPendingResumeResponse,
+  clearResumableJob,
+  handleControl,
+  getJob,
+  getResumableJob,
+  qnaJobs,
+  qnaSession,
+  resetState() {
+    qnaJobs.clear();
+    qnaSession.clear();
+    resumableJobs.clear();
+  },
+  setResumableJob,
+  syncResumableJob,
+};

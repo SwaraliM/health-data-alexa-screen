@@ -7,7 +7,9 @@ const {
   buildFitbitInternalUrl,
   buildPayload,
   buildMicroAnswer,
+  hydrateIntradayMetricData,
   inferHeuristicFetchPlan,
+  resolveInternalApiBaseUrl,
   validateReportPlan,
 } = require("../services/qnaEngine");
 
@@ -212,6 +214,24 @@ function buildPlan(overrides = {}) {
   };
 }
 
+function withEnv(patch, fn) {
+  const previous = {};
+  for (const key of Object.keys(patch)) {
+    previous[key] = process.env[key];
+    const nextValue = patch[key];
+    if (nextValue == null) delete process.env[key];
+    else process.env[key] = nextValue;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const key of Object.keys(patch)) {
+      if (previous[key] == null) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
+
 test("validateReportPlan falls back to supported panels and metrics", () => {
   const summaryBundle = buildSummaryBundle();
   const plan = buildPlan();
@@ -271,6 +291,54 @@ test("buildPayload preserves the new report contract and compatibility aliases",
   );
   assert.equal(payload.summary.shortSpeech, payload.voice_answer);
   assert.equal(payload.panels[0].emphasis, "hero");
+});
+
+test("validateReportPlan promotes timeline panels to the large slot in three-panel layouts", () => {
+  const summaryBundle = buildSummaryBundle();
+  const plan = buildPlan();
+  const validated = validateReportPlan({
+    response_mode: "multi_panel_report",
+    layout: "two_up_plus_footer",
+    report_title: "Sleep report",
+    takeaway: "Here is your summary.",
+    panels: [
+      {
+        panel_id: "overview_panel",
+        goal: "overview_report",
+        metrics: ["steps", "sleep_minutes"],
+        visual_family: "composed_summary",
+        title: "Overview",
+        subtitle: "This week",
+        emphasis: "hero",
+      },
+      {
+        panel_id: "comparison_panel",
+        goal: "comparison_report",
+        metrics: ["steps"],
+        visual_family: "grouped_bar",
+        title: "Comparison",
+        subtitle: "This week",
+      },
+      {
+        panel_id: "sleep_timeline",
+        goal: "deep_dive",
+        metrics: ["sleep_minutes"],
+        visual_family: "timeline",
+        title: "Sleep timeline",
+        subtitle: "This week",
+      },
+    ],
+    next_views: [],
+  }, summaryBundle, plan);
+
+  assert.equal(validated.panels.length, 3);
+  assert.equal(validated.panels[0].panel_id, "sleep_timeline");
+  assert.equal(validated.panels[0].visual_family, "timeline");
+  assert.equal(validated.panels[0].emphasis, "hero");
+  assert.deepEqual(
+    validated.panels.slice(1).map((panel) => panel.emphasis),
+    ["standard", "standard"],
+  );
 });
 
 test("buildPayload includes GPT trace only when provided", () => {
@@ -363,6 +431,41 @@ test("answerFollowupFromPayload targets a named drill-down from next_views", asy
   assert.deepEqual(
     result.payload.panels[0].chart_spec.option.series.map((series) => series.name),
     ["Deep", "Light", "REM", "Wake"]
+  );
+});
+
+test("sleep detail timeline reads stageMinutes buckets", async () => {
+  const summaryBundle = {
+    ...buildSummaryBundle(),
+    sleepStageTimeline: [
+      { clockLabel: "11 PM", stageMinutes: { deep: 20, light: 35, rem: 10, wake: 5 } },
+      { clockLabel: "1 AM", stageMinutes: { deep: 25, light: 45, rem: 15, wake: 3 } },
+    ],
+  };
+  const plan = buildPlan();
+  const presentation = buildDefaultReportPlan("How are my metrics related?", plan, summaryBundle);
+  const payload = buildPayload({
+    requestId: "req-stage-minutes",
+    question: "How are my metrics related?",
+    plan,
+    fetched: null,
+    summaryBundle,
+    presentation,
+  });
+
+  const result = await answerFollowupFromPayload({
+    payload,
+    question: "show sleep detail",
+  });
+
+  assert.deepEqual(
+    result.payload.panels[0].chart_spec.option.series.map((series) => series.data),
+    [
+      [20, 25],
+      [35, 45],
+      [10, 15],
+      [5, 3],
+    ],
   );
 });
 
@@ -488,14 +591,104 @@ test("body metrics use the Fitbit body log endpoints", () => {
   assert.match(fatUrl, /\/body\/log\/fat\/date\/2026-03-01$/);
 });
 
+test("spoken answers verbalize decimals with point instead of splitting sentences", () => {
+  const summaryBundle = buildSummaryBundle();
+  const plan = buildPlan({ question_type: "single_metric_status", metrics_needed: ["hrv"] });
+  const payload = buildPayload({
+    requestId: "req-decimals",
+    question: "What was my HRV?",
+    plan,
+    fetched: null,
+    summaryBundle,
+    presentation: {
+      response_mode: "single_view",
+      layout: "single_focus",
+      spoken_answer: "Your HRV was 10.3 today, which is slightly above your recent average.",
+      report_title: "HRV",
+      takeaway: "HRV stayed steady.",
+      panels: [{
+        panel_id: "hrv_primary",
+        goal: "single_metric_status",
+        metrics: ["hrv"],
+        visual_family: "line",
+        title: "HRV",
+        subtitle: "Today",
+      }],
+      next_views: [],
+      suggested_followup_prompt: "",
+      followup_mode: "suggested_drill_down",
+    },
+    voiceAnswerSource: "gpt",
+    answerReady: true,
+  });
+
+  assert.match(payload.voice_answer, /10 point 3/);
+  assert.doesNotMatch(payload.voice_answer, /10\. 3|10\.3 today\./);
+});
+
+test("internal API base resolution prefers configured backend URLs and normalizes /api suffixes", () => {
+  withEnv({
+    QNA_INTERNAL_API_URL: undefined,
+    INTERNAL_API_URL: undefined,
+    BACKEND_URL: undefined,
+    API_URL: "https://example.ngrok-free.dev/api/",
+    REACT_APP_FETCH_DATA_URL: undefined,
+    NGROK_URL: undefined,
+    RENDER_EXTERNAL_URL: undefined,
+    PUBLIC_BASE_URL: undefined,
+  }, () => {
+    assert.equal(resolveInternalApiBaseUrl(), "https://example.ngrok-free.dev");
+  });
+
+  withEnv({
+    QNA_INTERNAL_API_URL: undefined,
+    INTERNAL_API_URL: undefined,
+    BACKEND_URL: "https://backend.example.com",
+    API_URL: "https://ignored.example.com/api",
+    REACT_APP_FETCH_DATA_URL: undefined,
+    NGROK_URL: undefined,
+    RENDER_EXTERNAL_URL: undefined,
+    PUBLIC_BASE_URL: undefined,
+  }, () => {
+    assert.equal(resolveInternalApiBaseUrl(), "https://backend.example.com");
+  });
+});
+
+test("Fitbit internal URLs use the resolved backend base instead of localhost defaults", () => {
+  withEnv({
+    QNA_INTERNAL_API_URL: undefined,
+    INTERNAL_API_URL: undefined,
+    BACKEND_URL: "https://backend.example.com/api",
+    API_URL: undefined,
+    REACT_APP_FETCH_DATA_URL: undefined,
+    NGROK_URL: undefined,
+    RENDER_EXTERNAL_URL: undefined,
+    PUBLIC_BASE_URL: undefined,
+  }, () => {
+    const url = buildFitbitInternalUrl({
+      username: "amy",
+      metricKey: "steps",
+      startDate: "2026-02-23",
+      endDate: "2026-03-01",
+      timeScope: "last_7_days",
+    });
+    assert.match(url, /^https:\/\/backend\.example\.com\/api\/fitbit\/amy\/activities\/range\/steps\/date\/2026-02-23\/2026-03-01$/);
+  });
+});
+
 test("heuristic planner recognizes breathing, blood oxygen, and body questions", () => {
   const sleepRespPlan = inferHeuristicFetchPlan("How were my breathing rate and blood oxygen last night?");
   const bodyPlan = inferHeuristicFetchPlan("How has my body fat changed lately?");
+  const activityTodayPlan = inferHeuristicFetchPlan("How active was I today?");
+  const activityWeekPlan = inferHeuristicFetchPlan("How was my activity this week?");
 
   assert.ok(sleepRespPlan.metrics_needed.includes("breathing_rate"));
   assert.ok(sleepRespPlan.metrics_needed.includes("spo2"));
   assert.ok(sleepRespPlan.evidence_scope.includes("sleep_timing_and_stages"));
   assert.ok(bodyPlan.metrics_needed.includes("body_fat"));
+  assert.deepEqual(activityTodayPlan.metrics_needed, ["steps_intraday", "steps", "calories", "floors"]);
+  assert.ok(activityTodayPlan.evidence_scope.includes("daily_activity_breakdown"));
+  assert.deepEqual(activityWeekPlan.metrics_needed, ["steps", "calories", "floors", "distance"]);
 });
 
 test("sleep micro-answer prefers balanced sleep-quality takeaway", () => {
@@ -516,12 +709,171 @@ test("activity micro-answer uses detailed activity summary when available", () =
     questionType: "single_metric_status",
     summaryBundle: {
       ...buildSummaryBundle(),
-      primaryMetric: "steps",
+      primaryMetric: "steps_intraday",
       timeScope: "today",
     },
   });
   assert.match(answer, /active zone minutes/i);
+  assert.match(answer, /active minutes/i);
   assert.match(answer, /floors/i);
+});
+
+test("summary-only Fitbit intraday payloads fall back to estimated intraday series", () => {
+  const result = hydrateIntradayMetricData({
+    metricKey: "steps_intraday",
+    rawPayload: {
+      "activities-steps": [{ dateTime: "2026-03-09", value: "6400" }],
+    },
+    activitySummaryRaw: {
+      summary: {
+        steps: 6400,
+        lightlyActiveMinutes: 90,
+        fairlyActiveMinutes: 22,
+        veryActiveMinutes: 8,
+      },
+      activities: [
+        { startTime: "12:15", duration: 1800000, steps: 1800, calories: 160 },
+        { startTime: "18:10", duration: 2400000, steps: 2200, calories: 210 },
+      ],
+    },
+    targetDate: "2026-03-09",
+  });
+
+  assert.equal(result.intraday_status, "summary_only");
+  assert.equal(result.is_synthetic, true);
+  assert.equal(result.source, "fitbit_summary_estimate");
+  assert.match(result.data_quality_note, /minute-level intraday detail was unavailable/i);
+  assert.equal(result.points.length, 4);
+  assert.ok(result.points.every((point) => point.isSynthetic === true));
+});
+
+test("synthetic intraday chart specs are labeled as estimated", () => {
+  const payload = buildPayload({
+    requestId: "req-intraday-estimated",
+    question: "How active was I today?",
+    plan: {
+      question_type: "single_metric_status",
+      metrics_needed: ["steps_intraday"],
+      time_scope: "today",
+      comparison_mode: "none",
+      response_mode: "single_view",
+      needs_previous_period: false,
+      needs_intraday: true,
+      layout_hint: "single_focus",
+      followup_mode: "suggested_drill_down",
+      preferred_chart: "area",
+    },
+    fetched: null,
+    summaryBundle: {
+      ...buildSummaryBundle(),
+      primaryMetric: "steps_intraday",
+      secondaryMetric: null,
+      metricsShown: ["steps_intraday"],
+      normalizedSeries: {
+        labels: ["06:00", "12:00", "18:00", "21:00"],
+        valuesByMetric: {
+          steps_intraday: [820, 2480, 2210, 890],
+        },
+      },
+      metricStatsMap: {
+        steps_intraday: { current: 890, avg: 1600, goalProgressPct: 64 },
+      },
+      metricComparisonMap: {
+        steps_intraday: { changePct: 0, current: [], previous: [] },
+      },
+      metricAnomaliesMap: {
+        steps_intraday: [],
+      },
+      currentPeriodStats: { current: 890, avg: 1600, goalProgressPct: 64 },
+      previousPeriodComparison: { changePct: 0, current: [], previous: [] },
+      intradaySummaryMap: {
+        steps_intraday: {
+          takeaway: "Afternoons were your busiest time.",
+          buckets: [
+            { label: "06:00", value: 820 },
+            { label: "12:00", value: 2480 },
+            { label: "18:00", value: 2210 },
+            { label: "21:00", value: 890 },
+          ],
+        },
+      },
+      intradayInsightsMap: {
+        steps_intraday: {
+          takeaway: "Afternoons were your busiest time.",
+        },
+      },
+      intradayInsights: {
+        takeaway: "Afternoons were your busiest time.",
+      },
+      intradayWindowSummary: {
+        takeaway: "Afternoons were your busiest time.",
+        buckets: [
+          { label: "06:00", value: 820 },
+          { label: "12:00", value: 2480 },
+          { label: "18:00", value: 2210 },
+          { label: "21:00", value: 890 },
+        ],
+      },
+      intradayAvailabilityMap: {
+        steps_intraday: {
+          intraday_status: "summary_only",
+          intraday_reason: "Fitbit returned only daily summary data for this intraday request.",
+          is_synthetic: true,
+          data_quality_note: "Estimated from Fitbit daily summary and logged activities because minute-level intraday detail was unavailable.",
+          source: "fitbit_summary_estimate",
+        },
+      },
+      chartContext: {
+        requestMetric: "steps_intraday",
+        metricsShown: ["steps_intraday"],
+        timeWindow: { timeframeLabel: "today" },
+        visualFamily: "area",
+        highlight: null,
+        anomalyCount: 0,
+        progressiveViewsAvailable: 1,
+        intraday_status: "summary_only",
+        intraday_reason: "Fitbit returned only daily summary data for this intraday request.",
+        is_synthetic: true,
+        data_quality_note: "Estimated from Fitbit daily summary and logged activities because minute-level intraday detail was unavailable.",
+        source: "fitbit_summary_estimate",
+      },
+      timeLabel: "today",
+      timeWindow: { timeframeLabel: "today" },
+      timeScope: "today",
+      unit: "steps",
+      activitySummary: {
+        takeaway: "You had 120 active minutes and reached about 64 percent of your step goal.",
+      },
+    },
+    presentation: {
+      response_mode: "single_view",
+      layout: "single_focus",
+      spoken_answer: "",
+      report_title: "Steps today",
+      takeaway: "Afternoons were your busiest time.",
+      panels: [{
+        panel_id: "steps_intraday_primary",
+        goal: "single_metric_status",
+        metrics: ["steps_intraday"],
+        visual_family: "area",
+        title: "Steps through the day",
+        subtitle: "Today",
+        emphasis: "hero",
+      }],
+      next_views: [],
+      suggested_followup_prompt: "",
+      followup_mode: "suggested_drill_down",
+    },
+    voiceAnswerSource: "fallback",
+    answerReady: true,
+  });
+
+  assert.equal(payload.chart_spec.is_synthetic, true);
+  assert.equal(payload.chart_spec.source, "fitbit_summary_estimate");
+  assert.match(payload.chart_spec.subtitle, /Estimated pattern/);
+  assert.match(payload.chart_spec.data_quality_note, /minute-level intraday detail was unavailable/i);
+  assert.equal(payload.chartContext.is_synthetic, true);
+  assert.match(payload.voice_answer, /estimated pattern based on your daily summary and logged activities/i);
 });
 
 test("follow-up explanation uses active panel evidence before fallback", async () => {

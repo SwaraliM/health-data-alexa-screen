@@ -443,6 +443,179 @@ function toIntradayActivitySeries(payload, resourceKey) {
   }));
 }
 
+function isIntradayMetric(metricKey = "") {
+  const metric = String(metricKey || "").toLowerCase();
+  return metric === "heart_intraday" || metric.endsWith("_intraday");
+}
+
+function getIntradayPayloadKeys(metricKey = "") {
+  const metric = String(metricKey || "").toLowerCase();
+  if (metric === "heart_intraday") {
+    return {
+      datasetKey: "activities-heart-intraday",
+      summaryKey: "activities-heart",
+    };
+  }
+
+  const resourceKey = metric.replace(/_intraday$/, "");
+  return {
+    datasetKey: `activities-${resourceKey}-intraday`,
+    summaryKey: `activities-${resourceKey}`,
+  };
+}
+
+function getIntradayAvailability(metricKey = "", payload = null) {
+  if (!isIntradayMetric(metricKey)) {
+    return {
+      status: "available",
+      reason: "",
+      datasetKey: "",
+      summaryKey: "",
+    };
+  }
+
+  const { datasetKey, summaryKey } = getIntradayPayloadKeys(metricKey);
+  const dataset = Array.isArray(payload?.[datasetKey]?.dataset) ? payload[datasetKey].dataset : [];
+  const summary = Array.isArray(payload?.[summaryKey]) ? payload[summaryKey] : [];
+
+  if (dataset.length) {
+    return {
+      status: "available",
+      reason: "",
+      datasetKey,
+      summaryKey,
+    };
+  }
+
+  if (summary.length) {
+    return {
+      status: "summary_only",
+      reason: "Fitbit returned only daily summary data for this intraday request.",
+      datasetKey,
+      summaryKey,
+    };
+  }
+
+  return {
+    status: "fetch_error",
+    reason: "Fitbit intraday detail was unavailable for this request.",
+    datasetKey,
+    summaryKey,
+  };
+}
+
+function getActivitySummaryDistance(summary = {}) {
+  const distances = Array.isArray(summary?.distances) ? summary.distances : [];
+  const totalDistance = distances.find((item) => item?.activity === "total" || item?.activity === "tracker");
+  return safeNumber(totalDistance?.distance);
+}
+
+function overlapMinutes(startA, endA, startB, endB) {
+  return Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
+}
+
+function createIntradayBuckets() {
+  return [
+    { minuteOfDay: 360, label: "06:00", fullLabel: "06:00", weight: 0.7 },
+    { minuteOfDay: 720, label: "12:00", fullLabel: "12:00", weight: 1.6 },
+    { minuteOfDay: 1080, label: "18:00", fullLabel: "18:00", weight: 1.2 },
+    { minuteOfDay: 1260, label: "21:00", fullLabel: "21:00", weight: 0.5 },
+  ];
+}
+
+function getSyntheticIntradayTotal(metricKey = "", activitySummaryPayload = {}) {
+  const summary = activitySummaryPayload?.summary || {};
+  if (metricKey === "steps_intraday") return safeNumber(summary?.steps);
+  if (metricKey === "calories_intraday") return safeNumber(summary?.activityCalories, safeNumber(summary?.caloriesOut));
+  if (metricKey === "distance_intraday") return getActivitySummaryDistance(summary);
+  if (metricKey === "floors_intraday") return safeNumber(summary?.floors);
+  return 0;
+}
+
+function getSyntheticIntradayHeartBaseline(activitySummaryPayload = {}) {
+  const summary = activitySummaryPayload?.summary || {};
+  const restingHeartRate = safeNumber(summary?.restingHeartRate);
+  if (restingHeartRate > 0) return restingHeartRate;
+
+  const heartZones = Array.isArray(summary?.heartRateZones) ? summary.heartRateZones : [];
+  const weightedMidpoint = heartZones.reduce((acc, zone) => {
+    const minutes = safeNumber(zone?.minutes);
+    const midpoint = (safeNumber(zone?.min) + safeNumber(zone?.max)) / 2;
+    return {
+      minutes: acc.minutes + minutes,
+      weighted: acc.weighted + (midpoint * minutes),
+    };
+  }, { minutes: 0, weighted: 0 });
+
+  if (weightedMidpoint.minutes > 0) {
+    return round1(weightedMidpoint.weighted / weightedMidpoint.minutes);
+  }
+
+  return 72;
+}
+
+function buildEstimatedIntradaySeries({ metricKey = "", activitySummaryPayload = {}, date = null } = {}) {
+  if (!isIntradayMetric(metricKey) || !activitySummaryPayload || typeof activitySummaryPayload !== "object") return [];
+
+  const summary = activitySummaryPayload?.summary || {};
+  const activities = Array.isArray(activitySummaryPayload?.activities) ? activitySummaryPayload.activities : [];
+  const buckets = createIntradayBuckets();
+  const bucketSizeMinutes = 180;
+
+  activities.forEach((activity) => {
+    const startMinutes = minutesFromClockString(activity?.startTime);
+    const durationMinutes = Math.max(0, Math.round(safeNumber(activity?.duration) / 60000));
+    if (startMinutes == null || durationMinutes <= 0) return;
+
+    buckets.forEach((bucket) => {
+      const overlap = overlapMinutes(
+        startMinutes,
+        startMinutes + durationMinutes,
+        bucket.minuteOfDay,
+        bucket.minuteOfDay + bucketSizeMinutes
+      );
+      if (overlap > 0) {
+        bucket.weight += overlap / Math.max(30, durationMinutes);
+      }
+    });
+  });
+
+  const activeMinutes = safeNumber(summary?.lightlyActiveMinutes) + safeNumber(summary?.fairlyActiveMinutes) + safeNumber(summary?.veryActiveMinutes);
+  if (activeMinutes > 0) {
+    buckets[0].weight += activeMinutes * 0.001;
+    buckets[1].weight += activeMinutes * 0.004;
+    buckets[2].weight += activeMinutes * 0.003;
+    buckets[3].weight += activeMinutes * 0.0015;
+  }
+
+  const totalWeight = buckets.reduce((sum, bucket) => sum + bucket.weight, 0) || 1;
+
+  if (metricKey === "heart_intraday") {
+    const baseline = getSyntheticIntradayHeartBaseline(activitySummaryPayload);
+    const peakShift = Math.min(28, Math.max(10, activeMinutes / 6 || 12));
+    const maxWeight = Math.max(...buckets.map((bucket) => bucket.weight), 1);
+
+    return buckets.map((bucket) => ({
+      date,
+      label: bucket.label,
+      fullLabel: bucket.fullLabel,
+      value: round1(baseline + ((bucket.weight / maxWeight) * peakShift)),
+      isSynthetic: true,
+    }));
+  }
+
+  const totalValue = getSyntheticIntradayTotal(metricKey, activitySummaryPayload);
+  if (totalValue <= 0) return [];
+
+  return buckets.map((bucket) => ({
+    date,
+    label: bucket.label,
+    fullLabel: bucket.fullLabel,
+    value: round1((bucket.weight / totalWeight) * totalValue),
+    isSynthetic: true,
+  }));
+}
+
 function bucketIntradaySeries(points = [], bucketMinutes = 60) {
   const buckets = new Map();
   (Array.isArray(points) ? points : []).forEach((point) => {
@@ -631,7 +804,9 @@ function sliceLast(points = [], count = 7) {
 module.exports = {
   asDateLabel,
   asTimeLabel,
+  buildEstimatedIntradaySeries,
   extractNumericValue,
+  getIntradayAvailability,
   safeNumber,
   round1,
   minutesToHours,
@@ -652,6 +827,7 @@ module.exports = {
   toIntradayHeartSeries,
   toIntradayActivitySeries,
   bucketIntradaySeries,
+  isIntradayMetric,
   summarizeIntradayWindows,
   toHrvSeries,
   toBreathingRateSeries,

@@ -196,6 +196,49 @@ function buildSyntheticPeriodComparison(points = [], baseDays = 7) {
   };
 }
 
+const MULTI_PERIOD_LABELS = {
+  3: ["2 weeks ago", "Last week", "This week"],
+  4: ["3 weeks ago", "2 weeks ago", "Last week", "This week"],
+};
+
+/**
+ * Split a series into N periods of baseDays each and return period averages (oldest to newest).
+ * Used for 3+ period comparison charts. Returns { periods, changePct, currentAvg }.
+ */
+function compareNPeriods(points = [], baseDays = 7, numPeriods = 3) {
+  const normalized = toNumericSeries(points);
+  const n = Math.min(4, Math.max(2, Math.floor(Number(numPeriods) || 2)));
+  const required = baseDays * n;
+  if (normalized.length < required) return null;
+  const labels = MULTI_PERIOD_LABELS[n] || Array.from({ length: n }, (_, i) => `Period ${i + 1}`);
+  const periods = [];
+  for (let i = 0; i < n; i++) {
+    const start = normalized.length - required + i * baseDays;
+    const end = start + baseDays;
+    const chunk = normalized.slice(start, end);
+    const values = chunk.map((p) => p.value);
+    const periodAvg = round1(avg(values));
+    const firstPoint = chunk[0];
+    periods.push({
+      label: labels[i],
+      value: periodAvg,
+      date: firstPoint?.date || null,
+      fullLabel: labels[i],
+      points: chunk,
+    });
+  }
+  const currentAvg = periods[periods.length - 1]?.value ?? 0;
+  const earliestAvg = periods[0]?.value ?? 0;
+  const changePct = percentChange(currentAvg, earliestAvg);
+  return {
+    periods,
+    changePct,
+    currentAvg: round1(currentAvg),
+    earliestAvg: round1(earliestAvg),
+    enoughHistory: periods.every((p) => p.points.length >= Math.min(3, baseDays)),
+  };
+}
+
 function pickHighlight(points = []) {
   const normalized = toNumericSeries(points);
   if (!normalized.length) return null;
@@ -611,6 +654,7 @@ function summarizeSleepQuality({
 module.exports = {
   calculateStats,
   comparePeriods,
+  compareNPeriods,
   buildSyntheticPeriodComparison,
   pickHighlight,
   detectAnomalies,
