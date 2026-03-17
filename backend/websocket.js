@@ -11,9 +11,9 @@ function createWebSocketServer(server) {
   const wss = new WebSocket.Server({ server });
 
   wss.on('connection', (ws) => {
-    console.log('[backend websocket] new client connected', {
-      registeredClients: getClientUsernames(),
-    });
+    // console.log('[backend websocket] new client connected', {
+    //   registeredClients: getClientUsernames(),
+    // });
 
     ws.on('message', (message) => {
       let data;
@@ -29,11 +29,11 @@ function createWebSocketServer(server) {
       if (data.username) {
         const userKey = String(data.username).trim().toLowerCase();
         clients.set(userKey, ws);
-        console.log('[backend websocket] client registered', {
-          username: userKey,
-          clientCount: clients.size,
-          registeredClients: getClientUsernames(),
-        });
+        // console.log('[backend websocket] client registered', {
+        //   username: userKey,
+        //   clientCount: clients.size,
+        //   registeredClients: getClientUsernames(),
+        // });
       }
     });
 

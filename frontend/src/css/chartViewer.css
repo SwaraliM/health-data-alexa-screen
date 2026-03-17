@@ -79,7 +79,8 @@
 }
 
 .hd-main .hd-report-header,
-.hd-main .hd-ready-banner {
+.hd-main .hd-ready-banner,
+.hd-main .hd-voice-hints {
   flex-shrink: 0;
 }
 
@@ -150,6 +151,13 @@
   font-weight: 800;
 }
 
+.hd-stage-counter {
+  margin: 6px 0 0;
+  color: var(--hd-muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
 .hd-report-takeaway,
 .hd-loading-message {
   margin: 0;
@@ -161,6 +169,40 @@
   color: #1e293b;
 }
 
+.hd-voice-hints {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--hd-border);
+  border-radius: 16px;
+  padding: 10px 12px;
+}
+
+.hd-voice-hints-title {
+  margin: 0 0 8px;
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hd-voice-hints-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hd-voice-hint-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(29, 78, 216, 0.18);
+  background: linear-gradient(180deg, #f8fbff, #eef4ff);
+  color: #1e3a8a;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 5px 10px;
+}
+
 .hd-panel-grid {
   min-height: 0;
   display: grid;
@@ -170,8 +212,10 @@
 }
 
 .hd-panel-grid-single_focus {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
+  /* Switch to flex so height chain resolves reliably on Android WebView */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .hd-panel-grid-single-panel {
@@ -231,24 +275,24 @@
   min-height: 0;
 }
 
-.hd-panel-grid-single_focus,
-.hd-panel-grid-single_focus .hd-panel-card,
+.hd-panel-grid-single_focus .hd-panel-card {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+}
+
 .hd-panel-grid-single_focus .hd-panel-chart {
+  flex: 1 1 0;
   min-height: 0;
 }
 
 .hd-main-single-panel .hd-panel-grid-single_focus {
-  height: 100%;
+  flex: 1 1 0;
 }
 
 .hd-main-single-panel .hd-panel-card-single-panel {
   padding: 0;
   border-radius: 24px;
-}
-
-.hd-panel-grid-single_focus .hd-panel-chart {
-  min-height: 0;
-  height: 100%;
 }
 
 .hd-main-single-panel .hd-panel-chart-single-panel {
@@ -303,7 +347,6 @@
 
 .hd-panel-chart {
   flex: 1 1 0;
-  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -316,7 +359,6 @@
 
 .hd-echart-wrap {
   flex: 1 1 0;
-  height: 100%;
   min-height: 0;
   display: flex;
   width: 100%;
@@ -331,15 +373,8 @@
 }
 
 .hd-panel-grid-single_focus .hd-echart-wrap,
-.hd-panel-grid-single_focus .hd-echart {
-  min-height: 100%;
-}
-
+.hd-panel-grid-single_focus .hd-echart,
 .hd-main-single-panel .hd-echart-wrap,
-.hd-main-single-panel .hd-echart {
-  min-height: 100%;
-}
-
 .hd-main-single-panel .hd-echart {
   min-height: 0;
 }
@@ -450,20 +485,4 @@
     min-height: 210px;
   }
 
-  /* ── Single-panel height fix ── */
-.hd-main-single-panel .hd-panel-grid-single_focus {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.hd-main-single-panel .hd-panel-grid-single_focus .hd-panel-card {
-  flex: 1 1 0;
-  min-height: 0;
-  height: 100%;
-}
-
-.hd-main-single-panel .hd-panel-grid-single_focus .hd-echart {
-  min-height: 0;
-}
 }

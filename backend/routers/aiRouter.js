@@ -9,7 +9,7 @@
 
 const express = require("express");
 const { SERVER_ERROR } = require("../../utils/constants");
-const { buildQnaPayload } = require("../services/qnaEngine");
+const { handleQuestionWithOrchestrator } = require("../services/qna/qnaOrchestrator");
 
 const aiRouter = express.Router();
 
@@ -48,18 +48,26 @@ aiRouter.post("/qna-ask", async (req, res) => {
   if (cached) return res.status(200).json({ ...cached, _cache: true });
 
   try {
-    const built = await buildQnaPayload({
+    const requestId = `${username}-${Date.now()}`;
+    const orchestrated = await handleQuestionWithOrchestrator({
+      requestId,
       username,
       question,
-      allowPlannerLLM: true,
+      voiceDeadlineMs: 4200,
+      allowFetchPlannerLLM: true,
+      allowPresenterLLM: true,
+      enableVisualContinuation: false,
       fetchTimeoutMs: null,
     });
+    if (!orchestrated?.payload) {
+      throw new Error("No payload from orchestrator");
+    }
 
     const payload = {
-      payload: built.payload,
-      planner: built.planner,
-      voice_answer: built.payload?.voice_answer || "",
-      chart_spec: built.payload?.chart_spec || null,
+      payload: orchestrated.payload,
+      planner: orchestrated.plannerResult || orchestrated.planner || null,
+      voice_answer: orchestrated.payload?.voice_answer || "",
+      chart_spec: orchestrated.payload?.chart_spec || null,
     };
 
     setCached(cacheKey, payload);

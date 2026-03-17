@@ -4,10 +4,12 @@ import EChartCard from "../components/EChartCard";
 import { getCurrentTime } from "../utils/getCurrentTime";
 import { validateChartSpec } from "../utils/chartSpec";
 import "../css/chartViewer.css";
+import "../css/tabletSingleView.css";
 
 const QNA_SPOKEN_REQUEST_STORAGE_KEY = "qnaLastSpokenRequestId";
 const VISUAL_STATUS_STORAGE_KEY = "visualStatus";
 const VISUAL_STATUS_TTL_MS = 30 * 1000;
+const DEFAULT_VOICE_HINTS = ["show more", "go back", "explain that", "compare that"];
 
 const safeJsonParse = (value, fallback = null) => {
   if (value == null) return fallback;
@@ -18,6 +20,13 @@ const safeJsonParse = (value, fallback = null) => {
   } catch (_) {
     return fallback;
   }
+};
+
+const toNonNegativeInt = (value, fallback = null) => {
+  if (value == null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.floor(parsed));
 };
 
 const derivePanelsFromLegacy = (payload) => {
@@ -57,6 +66,16 @@ const prioritizeTimelinePanelForThreePanelView = (panels) => {
 function normalizePayload(payload) {
   if (!payload || typeof payload !== "object") return null;
   const rawPanels = prioritizeTimelinePanelForThreePanelView(derivePanelsFromLegacy(payload));
+  const explicitActiveStageIndex = toNonNegativeInt(
+    payload?.activeStageIndex ?? payload?.currentStageIndex,
+    null
+  );
+  const explicitStageCount = toNonNegativeInt(payload?.stageCount, null);
+  const stageListCount = Array.isArray(payload?.stages) ? payload.stages.length : 0;
+  const hasStageMetadata = explicitActiveStageIndex != null
+    || explicitStageCount != null
+    || stageListCount > 1;
+
   const panels = rawPanels.map((panel, index) => ({
     ...panel,
     chart_spec: validateChartSpec(
@@ -81,14 +100,28 @@ function normalizePayload(payload) {
         ? "two_up"
         : "single_focus");
 
-  const activePanelId = payload?.activePanelId || panels[Number(payload?.activeStageIndex) || 0]?.panel_id || panels[0]?.panel_id || null;
+  const fallbackStageIndex = explicitActiveStageIndex ?? 0;
+  const clampedStageIndex = panels.length
+    ? Math.min(fallbackStageIndex, panels.length - 1)
+    : 0;
+  const activePanelId = explicitActiveStageIndex != null
+    ? (panels[clampedStageIndex]?.panel_id || payload?.activePanelId || panels[0]?.panel_id || null)
+    : (payload?.activePanelId || panels[clampedStageIndex]?.panel_id || panels[0]?.panel_id || null);
+  const stageCount = Math.max(
+    explicitStageCount ?? 0,
+    stageListCount,
+    panels.length
+  );
 
   return {
     ...payload,
     response_mode: responseMode,
     layout,
     panels,
+    stageCount,
+    activeStageIndex: clampedStageIndex,
     activePanelId,
+    stagedFlow: hasStageMetadata && stageCount > 1,
     spoken_answer: payload?.spoken_answer || payload?.voice_answer || payload?.summary?.shortSpeech || "",
     takeaway: payload?.takeaway || payload?.primary_answer || payload?.summary?.shortText || payload?.primary_visual?.takeaway || "",
     report_title: payload?.report_title || payload?.primary_visual?.title || "Health report",
@@ -220,12 +253,36 @@ const QnAPage = () => {
     () => panels.find((panel) => panel.panel_id === payload?.activePanelId) || panels[0] || null,
     [panels, payload?.activePanelId]
   );
-  const visiblePanels = payload?.response_mode === "single_view"
+  const shouldShowSinglePanel = payload?.voice_navigation_only === true
+    || payload?.interaction_mode === "voice_first"
+    || payload?.response_mode === "single_view"
+    || payload?.stagedFlow;
+  const visiblePanels = shouldShowSinglePanel
     ? (activePanel ? [activePanel] : panels.slice(0, 1))
     : panels;
   const panelCount = visiblePanels.length || 1;
   const isSinglePanel = panelCount === 1;
+  const renderedLayout = isSinglePanel ? "single_focus" : (payload?.layout || "single_focus");
   const gridHeroClass = panelCount === 2 && visiblePanels[0]?.emphasis === "hero" ? "hd-grid-hero-first" : "";
+  const activeStageNumber = (toNonNegativeInt(payload?.activeStageIndex, 0) || 0) + 1;
+  const stageCount = Math.max(1, toNonNegativeInt(payload?.stageCount, panels.length || 1) || 1);
+  const voiceHintPhrases = useMemo(() => {
+    const fromPayload = Array.isArray(payload?.voice_navigation_hints)
+      ? payload.voice_navigation_hints
+      : Array.isArray(payload?.suggested_follow_up)
+        ? payload.suggested_follow_up
+        : Array.isArray(payload?.suggestedDrillDowns)
+          ? payload.suggestedDrillDowns
+          : [];
+    const normalized = fromPayload
+      .map((item) => String(item || "").replace(/^say:\s*/i, "").trim().toLowerCase())
+      .filter(Boolean);
+    const merged = [...normalized];
+    DEFAULT_VOICE_HINTS.forEach((phrase) => {
+      if (!merged.includes(phrase)) merged.push(phrase);
+    });
+    return merged.slice(0, 4);
+  }, [payload?.suggestedDrillDowns, payload?.suggested_follow_up, payload?.voice_navigation_hints]);
 
   return (
     <div className="hd-shell">
@@ -236,7 +293,7 @@ const QnAPage = () => {
           <div className="hd-user"><FiUser /> {username}</div>
         </header>
 
-        <main className={`hd-main hd-main-chart-only hd-layout-${payload?.layout || "single_focus"} ${isSinglePanel ? "hd-main-single-panel" : ""}`.trim()}>
+        <main className={`hd-main hd-main-chart-only hd-layout-${renderedLayout} ${isSinglePanel ? "hd-main-single-panel" : ""}`.trim()}>
           {statusNotice?.message ? (
             <div className={`hd-ready-banner ${statusNotice.type}`}>
               {statusNotice.message}
@@ -247,11 +304,21 @@ const QnAPage = () => {
             <div>
               <p className="hd-report-eyebrow">{payload?.response_mode === "multi_panel_report" ? "Visual report" : "Focused answer"}</p>
               <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
+              <p className="hd-stage-counter">Chart {activeStageNumber} of {stageCount}</p>
             </div>
             <p className="hd-report-takeaway">{payload?.takeaway || summary}</p>
           </section>
 
-          <section className={`hd-panel-grid hd-panel-grid-${payload?.layout || "single_focus"} hd-panel-count-${panelCount} ${gridHeroClass} ${isSinglePanel ? "hd-panel-grid-single-panel" : ""}`.trim()}>
+          <section className="hd-voice-hints" aria-label="Voice hints">
+            <p className="hd-voice-hints-title">Say one of these</p>
+            <div className="hd-voice-hints-row">
+              {voiceHintPhrases.map((phrase) => (
+                <span key={phrase} className="hd-voice-hint-chip">{`Say: ${phrase}`}</span>
+              ))}
+            </div>
+          </section>
+
+          <section className={`hd-panel-grid hd-panel-grid-${renderedLayout} hd-panel-count-${panelCount} ${gridHeroClass} ${isSinglePanel ? "hd-panel-grid-single-panel" : ""}`.trim()}>
             {chartLoading ? (
               <div className="hd-chart-loading hd-loading-panel">
                 <div className="hd-loading-bar"><div className="hd-loading-fill" /></div>

@@ -59,10 +59,12 @@ test("resume_pending resolves the active pending job by username", async () => {
     action: "resume_pending",
   }, res);
 
-  assert.equal(res.body.status, "pending");
+  assert.equal(res.body.status, "partial");
   assert.equal(res.body.requestId, "req-pending");
   assert.equal(res.body.answer_ready, false);
   assert.equal(res.body.voice_answer, "");
+  assert.equal(typeof res.body.stageCount, "number");
+  assert.equal(typeof res.body.activeStageIndex, "number");
 });
 
 test("resume_pending returns a ready answer once and then reports nothing pending", async () => {
@@ -88,10 +90,12 @@ test("resume_pending returns a ready answer once and then reports nothing pendin
     action: "resume_pending",
   }, firstRes);
 
-  assert.equal(firstRes.body.status, "ready");
+  assert.equal(firstRes.body.status, "complete");
   assert.equal(firstRes.body.answer_ready, true);
   assert.equal(firstRes.body.voice_answer, "Your sleep answer is ready.");
   assert.equal(testHooks.getResumableJob("amy"), null);
+  assert.equal(typeof firstRes.body.stageCount, "number");
+  assert.equal(typeof firstRes.body.activeStageIndex, "number");
 
   const secondRes = createRes();
   await testHooks.handleControl("amy", {
@@ -99,9 +103,11 @@ test("resume_pending returns a ready answer once and then reports nothing pendin
     action: "resume_pending",
   }, secondRes);
 
-  assert.equal(secondRes.body.status, "error");
+  assert.equal(secondRes.body.status, "partial");
   assert.equal(secondRes.body.answer_ready, false);
   assert.match(secondRes.body.voice_answer, /no pending answer right now/i);
+  assert.equal(typeof secondRes.body.stageCount, "number");
+  assert.equal(typeof secondRes.body.activeStageIndex, "number");
 });
 
 test("poll_pending clears a ready answer so continue does not replay it", async () => {
@@ -128,7 +134,7 @@ test("poll_pending clears a ready answer so continue does not replay it", async 
     requestId: "req-spoken",
   }, pollRes);
 
-  assert.equal(pollRes.body.status, "ready");
+  assert.equal(pollRes.body.status, "complete");
   assert.equal(pollRes.body.answer_ready, true);
   assert.equal(testHooks.getResumableJob("amy"), null);
 
@@ -138,7 +144,7 @@ test("poll_pending clears a ready answer so continue does not replay it", async 
     action: "resume_pending",
   }, resumeRes);
 
-  assert.equal(resumeRes.body.status, "error");
+  assert.equal(resumeRes.body.status, "partial");
   assert.match(resumeRes.body.voice_answer, /no pending answer right now/i);
 });
 
@@ -175,6 +181,19 @@ test("resume_pending rejects a stale requestId when a newer active job has repla
     requestId: "req-old",
   }, res);
 
-  assert.equal(res.body.status, "error");
+  assert.equal(res.body.status, "partial");
   assert.match(res.body.voice_answer, /no pending answer right now/i);
+});
+
+test("stage navigation control routes through orchestrator handler instead of unknown-action error", async () => {
+  const res = createRes();
+  await testHooks.handleControl("amy", {
+    type: "control",
+    action: "stage_next",
+  }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.notEqual(res.body?.status, undefined);
+  assert.equal(res.body?.status, "partial");
+  assert.match(String(res.body?.voice_answer || ""), /(could not load|active analysis|stage)/i);
 });

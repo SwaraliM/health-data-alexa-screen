@@ -70,6 +70,8 @@ describe("Smart screen page smoke tests", () => {
     expect(screen.getByRole("heading", { name: "Health Q and A" })).toBeTruthy();
     expect(screen.getAllByText("Chart view will appear here when a health question is answered.").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Tap to speak" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /next/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /back/i })).toBeNull();
   });
 
   test("updates QnA page when qnaDataUpdated event is fired", async () => {
@@ -344,6 +346,98 @@ describe("Smart screen page smoke tests", () => {
     expect(screen.getAllByText("Activity and sleep both improved.").length).toBeGreaterThan(0);
     expect(document.querySelector(".hd-panel-grid-three_panel_report")).toBeTruthy();
     expect(document.querySelector(".hd-panel-emphasis-hero")).toBeTruthy();
+  });
+
+  test("renders staged multi-panel payload one panel at a time", async () => {
+    sessionStorage.setItem(
+      "qnaData",
+      JSON.stringify({
+        response_mode: "multi_panel_report",
+        layout: "three_panel_report",
+        report_title: "Staged report",
+        takeaway: "Stage-based rendering should show one panel at a time.",
+        spoken_answer: "Stage-based rendering should show one panel at a time.",
+        stageCount: 3,
+        activeStageIndex: 2,
+        activePanelId: "stage_1",
+        panels: [
+          {
+            panel_id: "stage_1",
+            title: "Stage 1",
+            subtitle: "First",
+            goal: "single_metric_status",
+            metrics: ["steps"],
+            visual_family: "line",
+            chart_spec: {
+              chart_type: "line",
+              title: "Stage 1",
+              subtitle: "First",
+              takeaway: "Stage 1 takeaway",
+              panel_theme: { accentColor: "#111111" },
+              option: {
+                xAxis: { data: ["M", "T"] },
+                yAxis: { type: "value" },
+                series: [{ type: "line", data: [1, 2] }],
+              },
+            },
+          },
+          {
+            panel_id: "stage_2",
+            title: "Stage 2",
+            subtitle: "Second",
+            goal: "single_metric_status",
+            metrics: ["sleep_minutes"],
+            visual_family: "line",
+            chart_spec: {
+              chart_type: "line",
+              title: "Stage 2",
+              subtitle: "Second",
+              takeaway: "Stage 2 takeaway",
+              panel_theme: { accentColor: "#222222" },
+              option: {
+                xAxis: { data: ["M", "T"] },
+                yAxis: { type: "value" },
+                series: [{ type: "line", data: [3, 4] }],
+              },
+            },
+          },
+          {
+            panel_id: "stage_3",
+            title: "Stage 3",
+            subtitle: "Third",
+            goal: "single_metric_status",
+            metrics: ["calories"],
+            visual_family: "line",
+            chart_spec: {
+              chart_type: "line",
+              title: "Stage 3",
+              subtitle: "Third",
+              takeaway: "Stage 3 takeaway",
+              panel_theme: { accentColor: "#333333" },
+              option: {
+                xAxis: { data: ["M", "T"] },
+                yAxis: { type: "value" },
+                series: [{ type: "line", data: [5, 6] }],
+              },
+            },
+          },
+        ],
+      })
+    );
+
+    render(
+      <MemoryRouter>
+        <QnAPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Staged report" })).toBeTruthy();
+    expect(screen.getAllByTestId("mock-echart")).toHaveLength(1);
+    expect(document.querySelector(".hd-main-single-panel")).toBeTruthy();
+    expect(document.querySelector(".hd-panel-grid-single_focus")).toBeTruthy();
+    expect(screen.getByText("Chart 3 of 3")).toBeTruthy();
+    expect(screen.getByText("Say: show more")).toBeTruthy();
+    expect(screen.getByText("Say: go back")).toBeTruthy();
   });
 
   test("renders four-panel payload with panel-count-aware grid class", async () => {

@@ -306,6 +306,17 @@ function sanitizeBoxplotOption(rawOption = {}) {
   };
 }
 
+function parseOption(value) {
+  if (value != null && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
 function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   if (!input || typeof input !== "object") return fallbackChartSpec(fallbackTitle);
 
@@ -317,7 +328,7 @@ function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   const subtitle = sanitizeText(input.subtitle, MAX_SUBTITLE, "");
   const takeaway = sanitizeText(input.takeaway, MAX_TAKEAWAY, "");
   const suggested_follow_up = sanitizeFollowUps(input.suggested_follow_up || input.suggestedFollowUp);
-  const rawOption = input.option && typeof input.option === "object" ? input.option : {};
+  const rawOption = parseOption(input.option);
 
   let option = null;
   if (chart_type === "gauge") option = sanitizeGaugeOption(rawOption);

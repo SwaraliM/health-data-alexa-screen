@@ -397,7 +397,7 @@ function extractMentionedMetrics(question = "") {
   if (/distance|mile|miles/.test(q)) push("distance");
   if (/floor|floors|stairs/.test(q)) push("floors");
   if (/elevation/.test(q)) push("elevation");
-  if (/step|steps|walk|walking|activity|movement/.test(q)) push("steps");
+  if (/step|steps|walk|walking|activity|active|movement/.test(q)) push("steps");
 
   if (isOverview) {
     push("sleep_minutes");
@@ -407,7 +407,11 @@ function extractMentionedMetrics(question = "") {
     push("resting_hr");
   }
 
-  if (!metrics.length) push(VISUAL_SYSTEM.proxyMap.energy || "steps");
+  if (!metrics.length) {
+    const energyProxy = VISUAL_SYSTEM.proxyMap.energy || "steps";
+    if (Array.isArray(energyProxy)) energyProxy.forEach(push);
+    else push(energyProxy);
+  }
 
   if (detectIntradayIntent(q)) {
     if (metrics.includes("resting_hr")) metrics[metrics.indexOf("resting_hr")] = "heart_intraday";

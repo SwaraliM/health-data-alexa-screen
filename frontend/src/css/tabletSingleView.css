@@ -1,0 +1,142 @@
+/*
+ * tabletSingleView.css
+ *
+ * Single-chart layout for Amazon Fire Tablet 11 (2000 x 1200).
+ *
+ * WebView bug:
+ * height: 100% on flex children does not resolve when the ancestor height is
+ * determined by flexbox. ECharts reads 0px and renders blank.
+ *
+ * Fix:
+ * Give the chart grid a real pixel height using calc(100vh - Npx) so the
+ * height chain is explicit all the way down.
+ *
+ * Layout budget for single-panel mode (px):
+ * Shell padding (top+bottom)   32
+ * Topbar                      56
+ * Main padding (top+bottom)   28
+ * Ready banner (buffer)       48
+ * Report header              120
+ * Voice hints                 62
+ * Gaps (3 x 12)               36
+ * ------------------------------
+ * Chrome total               382
+ * Chart area                 calc(100vh - 382px)
+ */
+
+.hd-main-single-panel {
+  --hd-single-panel-chrome: 382px;
+  --hd-single-panel-chart-height: calc(100vh - var(--hd-single-panel-chrome));
+  --hd-single-panel-min-chart: 420px;
+}
+
+/* Explicit pixel height on the chart grid */
+.hd-main-single-panel .hd-panel-grid {
+  height: var(--hd-single-panel-chart-height);
+  max-height: var(--hd-single-panel-chart-height);
+  min-height: var(--hd-single-panel-min-chart);
+  flex: none !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: 0;
+}
+
+/* Panel card: fill grid */
+.hd-main-single-panel .hd-panel-card {
+  height: 100%;
+  min-height: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  gap: 0;
+}
+
+/* Chart wrapper: fill card */
+.hd-main-single-panel .hd-panel-chart {
+  height: 100%;
+  min-height: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  overflow: hidden;
+  padding: 8px;
+}
+
+/* EChart wrap: fill chart */
+.hd-main-single-panel .hd-echart-wrap,
+.hd-main-single-panel .hd-echart-single-panel {
+  height: 100%;
+  min-height: 0;
+  flex: none;
+  display: flex;
+  width: 100%;
+  position: relative;
+}
+
+/* EChart canvas: fill wrap */
+.hd-main-single-panel .hd-echart {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  flex: none;
+}
+
+/* Compact header in single-panel mode */
+.hd-main-single-panel .hd-report-header {
+  padding: 10px 16px 8px;
+  flex-shrink: 0;
+}
+
+.hd-main-single-panel .hd-report-title {
+  font-size: clamp(1.1rem, 1.5vw, 1.5rem);
+}
+
+.hd-main-single-panel .hd-report-takeaway {
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.hd-main-single-panel .hd-stage-counter {
+  font-size: 0.82rem;
+  margin-top: 3px;
+}
+
+/* Compact voice hints */
+.hd-main-single-panel .hd-voice-hints {
+  padding: 6px 12px;
+  flex-shrink: 0;
+}
+
+/* Loading panel inside single-panel grid */
+.hd-main-single-panel .hd-panel-grid .hd-loading-panel,
+.hd-main-single-panel .hd-panel-grid .hd-chart-loading {
+  height: 100%;
+  min-height: 0;
+}
+
+.hd-main-single-panel .hd-panel-grid .hd-loading-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+@media (max-height: 980px) {
+  .hd-main-single-panel {
+    --hd-single-panel-min-chart: 360px;
+  }
+
+  .hd-main-single-panel .hd-report-header {
+    padding: 8px 14px 6px;
+  }
+
+  .hd-main-single-panel .hd-voice-hints {
+    padding: 4px 10px;
+  }
+}
