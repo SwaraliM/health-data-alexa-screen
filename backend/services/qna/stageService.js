@@ -530,7 +530,11 @@ function buildCompletionState({
 } = {}) {
   const stage = stageRecord || getCurrentStage(bundle) || getLatestStage(bundle);
   const stageIndex = Math.max(0, Number(stage?.stageIndex || 0));
-  const stageCount = Array.isArray(bundle?.stages) ? bundle.stages.length : (stage ? 1 : 0);
+  const stageCount = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
+    ? bundle.stagesPlan.length
+    : Array.isArray(bundle?.plannerOutput?.candidate_stage_types) && bundle.plannerOutput.candidate_stage_types.length
+      ? bundle.plannerOutput.candidate_stage_types.length
+      : Array.isArray(bundle?.stages) ? bundle.stages.length : (stage ? 1 : 0);
   const moreAvailable = hasMoreStages(bundle, stage);
   const bundleStatus = moreAvailable
     ? "partial"
@@ -634,6 +638,32 @@ function buildStagePayload({
     ? " That completes the analysis. You can ask me a new health question, or say go deeper to explore this topic further."
     : "";
 
+  // ── Position context prefix for voice (Gap 2) ──────────────────────────────
+  // When there are multiple charts, prefix with "Chart X of Y." so Alexa
+  // clearly orients the user in the sequential reveal flow.
+  // Also append a navigation cue on non-final charts so the user knows what to say.
+  const stageCountForVoice = (() => {
+    const planned = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
+      ? bundle.stagesPlan.length
+      : Array.isArray(bundle?.plannerOutput?.candidate_stage_types)
+        ? bundle.plannerOutput.candidate_stage_types.length
+        : 0;
+    const cap = 6;
+    const knownCount = planned > 0 ? Math.min(planned, cap) : Math.max(stages.length, 1);
+    if (safeStage.moreAvailable && knownCount <= normalizedCurrentIndex + 1) {
+      return normalizedCurrentIndex + 2;
+    }
+    return knownCount;
+  })();
+  const positionPrefix = stageCountForVoice > 1
+    ? `Chart ${normalizedCurrentIndex + 1} of ${stageCountForVoice}. `
+    : "";
+  const navigationCue = !bundleComplete && stageCountForVoice > 1
+    ? " Say next for the next chart."
+    : "";
+  const fullVoiceAnswer = positionPrefix + safeStage.spokenText + completionOffer + navigationCue;
+  // ── End position context ───────────────────────────────────────────────────
+
   return {
     status: "ready",
     requestId: requestId || safeStage.requestId || null,
@@ -641,8 +671,8 @@ function buildStagePayload({
     navigation_mode: "voice_only",
     voice_navigation_only: true,
     question: sanitizeText(question || safeStage.question, 280, ""),
-    spoken_answer: safeStage.spokenText + completionOffer,
-    voice_answer: safeStage.spokenText + completionOffer,
+    spoken_answer: fullVoiceAnswer,
+    voice_answer: fullVoiceAnswer,
     bundle_complete: bundleComplete,
     voice_answer_source: sanitizeText(voiceAnswerSource, 20, "gpt"),
     answer_ready: true,
@@ -676,12 +706,19 @@ function buildStagePayload({
       stageIndex: Number(item?.stageIndex || idx),
     })),
     stageCount: (() => {
-      const planned = Array.isArray(bundle?.plannerOutput?.candidate_stage_types)
-        ? bundle.plannerOutput.candidate_stage_types.length
-        : 0;
-      const maxFromEnv = Math.max(1, Math.floor(Number(bundle?.plannerOutput?.maxStages || 0) || 4));
-      const cap = Math.min(maxFromEnv, 6);
-      return planned > 0 ? Math.min(planned, cap) : Math.max(stages.length, 1);
+      const planned = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
+        ? bundle.stagesPlan.length
+        : Array.isArray(bundle?.plannerOutput?.candidate_stage_types)
+          ? bundle.plannerOutput.candidate_stage_types.length
+          : 0;
+      const cap = 6;
+      const knownCount = planned > 0 ? Math.min(planned, cap) : Math.max(stages.length, 1);
+      // When more stages are coming, guarantee the count is at least currentIndex+2
+      // so the lambda show_more gate never prematurely blocks navigation.
+      if (safeStage.moreAvailable && knownCount <= normalizedCurrentIndex + 1) {
+        return normalizedCurrentIndex + 2;
+      }
+      return knownCount;
     })(),
     activeStageIndex: normalizedCurrentIndex,
     activePanelId: panel.panel_id,

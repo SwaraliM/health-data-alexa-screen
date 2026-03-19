@@ -22,6 +22,9 @@ const SUPPORTED_CHART_TYPES = new Set([
   "pie",
   "list_summary",
   "composed_summary",
+  "candlestick",
+  "treemap",
+  "donut",
 ]);
 
 const MAX_POINTS = 90;
@@ -317,6 +320,74 @@ function parseOption(value) {
   }
 }
 
+function sanitizeCandlestickOption(rawOption = {}) {
+  const labels = sanitizeStringArray(rawOption?.xAxis?.data || [], 30, 18);
+  const rawData = Array.isArray(rawOption?.series?.[0]?.data) ? rawOption.series[0].data : [];
+  // ECharts candlestick format: each row is [open, close, low, high]
+  const data = rawData
+    .map((row) => Array.isArray(row) ? row.slice(0, 4).map((v) => toNum(v, NaN)) : null)
+    .filter((row) => row && row.length === 4 && row.every(Number.isFinite))
+    .slice(0, 60);
+  if (!labels.length || !data.length) return null;
+  return {
+    tooltip: { trigger: "axis" },
+    xAxis: { type: "category", data: labels },
+    yAxis: { type: "value", name: sanitizeText(rawOption?.yAxis?.name, 20, "") },
+    series: [{ type: "candlestick", data }],
+  };
+}
+
+function sanitizeTreemapOption(rawOption = {}) {
+  const rawData = Array.isArray(rawOption?.series?.[0]?.data) ? rawOption.series[0].data : [];
+  const data = rawData
+    .map((item, idx) => ({
+      name: sanitizeText(item?.name, 32, `Item ${idx + 1}`),
+      value: toNum(item?.value, NaN),
+    }))
+    .filter((item) => Number.isFinite(item.value) && item.value > 0)
+    .slice(0, 20);
+  if (!data.length) return null;
+  return {
+    tooltip: { formatter: "{b}: {c}" },
+    series: [{ type: "treemap", data, roam: false, nodeClick: false }],
+  };
+}
+
+function sanitizeDonutOption(rawOption = {}) {
+  const rawData = Array.isArray(rawOption?.series?.[0]?.data) ? rawOption.series[0].data : [];
+  const data = rawData
+    .map((item, idx) => ({
+      name: sanitizeText(item?.name, 24, `Slice ${idx + 1}`),
+      value: toNum(item?.value, NaN),
+    }))
+    .filter((item) => Number.isFinite(item.value))
+    .slice(0, MAX_LIST_ITEMS);
+  if (!data.length) return null;
+  const centerLabel = sanitizeText(
+    rawOption?.centerLabel || rawOption?.series?.[0]?.detail?.formatter,
+    20,
+    ""
+  );
+  return {
+    tooltip: { trigger: "item" },
+    legend: { bottom: 0 },
+    series: [{
+      type: "pie",
+      radius: ["45%", "75%"],
+      data,
+      label: { show: false },
+      ...(centerLabel ? {
+        graphic: [{
+          type: "text",
+          left: "center",
+          top: "center",
+          style: { text: centerLabel, fontSize: 18, fontWeight: "bold", fill: "#1E293B" },
+        }],
+      } : {}),
+    }],
+  };
+}
+
 function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   if (!input || typeof input !== "object") return fallbackChartSpec(fallbackTitle);
 
@@ -333,10 +404,13 @@ function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   let option = null;
   if (chart_type === "gauge") option = sanitizeGaugeOption(rawOption);
   else if (chart_type === "pie") option = sanitizePieOption(rawOption);
+  else if (chart_type === "donut") option = sanitizeDonutOption(rawOption);
   else if (chart_type === "list_summary" || chart_type === "composed_summary") option = sanitizeListSummaryOption(rawOption, input);
   else if (chart_type === "heatmap") option = sanitizeHeatmapOption(rawOption);
   else if (chart_type === "radar") option = sanitizeRadarOption(rawOption);
   else if (chart_type === "boxplot") option = sanitizeBoxplotOption(rawOption);
+  else if (chart_type === "candlestick") option = sanitizeCandlestickOption(rawOption);
+  else if (chart_type === "treemap") option = sanitizeTreemapOption(rawOption);
   else option = sanitizeCartesianOption(rawOption, chart_type);
 
   if (!option) return fallbackChartSpec(title, takeaway || "I could not prepare that chart safely.");

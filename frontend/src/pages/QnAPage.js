@@ -9,7 +9,6 @@ import "../css/tabletSingleView.css";
 const QNA_SPOKEN_REQUEST_STORAGE_KEY = "qnaLastSpokenRequestId";
 const VISUAL_STATUS_STORAGE_KEY = "visualStatus";
 const VISUAL_STATUS_TTL_MS = 30 * 1000;
-const DEFAULT_VOICE_HINTS = ["show more", "go back", "explain that", "compare that"];
 
 const safeJsonParse = (value, fallback = null) => {
   if (value == null) return fallback;
@@ -107,10 +106,12 @@ function normalizePayload(payload) {
   const activePanelId = explicitActiveStageIndex != null
     ? (panels[clampedStageIndex]?.panel_id || payload?.activePanelId || panels[0]?.panel_id || null)
     : (payload?.activePanelId || panels[clampedStageIndex]?.panel_id || panels[0]?.panel_id || null);
+  const moreAvailable = Boolean(payload?.moreAvailable || payload?.more_available);
   const stageCount = Math.max(
     explicitStageCount ?? 0,
     stageListCount,
-    panels.length
+    panels.length,
+    moreAvailable ? (explicitActiveStageIndex ?? 0) + 2 : 0
   );
 
   return {
@@ -266,23 +267,7 @@ const QnAPage = () => {
   const gridHeroClass = panelCount === 2 && visiblePanels[0]?.emphasis === "hero" ? "hd-grid-hero-first" : "";
   const activeStageNumber = (toNonNegativeInt(payload?.activeStageIndex, 0) || 0) + 1;
   const stageCount = Math.max(1, toNonNegativeInt(payload?.stageCount, panels.length || 1) || 1);
-  const voiceHintPhrases = useMemo(() => {
-    const fromPayload = Array.isArray(payload?.voice_navigation_hints)
-      ? payload.voice_navigation_hints
-      : Array.isArray(payload?.suggested_follow_up)
-        ? payload.suggested_follow_up
-        : Array.isArray(payload?.suggestedDrillDowns)
-          ? payload.suggestedDrillDowns
-          : [];
-    const normalized = fromPayload
-      .map((item) => String(item || "").replace(/^say:\s*/i, "").trim().toLowerCase())
-      .filter(Boolean);
-    const merged = [...normalized];
-    DEFAULT_VOICE_HINTS.forEach((phrase) => {
-      if (!merged.includes(phrase)) merged.push(phrase);
-    });
-    return merged.slice(0, 4);
-  }, [payload?.suggestedDrillDowns, payload?.suggested_follow_up, payload?.voice_navigation_hints]);
+  const bundleComplete = payload?.bundle_complete === true;
 
   return (
     <div className="hd-shell">
@@ -302,19 +287,22 @@ const QnAPage = () => {
 
           <section className={`hd-report-header hd-report-header-compact ${isSinglePanel ? "hd-report-header-single-panel" : ""}`.trim()}>
             <div>
-              <p className="hd-report-eyebrow">{payload?.response_mode === "multi_panel_report" ? "Visual report" : "Focused answer"}</p>
+              {payload?.question ? (
+                <p className="hd-report-eyebrow">{payload.question}</p>
+              ) : null}
               <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
               <p className="hd-stage-counter">Chart {activeStageNumber} of {stageCount}</p>
             </div>
             <p className="hd-report-takeaway">{payload?.takeaway || summary}</p>
           </section>
 
-          <section className="hd-voice-hints" aria-label="Voice hints">
-            <p className="hd-voice-hints-title">Say one of these</p>
+          <section className="hd-voice-hints" aria-label="Voice commands">
             <div className="hd-voice-hints-row">
-              {voiceHintPhrases.map((phrase) => (
-                <span key={phrase} className="hd-voice-hint-chip">{`Say: ${phrase}`}</span>
-              ))}
+              {!bundleComplete && (
+                <span className="hd-voice-hint-chip hd-hint-primary">Say "next" for next chart</span>
+              )}
+              <span className="hd-voice-hint-chip">Say "go deeper" for analysis</span>
+              <span className="hd-voice-hint-chip">Ask any question about this chart</span>
             </div>
           </section>
 

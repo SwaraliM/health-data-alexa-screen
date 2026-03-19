@@ -297,6 +297,179 @@ function adaptIntradayActivity(payload, resourceKey) {
   return adapted;
 }
 
+// NEW: Sleep stages adapter — extracts per-stage minutes from levels.summary.
+// Returns one point per stage per date: sleep_light, sleep_deep, sleep_rem, sleep_awake.
+function adaptSleepStagesRange(payload) {
+  const logs = asArray(payload?.sleep);
+  const bestByDate = new Map();
+
+  // Pick the same best-log-per-date logic as adaptSleepRange (main sleep preferred, else longest).
+  logs.forEach((entry) => {
+    const dateKey = String(entry?.dateOfSleep || entry?.dateTime || "").trim();
+    if (!dateKey) return;
+
+    const minutesAsleep = safeNumber(entry?.minutesAsleep);
+    const durationMinutes =
+      safeNumber(entry?.duration) != null ? safeNumber(entry.duration) / 60000 : null;
+    const sleepMinutes = minutesAsleep != null ? minutesAsleep : durationMinutes;
+    if (sleepMinutes == null) return;
+
+    const current = bestByDate.get(dateKey);
+    const isMainSleep = Boolean(entry?.isMainSleep);
+    const score = (isMainSleep ? 10_000 : 0) + sleepMinutes;
+    if (!current || score > current.score) {
+      bestByDate.set(dateKey, { entry, score });
+    }
+  });
+
+  const adapted = [];
+
+  [...bestByDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .forEach(([dateKey, picked]) => {
+      const item = picked.entry;
+      const summary = item?.levels?.summary;
+      if (!summary) return;
+
+      const efficiency = safeNumber(item?.efficiency);
+      const sharedMeta = {
+        isMainSleep: Boolean(item?.isMainSleep),
+        efficiency,
+        logType: item?.logType || null,
+      };
+
+      // Stages-type sleep: deep, light, rem, wake.
+      const stageMap = {
+        sleep_deep: summary?.deep,
+        sleep_light: summary?.light,
+        sleep_rem: summary?.rem,
+        sleep_awake: summary?.wake,
+      };
+
+      // Classic-type sleep fallback: awake, restless, asleep.
+      const classicMap = {
+        sleep_awake: summary?.awake,
+        sleep_light: summary?.restless,
+        sleep_deep: summary?.asleep,
+      };
+
+      const hasStages = Object.values(stageMap).some((s) => s != null);
+      const sourceMap = hasStages ? stageMap : classicMap;
+
+      Object.entries(sourceMap).forEach(([metric, stageData]) => {
+        const value = safeNumber(stageData?.minutes);
+        if (value == null) return;
+        adapted.push({
+          timestamp: dateKey,
+          label: inferLabelFromTimestamp(dateKey),
+          metric,
+          value,
+          meta: {
+            ...sharedMeta,
+            count: safeNumber(stageData?.count),
+            thirtyDayAvgMinutes: safeNumber(stageData?.thirtyDayAvgMinutes),
+          },
+        });
+      });
+
+      // Also emit sleep_efficiency as its own series point if available.
+      if (efficiency != null) {
+        adapted.push({
+          timestamp: dateKey,
+          label: inferLabelFromTimestamp(dateKey),
+          metric: "sleep_efficiency",
+          value: efficiency,
+          meta: { ...sharedMeta },
+        });
+      }
+    });
+
+  adapterLog("sleep stages adapted", { points: adapted.length });
+  return adapted;
+}
+
+// NEW: Breathing rate adapter — processes /br/date/:start/:end response.
+// Fitbit returns: { "br": [{ "dateTime": "YYYY-MM-DD", "value": { "breathingRate": 15.6 } }] }
+function adaptBreathingRateRange(payload) {
+  // Support both top-level array and { br: [...] } envelope.
+  const rows = Array.isArray(payload)
+    ? payload
+    : asArray(payload?.br ?? payload?.breathingRate);
+
+  const adapted = rows
+    .map((item) => {
+      const timestamp = String(item?.dateTime || item?.date || "").trim();
+      const value = safeNumber(item?.value?.breathingRate ?? item?.value);
+      if (!timestamp || value == null) return null;
+      return {
+        timestamp,
+        label: inferLabelFromTimestamp(timestamp),
+        metric: "breathing_rate",
+        value,
+        meta: {},
+      };
+    })
+    .filter(Boolean);
+
+  adapterLog("breathing rate adapted", { points: adapted.length });
+  return adapted;
+}
+
+// NEW: SpO2 adapter — processes /spo2/date/:start/:end response.
+// Fitbit returns: [{ "dateTime": "YYYY-MM-DD", "value": { "avg": 97.5, "min": 94.0, "max": 100.0 } }]
+// (or wrapped in { "dateTime": ..., "value": ... } for a single-day call)
+function adaptSpo2Range(payload) {
+  // Support both top-level array and single-object responses.
+  const rows = Array.isArray(payload) ? payload : (payload ? [payload] : []);
+
+  const adapted = rows
+    .map((item) => {
+      const timestamp = String(item?.dateTime || item?.date || "").trim();
+      const avg = safeNumber(item?.value?.avg ?? item?.value);
+      if (!timestamp || avg == null) return null;
+      return {
+        timestamp,
+        label: inferLabelFromTimestamp(timestamp),
+        metric: "spo2",
+        value: avg,
+        meta: {
+          min: safeNumber(item?.value?.min),
+          max: safeNumber(item?.value?.max),
+        },
+      };
+    })
+    .filter(Boolean);
+
+  adapterLog("spo2 adapted", { points: adapted.length });
+  return adapted;
+}
+
+// NEW: Activity goals adapter — extracts goal values from /activities/goals/:period response.
+// Returns a plain object (not a time-series) for use in goal-progress visualizations.
+// Example: { steps: 10000, caloriesOut: 3500, distance: 5, floors: 10, activeMinutes: 55 }
+function adaptActivityGoals(payload) {
+  const goals = payload?.goals;
+  if (!goals || typeof goals !== "object") return {};
+
+  const result = {};
+  const numericFields = [
+    "steps",
+    "caloriesOut",
+    "distance",
+    "floors",
+    "activeMinutes",
+    "activeZoneMinutes",
+  ];
+
+  numericFields.forEach((field) => {
+    const val = safeNumber(goals[field]);
+    if (val != null) result[field] = val;
+  });
+
+  adapterLog("activity goals adapted", result);
+  return result;
+}
+
 module.exports = {
   adaptStepsRange,
   adaptCaloriesRange,
@@ -304,6 +477,10 @@ module.exports = {
   adaptFloorsRange,
   adaptElevationRange,
   adaptSleepRange,
+  adaptSleepStagesRange,      // NEW
+  adaptBreathingRateRange,    // NEW
+  adaptSpo2Range,             // NEW
+  adaptActivityGoals,         // NEW
   adaptRestingHeartRateRange,
   adaptHrvRange,
   adaptIntradayHeart,

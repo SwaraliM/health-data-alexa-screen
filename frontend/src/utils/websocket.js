@@ -76,6 +76,57 @@ function connectWebSocket(username, navigate) {
 function handleWebSocketCommand(data, navigate) {
   const username = normalizeUsername(localStorage.getItem("username") || "amy");
 
+  if (data.action === "displayAllStages") {
+    const stages = Array.isArray(data.stages) ? data.stages : [];
+    const firstStage = stages.find((stage) => stage && typeof stage === "object") || null;
+    if (!firstStage) return;
+
+    console.warn("[frontend websocket] deprecated displayAllStages received; falling back to stage 0 only");
+
+    const payload = {
+      ...firstStage,
+      activeStageIndex: Number.isFinite(Number(firstStage.stageIndex)) ? Number(firstStage.stageIndex) : 0,
+      stageCount: stages.length || 1,
+      activePanelId: `stage_${Number.isFinite(Number(firstStage.stageIndex)) ? Number(firstStage.stageIndex) : 0}`,
+      answer_ready: true,
+      bundle_complete: stages.length <= 1,
+      panels: firstStage.chart_spec ? [{
+        panel_id: `stage_${Number.isFinite(Number(firstStage.stageIndex)) ? Number(firstStage.stageIndex) : 0}`,
+        title: firstStage.title || "Health insight",
+        subtitle: "",
+        goal: "deep_dive",
+        metrics: [],
+        visual_family: firstStage.chart_spec.chart_type || "bar",
+        chart_spec: firstStage.chart_spec,
+      }] : undefined,
+      spoken_answer: firstStage.voice_answer || firstStage.speech || firstStage.summary || "",
+      voice_answer: firstStage.voice_answer || firstStage.speech || firstStage.summary || "",
+      takeaway: firstStage.screen_text || firstStage.summary || firstStage.voice_answer || "",
+      report_title: firstStage.title || "Health insight",
+      primary_visual: firstStage.chart_spec || null,
+      chart_spec: firstStage.chart_spec || null,
+      summary: {
+        shortSpeech: firstStage.voice_answer || firstStage.speech || "",
+        shortText: firstStage.screen_text || firstStage.summary || "",
+      },
+      stages: stages.map((stage, index) => ({
+        id: stage.id || `stage_${Number.isFinite(Number(stage?.stageIndex)) ? Number(stage.stageIndex) : index}`,
+        speech: stage.speech || stage.voice_answer || "",
+        voice_answer: stage.voice_answer || stage.speech || "",
+        screen_text: stage.screen_text || stage.summary || "",
+        chart_spec: stage.chart_spec || null,
+        summary: stage.summary || "",
+        title: stage.title || `Stage ${index + 1}`,
+        stageIndex: Number.isFinite(Number(stage?.stageIndex)) ? Number(stage.stageIndex) : index,
+      })),
+    };
+
+    sessionStorage.setItem("qnaData", JSON.stringify(payload));
+    navigate("/qna");
+    window.dispatchEvent(new CustomEvent("qnaDataUpdated"));
+    return;
+  }
+
   if (data.action === "navigation") {
     const option = data.option;
     if (!option) return;

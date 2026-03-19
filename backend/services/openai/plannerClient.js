@@ -7,14 +7,21 @@
 
 const {
   AGENT_CONFIGS,
-  PLANNER_ALLOWED_MODES,
+  ENHANCED_PLANNER_SYSTEM_PROMPT,
+  EXECUTOR_ALLOWED_CHART_TYPES,
   PLANNER_ALLOWED_STAGE_TYPES,
   PLANNER_ALLOWED_TIME_SCOPES,
 } = require("../../configs/agentConfigs");
+
 const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
 const { createResponse } = require("./responsesClient");
 
 const PLANNER_DEBUG = process.env.QNA_PLANNER_DEBUG !== "false";
+const EXECUTOR_MAX_STAGE_COUNT = Math.max(
+  1,
+  Math.floor(Number(AGENT_CONFIGS.executor?.progression?.maxStages || 4))
+);
+const ALLOWED_STAGE_ROLES = ["primary", "comparison", "deep_dive", "summary"];
 
 function plannerLog(message, data = null) {
   if (!PLANNER_DEBUG) return;
@@ -36,18 +43,6 @@ function detectTimeScopeFallback(question = "", defaultScope = "last_7_days") {
   if (/last week/.test(q)) return "last_week";
   if (/30 days|month/.test(q)) return "last_30_days";
   return defaultScope;
-}
-
-function detectModeFallback(question = "", activeBundleSummary = null) {
-  if (!activeBundleSummary) return "new_analysis";
-  const q = String(question || "").toLowerCase();
-  if (/\binstead\b|\banother\b|\bnew\b|\bdifferent\b|\balso show\b/.test(q)) return "branch_analysis";
-  return "continue_analysis";
-}
-
-function sanitizeMode(mode, fallback) {
-  const normalized = String(mode || "").trim().toLowerCase();
-  return PLANNER_ALLOWED_MODES.includes(normalized) ? normalized : fallback;
 }
 
 function sanitizeTimeScope(scope, fallback) {
@@ -106,61 +101,138 @@ function heuristicMetricsFromQuestion(question = "") {
   return metrics;
 }
 
-function buildFallbackPlan({ question, activeBundleSummary }) {
-  const mode = detectModeFallback(question, activeBundleSummary);
-  const inheritedMetrics = Array.isArray(activeBundleSummary?.metricsRequested)
-    ? activeBundleSummary.metricsRequested
+const STAGE_TYPE_TO_CHART_TYPE = {
+  overview: "bar",
+  sleep_stages: "stacked_bar",
+  trend: "line",
+  respiratory_health: "line",
+  relationship: "grouped_bar",
+  takeaway: "list_summary",
+  comparison: "grouped_bar",
+  anomaly: "line",
+  goal_progress: "gauge",
+  intraday_breakdown: "area",
+  sleep_detail: "stacked_bar",
+  heart_recovery: "line",
+};
+
+function sanitizeStagePlan(rawPlan, maxStages) {
+  if (!Array.isArray(rawPlan)) return null;
+  const valid = [];
+  for (const entry of rawPlan) {
+    if (!entry || typeof entry !== "object") continue;
+    const stageIndex = Math.floor(Number(entry.stageIndex));
+    if (!Number.isFinite(stageIndex) || stageIndex < 0) continue;
+    const stageType = String(entry.stageType || "").trim().toLowerCase();
+    if (!PLANNER_ALLOWED_STAGE_TYPES.includes(stageType)) continue;
+    const chartType = String(entry.chartType || "").trim().toLowerCase();
+    if (!EXECUTOR_ALLOWED_CHART_TYPES.includes(chartType)) continue;
+    const focusMetrics = Array.isArray(entry.focusMetrics)
+      ? entry.focusMetrics.map((m) => String(m || "").trim()).filter(Boolean).slice(0, 6)
+      : [];
+    const title = sanitizeText(entry.title, 100, "");
+    const goal = sanitizeText(entry.goal, 180, "");
+    const requestedRole = String(entry.stageRole || "").trim().toLowerCase();
+    const stageRole = ALLOWED_STAGE_ROLES.includes(requestedRole)
+      ? requestedRole
+      : (stageIndex === 0 ? "primary" : (stageType === "comparison" ? "comparison" : "deep_dive"));
+    valid.push({ stageIndex, stageType, stageRole, focusMetrics, chartType, title, goal });
+  }
+  if (valid.length < 1) return null;
+  valid.sort((a, b) => a.stageIndex - b.stageIndex);
+  // Re-index from 0
+  valid.forEach((s, i) => {
+    s.stageIndex = i;
+    if (i === 0) s.stageRole = "primary";
+    else if (i === valid.length - 1 && s.stageRole !== "comparison") s.stageRole = s.stageRole === "deep_dive" ? "deep_dive" : "summary";
+  });
+  return valid.slice(0, maxStages);
+}
+
+function buildFallbackStagesPlan(metrics, candidateStageTypes) {
+  const stageTypes = Array.isArray(candidateStageTypes) && candidateStageTypes.length
+    ? candidateStageTypes
+    : ["overview", "trend", "takeaway"];
+  const limited = stageTypes.slice(0, EXECUTOR_MAX_STAGE_COUNT);
+  return limited.map((stageType, idx) => ({
+    stageIndex: idx,
+    stageType,
+    stageRole: idx === 0
+      ? "primary"
+      : stageType === "comparison"
+        ? "comparison"
+        : idx === limited.length - 1
+          ? "summary"
+          : "deep_dive",
+    focusMetrics: Array.isArray(metrics) ? metrics.slice(0, 4) : [],
+    chartType: STAGE_TYPE_TO_CHART_TYPE[stageType] || "bar",
+    title: "",
+    goal: "",
+  }));
+}
+
+function buildFallbackPlan({ question, enrichedIntent = null }) {
+  const inheritedMetrics = Array.isArray(enrichedIntent?.inferred_metrics)
+    ? enrichedIntent.inferred_metrics
     : [];
   const resolverMetrics = resolveRequestedMetrics(question);
   const heuristicMetrics = heuristicMetricsFromQuestion(question);
   const metrics = [...new Set([...inheritedMetrics, ...heuristicMetrics, ...resolverMetrics])].slice(0, 6);
-  const timeScope = detectTimeScopeFallback(question, activeBundleSummary?.timeScope || "last_7_days");
-  const analysisGoal = sanitizeText(question, 140, "Summarize recent health trends");
+  const timeScope = sanitizeTimeScope(enrichedIntent?.time_range, null)
+    || detectTimeScopeFallback(question, "last_7_days");
+  const analysisGoal = sanitizeText(enrichedIntent?.rich_analysis_goal || question, 140, "Summarize recent health trends");
   const candidateStageTypes = fallbackStageTypes(metrics);
+  const stages_plan = buildFallbackStagesPlan(metrics, candidateStageTypes);
 
   return {
-    mode,
     metrics_needed: metrics,
     time_scope: timeScope,
     analysis_goal: analysisGoal,
     candidate_stage_types: candidateStageTypes,
+    stages_plan,
   };
 }
 
-function normalizePlannerOutput(raw, fallback) {
+function normalizePlannerOutput(raw, fallback, forcedMetrics = null) {
   const source = raw && typeof raw === "object" ? raw : {};
-  const mode = sanitizeMode(source.mode, fallback.mode);
-  const metrics = resolveRequestedMetrics(source.metrics_needed || source.metrics || fallback.metrics_needed);
+  const baseMetrics = resolveRequestedMetrics(source.metrics_needed || source.metrics || fallback.metrics_needed);
+  const metrics = Array.isArray(forcedMetrics) && forcedMetrics.length
+    ? resolveRequestedMetrics([...forcedMetrics, ...baseMetrics])
+    : baseMetrics;
   const timeScope = sanitizeTimeScope(source.time_scope, fallback.time_scope);
   const analysisGoal = sanitizeText(source.analysis_goal, 160, fallback.analysis_goal);
   const candidateStageTypes = sanitizeStageTypes(source.candidate_stage_types, fallback.candidate_stage_types);
+  const stages_plan = sanitizeStagePlan(source.stages_plan, EXECUTOR_MAX_STAGE_COUNT)
+    || buildFallbackStagesPlan(metrics, candidateStageTypes);
 
   return {
-    mode,
     metrics_needed: metrics,
     time_scope: timeScope,
     analysis_goal: analysisGoal,
     candidate_stage_types: candidateStageTypes,
+    stages_plan,
   };
 }
 
-async function runPlannerRequest({ question, activeBundleSummary = null, userContext = null } = {}) {
+async function runPlannerRequest({ question, enrichedIntent = null, userContext = null, forcedMetrics = null } = {}) {
   const plannerConfig = AGENT_CONFIGS.planner;
-  const fallbackPlan = buildFallbackPlan({ question, activeBundleSummary });
+  const fallbackPlan = buildFallbackPlan({ question, enrichedIntent });
 
   const plannerInput = {
     question: sanitizeText(question, 300, ""),
-    active_bundle_summary: activeBundleSummary || null,
+    inferred_metrics: Array.isArray(enrichedIntent?.inferred_metrics) ? enrichedIntent.inferred_metrics : [],
+    rich_analysis_goal: sanitizeText(enrichedIntent?.rich_analysis_goal, 300, ""),
+    time_range: sanitizeText(enrichedIntent?.time_range, 40, "last_7_days") || "last_7_days",
     user_context: userContext || null,
-    allowed_modes: plannerConfig.allowedModes,
     allowed_time_scopes: plannerConfig.allowedTimeScopes,
     allowed_stage_types: plannerConfig.allowedStageTypes,
+    forced_metrics: Array.isArray(forcedMetrics) && forcedMetrics.length ? forcedMetrics : null,
   };
 
   const response = await createResponse({
     model: plannerConfig.model,
     input: plannerInput,
-    instructions: plannerConfig.systemPrompt,
+    instructions: ENHANCED_PLANNER_SYSTEM_PROMPT,
     responseFormat: plannerConfig.textFormat,
     tools: [],
     timeoutMs: plannerConfig.timeoutMs,
@@ -169,7 +241,6 @@ async function runPlannerRequest({ question, activeBundleSummary = null, userCon
     metadata: {
       agent: "planner",
       version: plannerConfig.version,
-      username: sanitizeText(activeBundleSummary?.username, 32, ""),
     },
   });
 
@@ -190,15 +261,15 @@ async function runPlannerRequest({ question, activeBundleSummary = null, userCon
   }
 
   const rawOutput = response.outputJson || null;
-  const normalized = normalizePlannerOutput(rawOutput, fallbackPlan);
+  const normalized = normalizePlannerOutput(rawOutput, fallbackPlan, forcedMetrics);
   const usedFallback = !rawOutput;
 
   plannerLog("planner request completed", {
     responseId: response.responseId,
     usedFallback,
-    mode: normalized.mode,
     metrics: normalized.metrics_needed,
     time_scope: normalized.time_scope,
+    stageCount: normalized.stages_plan?.length,
   });
 
   return {

@@ -93,6 +93,7 @@ function buildExecutorInputV2({
   userContext = null,
   stageIndex = 0,
   templateCandidates = [],
+  stageSpec = null,
 } = {}) {
   const compactHistory = (Array.isArray(stageHistory) ? stageHistory : [])
     .slice(-4)
@@ -125,9 +126,19 @@ function buildExecutorInputV2({
     stage_history: compactHistory,
     user_context: userContext || null,
     template_candidates: Array.isArray(templateCandidates) ? templateCandidates : [],
+    stage_specification: stageSpec ? {
+      stageType: stageSpec.stageType,
+      focusMetrics: stageSpec.focusMetrics || [],
+      chartType: stageSpec.chartType,
+      title: stageSpec.title,
+      goal: stageSpec.goal,
+    } : null,
     instructions: {
       pick_template_index: "Choose selected_template_index from the template_candidates list (0-based).",
       fill_text_only: "You only write text fields. The chart data in the selected template is already correct.",
+      use_stage_spec: stageSpec
+        ? `This is stage type '${stageSpec.stageType}', focusing on [${(stageSpec.focusMetrics || []).join(", ")}]. Prefer chart type '${stageSpec.chartType}'. Goal: ${stageSpec.goal}`
+        : "Choose the best template based on available data.",
       voice_formula: [
         "spoken_text sentence 1: Orientation — describe what the chart shows.",
         "spoken_text sentence 2-3: Highlight — what stands out, in plain words.",
@@ -303,6 +314,7 @@ async function runExecutorRequest({
   previousResponseId = null,
   userContext = null,
   stageIndex = 0,
+  stageSpec = null,
   voiceDeadlineMs = null,
   toolContext = null,
   templateCandidates = null,  // V2: pre-built chart templates from chartTemplateBuilder
@@ -332,6 +344,7 @@ async function runExecutorRequest({
         userContext,
         stageIndex,
         templateCandidates,
+        stageSpec: stageSpec || null,
       })
     : buildExecutorInput({
         bundleSummary,

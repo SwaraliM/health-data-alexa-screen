@@ -62,6 +62,13 @@ const qnaBundleSchema = new mongoose.Schema(
       default: {},
     },
 
+    // Explicit per-stage plan from planner (Phase 5+).
+    // Each entry: { stageIndex, stageType, focusMetrics, chartType, title, goal }
+    stagesPlan: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+
     // Metric keys resolved/requested for Fitbit fetching.
     metricsRequested: {
       type: [String],

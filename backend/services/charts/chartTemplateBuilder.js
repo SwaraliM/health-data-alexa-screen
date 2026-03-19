@@ -79,6 +79,43 @@ function pickSecondaryMetric(metricsNeeded, availableColumns, exclude) {
   return availableColumns.find((c) => c !== exclude) || null;
 }
 
+function pickPrimaryMetricForStage(metricsNeeded, availableColumns, stageIndex = 0) {
+  const cols = new Set(availableColumns);
+  const available = (Array.isArray(metricsNeeded) ? metricsNeeded : []).filter((m) => cols.has(m));
+  if (!available.length) return availableColumns[0] || null;
+  return available[stageIndex % available.length];
+}
+
+const RADAR_MAX_VALUES = {
+  steps: 15000,
+  calories: 3000,
+  distance: 10,
+  floors: 20,
+  sleep_minutes: 600,
+  sleep_deep: 120,
+  sleep_light: 240,
+  sleep_rem: 120,
+  sleep_awake: 60,
+  sleep_efficiency: 100,
+  resting_hr: 100,
+  hrv: 100,
+  breathing_rate: 25,
+  spo2: 100,
+};
+
+function extractRadarDataFromTable(rows, metrics) {
+  const available = metrics.filter((m) => rows.some((r) => r[m] != null));
+  if (available.length < 3) return null;
+  const indicators = available.map((m) => ({
+    name: formatMetricName(m),
+    max: RADAR_MAX_VALUES[m] || Math.max(1, (computeAverage(rows, m) || 0) * 1.5),
+  }));
+  const lastRow = [...rows].reverse().find((r) => available.some((m) => r[m] != null));
+  if (!lastRow) return null;
+  const values = available.map((m) => toNumber(lastRow[m]) || 0);
+  return { indicators, series: [{ name: "Your stats", data: values }] };
+}
+
 // ─── Template builder ─────────────────────────────────────────────────────────
 
 /**
@@ -109,21 +146,42 @@ function buildTemplate(index, chartType, description, chartData) {
     const hasItems = Array.isArray(chartData.items) && chartData.items.length > 0;
     if (!hasCards && !hasItems) return null;
   }
+  if (chartType === "radar") {
+    if (!Array.isArray(chartData.indicators) || chartData.indicators.length < 3) return null;
+    if (!Array.isArray(chartData.series) || chartData.series.length < 1) return null;
+  }
   return { index, chart_type: chartType, description, chart_data: chartData };
 }
 
 // ─── Per-stage-type builders ──────────────────────────────────────────────────
 
-function buildOverviewTemplates(rows, metricsNeeded, availableColumns) {
+function buildOverviewTemplates(rows, metricsNeeded, availableColumns, _rawFitbitCache, stageIndex = 0) {
   const results = [];
-  const metrics = metricsNeeded.filter((m) => availableColumns.includes(m)).slice(0, 4);
-  if (!metrics.length) return results;
+  const allMetrics = metricsNeeded.filter((m) => availableColumns.includes(m)).slice(0, 4);
+  if (!allMetrics.length) return results;
 
-  // Primary: bar chart of daily values for the first metric
+  // Rotate metrics by stageIndex so each stage focuses on a different metric
+  const offset = stageIndex % allMetrics.length;
+  const metrics = [...allMetrics.slice(offset), ...allMetrics.slice(0, offset)];
+
   const primary = metrics[0];
+  const secondary = metrics[1] || null;
+
+  // Template 0: grouped_bar when 2+ metrics, otherwise bar
+  if (secondary) {
+    const { labels, series } = extractMultiMetricSeries(rows, [primary, secondary]);
+    if (labels.length >= 1) {
+      results.push(buildTemplate(0, "grouped_bar",
+        `${formatMetricName(primary)} and ${formatMetricName(secondary)} — overview`,
+        { labels, series }
+      ));
+    }
+  }
+
+  // Single-metric bar (primary only) — always include as an alternative
   const { labels, values } = extractDailySeries(rows, primary);
   if (labels.length >= 1) {
-    results.push(buildTemplate(0, "bar",
+    results.push(buildTemplate(results.length, "bar",
       `${formatMetricName(primary)} — overview`,
       {
         labels,
@@ -133,10 +191,23 @@ function buildOverviewTemplates(rows, metricsNeeded, availableColumns) {
     ));
   }
 
-  // Alternate: list_summary of recent metric values as cards
+  // Sleep stage stacked_bar when sleep stage columns are present
+  const SLEEP_STAGE_COLS = ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"];
+  const availableStages = SLEEP_STAGE_COLS.filter((m) => availableColumns.includes(m));
+  if (availableStages.length >= 2) {
+    const { labels: sl, series: ss } = extractMultiMetricSeries(rows, availableStages);
+    if (sl.length >= 1) {
+      results.push(buildTemplate(results.length, "stacked_bar",
+        "Sleep stage breakdown each night",
+        { labels: sl, series: ss, unit: "min" }
+      ));
+    }
+  }
+
+  // list_summary of recent metric values as cards
   const { cards, items } = extractListSummaryCards(rows, metrics);
   if (cards.length) {
-    results.push(buildTemplate(1, "list_summary",
+    results.push(buildTemplate(results.length, "list_summary",
       "A summary of your most recent health metrics",
       { cards, items }
     ));
@@ -145,9 +216,9 @@ function buildOverviewTemplates(rows, metricsNeeded, availableColumns) {
   return results.filter(Boolean);
 }
 
-function buildTrendTemplates(rows, metricsNeeded, availableColumns) {
+function buildTrendTemplates(rows, metricsNeeded, availableColumns, _rawFitbitCache, stageIndex = 0) {
   const results = [];
-  const primary = pickPrimaryMetric(metricsNeeded, availableColumns);
+  const primary = pickPrimaryMetricForStage(metricsNeeded, availableColumns, stageIndex);
   if (!primary) return results;
 
   const { labels, values } = extractDailySeries(rows, primary);
@@ -165,17 +236,29 @@ function buildTrendTemplates(rows, metricsNeeded, availableColumns) {
     }
   ));
 
-  results.push(buildTemplate(1, "area",
-    `${formatMetricName(primary)} trend (shaded area)`,
-    { labels, series: [{ name: formatMetricName(primary), data: values }], unit }
-  ));
+  // Template 1: multi_line when secondary available, otherwise area
+  const secondary = pickSecondaryMetric(metricsNeeded, availableColumns, primary);
+  if (secondary) {
+    const { labels: ml, series: mls } = extractMultiMetricSeries(rows, [primary, secondary]);
+    if (ml.length >= 2) {
+      results.push(buildTemplate(1, "multi_line",
+        `${formatMetricName(primary)} and ${formatMetricName(secondary)} trend`,
+        { labels: ml, series: mls }
+      ));
+    }
+  } else {
+    results.push(buildTemplate(1, "area",
+      `${formatMetricName(primary)} trend (shaded area)`,
+      { labels, series: [{ name: formatMetricName(primary), data: values }], unit }
+    ));
+  }
 
   return results.filter(Boolean);
 }
 
-function buildComparisonTemplates(rows, metricsNeeded, availableColumns) {
+function buildComparisonTemplates(rows, metricsNeeded, availableColumns, _rawFitbitCache, stageIndex = 0) {
   const results = [];
-  const primary = pickPrimaryMetric(metricsNeeded, availableColumns);
+  const primary = pickPrimaryMetricForStage(metricsNeeded, availableColumns, stageIndex);
   if (!primary) return results;
 
   const { labels, series } = extractComparisonSeries(rows, primary);
@@ -201,36 +284,36 @@ function buildComparisonTemplates(rows, metricsNeeded, availableColumns) {
   return results.filter(Boolean);
 }
 
-function buildRelationshipTemplates(rows, metricsNeeded, availableColumns) {
+function buildRelationshipTemplates(rows, metricsNeeded, availableColumns, _rawFitbitCache, stageIndex = 0) {
   const results = [];
-  const primary = pickPrimaryMetric(metricsNeeded, availableColumns);
+  const primary = pickPrimaryMetricForStage(metricsNeeded, availableColumns, stageIndex);
   const secondary = pickSecondaryMetric(metricsNeeded, availableColumns, primary);
   if (!primary || !secondary) return results;
 
-  // Grouped bar: both metrics side-by-side per day (easier to read than scatter)
-  const { labels, series } = extractMultiMetricSeries(rows, [primary, secondary]);
-  if (labels.length >= 2) {
-    results.push(buildTemplate(0, "grouped_bar",
-      `${formatMetricName(primary)} alongside ${formatMetricName(secondary)} — each day`,
-      { labels, series }
+  // Scatter first: more analytically revealing — each dot is one day
+  const scatter = extractScatterPoints(rows, primary, secondary);
+  if (scatter.points.length >= 3) {
+    results.push(buildTemplate(0, "scatter",
+      `${formatMetricName(primary)} vs ${formatMetricName(secondary)} — each dot is one day`,
+      scatter
     ));
   }
 
-  // Scatter: each dot is one day
-  const scatter = extractScatterPoints(rows, primary, secondary);
-  if (scatter.points.length >= 3) {
-    results.push(buildTemplate(1, "scatter",
-      `${formatMetricName(primary)} vs ${formatMetricName(secondary)} — each dot is one day`,
-      scatter
+  // Grouped bar: both metrics side-by-side per day
+  const { labels, series } = extractMultiMetricSeries(rows, [primary, secondary]);
+  if (labels.length >= 2) {
+    results.push(buildTemplate(results.length, "grouped_bar",
+      `${formatMetricName(primary)} alongside ${formatMetricName(secondary)} — each day`,
+      { labels, series }
     ));
   }
 
   return results.filter(Boolean);
 }
 
-function buildTakeawayTemplates(rows, metricsNeeded, availableColumns) {
+function buildTakeawayTemplates(rows, metricsNeeded, availableColumns, _rawFitbitCache, stageIndex = 0) {
   const results = [];
-  const primary = pickPrimaryMetric(metricsNeeded, availableColumns);
+  const primary = pickPrimaryMetricForStage(metricsNeeded, availableColumns, stageIndex);
   if (!primary) return results;
 
   const { labels, values } = extractDailySeries(rows, primary);
@@ -247,10 +330,22 @@ function buildTakeawayTemplates(rows, metricsNeeded, availableColumns) {
     ));
   }
 
+  // Radar chart when 4+ metrics available — multi-dimensional health snapshot
+  const radarMetrics = metricsNeeded.filter((m) => availableColumns.includes(m));
+  if (radarMetrics.length >= 4) {
+    const radarData = extractRadarDataFromTable(rows, radarMetrics);
+    if (radarData) {
+      results.push(buildTemplate(results.length, "radar",
+        "Multi-dimensional health overview at a glance",
+        radarData
+      ));
+    }
+  }
+
   // Alternate: gauge of the primary metric value
   const gauge = extractGaugeValue(rows, primary, null);
   if (gauge && gauge.value != null && gauge.max != null) {
-    results.push(buildTemplate(1, "gauge",
+    results.push(buildTemplate(results.length, "gauge",
       `Your latest ${formatMetricName(primary)} reading`,
       gauge
     ));
@@ -367,6 +462,89 @@ function buildHeartRecoveryTemplates(rows, metricsNeeded, availableColumns) {
   return results.filter(Boolean);
 }
 
+function buildSleepStagesTemplates(rows, metricsNeeded, availableColumns, rawFitbitCache) {
+  const results = [];
+  const SLEEP_STAGE_COLS = ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"];
+  const availableStages = SLEEP_STAGE_COLS.filter((m) => availableColumns.includes(m));
+
+  // Template 0: stacked_bar — 7-day sleep stage composition
+  if (availableStages.length >= 2) {
+    const { labels, series } = extractMultiMetricSeries(rows, availableStages);
+    if (labels.length >= 1) {
+      results.push(buildTemplate(0, "stacked_bar",
+        "Sleep stage breakdown — how each night was divided",
+        { labels, series, unit: "min" }
+      ));
+    }
+  }
+
+  // Template 1: pie — single-night breakdown from rawFitbitCache
+  const stageSlices = extractSleepStagesFromCache(rawFitbitCache);
+  if (stageSlices.length >= 2) {
+    results.push(buildTemplate(results.length, "pie",
+      "How your sleep was divided into stages last night",
+      { slices: stageSlices }
+    ));
+  }
+
+  // Fallback: sleep_efficiency or first available sleep metric
+  if (!results.length) {
+    const fallback = availableColumns.find((c) => c === "sleep_efficiency")
+      || availableColumns.find((c) => c.startsWith("sleep_"))
+      || pickPrimaryMetric(metricsNeeded, availableColumns);
+    if (fallback) {
+      const { labels, values } = extractDailySeries(rows, fallback);
+      if (labels.length >= 1) {
+        results.push(buildTemplate(0, "bar",
+          `${formatMetricName(fallback)} each night`,
+          { labels, series: [{ name: formatMetricName(fallback), data: values }], unit: deriveUnit(fallback) }
+        ));
+      }
+    }
+  }
+
+  return results.filter(Boolean);
+}
+
+function buildRespiratoryHealthTemplates(rows, metricsNeeded, availableColumns) {
+  const results = [];
+  const hasBreathing = availableColumns.includes("breathing_rate");
+  const hasSpo2 = availableColumns.includes("spo2");
+
+  // Template 0: multi_line — both metrics together when available
+  if (hasBreathing && hasSpo2) {
+    const { labels, series } = extractMultiMetricSeries(rows, ["breathing_rate", "spo2"]);
+    if (labels.length >= 1) {
+      results.push(buildTemplate(0, "multi_line",
+        "Breathing rate and blood oxygen (SpO₂) over time",
+        { labels, series }
+      ));
+    }
+  }
+
+  // Template 1: line with clinical reference line
+  const primary = hasBreathing ? "breathing_rate" : hasSpo2 ? "spo2"
+    : pickPrimaryMetric(metricsNeeded, availableColumns);
+  if (primary) {
+    const { labels, values } = extractDailySeries(rows, primary);
+    if (labels.length >= 1) {
+      const refValue = primary === "spo2" ? 95 : primary === "breathing_rate" ? 16 : null;
+      const refLabel = primary === "spo2" ? "Clinical min (95%)" : primary === "breathing_rate" ? "Normal (16 br/min)" : null;
+      results.push(buildTemplate(results.length, "line",
+        `${formatMetricName(primary)} trend`,
+        {
+          labels,
+          series: [{ name: formatMetricName(primary), data: values }],
+          ...(refValue != null ? { reference_line: { value: refValue, label: refLabel } } : {}),
+          unit: deriveUnit(primary),
+        }
+      ));
+    }
+  }
+
+  return results.filter(Boolean);
+}
+
 // ─── Sleep stage extraction from rawFitbitCache ───────────────────────────────
 
 /**
@@ -378,10 +556,10 @@ function extractSleepStagesFromCache(rawFitbitCache) {
   try {
     if (!rawFitbitCache || typeof rawFitbitCache !== "object") return slices;
     const sleepKey = Object.keys(rawFitbitCache).find(
-      (k) => k.includes("sleep") && (k.includes("single") || k.includes("date"))
+      (k) => k === "sleep_minutes" || k.startsWith("sleep_")
     );
     if (!sleepKey) return slices;
-    const sleepRaw = rawFitbitCache[sleepKey];
+    const sleepRaw = rawFitbitCache[sleepKey]?.raw;
     const sleepArr = Array.isArray(sleepRaw?.sleep) ? sleepRaw.sleep : [];
     const mainSleep = sleepArr.find((s) => s.isMainSleep) || sleepArr[0];
     const summary = mainSleep?.levels?.summary;
@@ -408,6 +586,8 @@ const STAGE_TYPE_BUILDERS = {
   intraday_breakdown: buildIntradayTemplates,
   sleep_detail:       buildSleepDetailTemplates,
   heart_recovery:     buildHeartRecoveryTemplates,
+  sleep_stages:       buildSleepStagesTemplates,
+  respiratory_health: buildRespiratoryHealthTemplates,
 };
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -430,15 +610,19 @@ function buildTemplatesForStage({
   stageIndex = 0,
   previousStageTypes = [],
   rawFitbitCache = null,
+  stageSpec = null,
 } = {}) {
   const rows = Array.isArray(normalizedTable) ? normalizedTable : [];
   const availableColumns = getAvailableColumns(rows);
 
-  const metricsNeeded = Array.isArray(plannerOutput?.metrics_needed)
-    ? plannerOutput.metrics_needed
-    : Array.isArray(plannerOutput?.metricsNeeded)
-      ? plannerOutput.metricsNeeded
-      : [];
+  // Use stageSpec.focusMetrics when available; fall back to plannerOutput metrics
+  const metricsNeeded = Array.isArray(stageSpec?.focusMetrics) && stageSpec.focusMetrics.length
+    ? stageSpec.focusMetrics
+    : Array.isArray(plannerOutput?.metrics_needed)
+      ? plannerOutput.metrics_needed
+      : Array.isArray(plannerOutput?.metricsNeeded)
+        ? plannerOutput.metricsNeeded
+        : [];
 
   const candidateStageTypes = Array.isArray(plannerOutput?.candidate_stage_types)
     ? plannerOutput.candidate_stage_types
@@ -446,8 +630,8 @@ function buildTemplatesForStage({
       ? plannerOutput.candidateStageTypes
       : [];
 
-  // Resolve which stage type applies to this index
-  const stageType = candidateStageTypes[stageIndex] || candidateStageTypes[0] || "overview";
+  // Resolve which stage type applies to this index; stageSpec.stageType takes priority
+  const stageType = stageSpec?.stageType || candidateStageTypes[stageIndex] || candidateStageTypes[0] || "overview";
 
   templateLog("building templates", {
     stageIndex,
@@ -466,7 +650,7 @@ function buildTemplatesForStage({
 
   let candidates = [];
   try {
-    candidates = builder(rows, metricsNeeded, availableColumns, rawFitbitCache);
+    candidates = builder(rows, metricsNeeded, availableColumns, rawFitbitCache, stageIndex);
   } catch (err) {
     templateLog("builder threw → fallback to list_summary", { stageType, error: String(err?.message || err) });
     candidates = [];
@@ -486,6 +670,15 @@ function buildTemplatesForStage({
     const { cards, items } = extractListSummaryCards(rows, fallbackMetrics);
     if (cards.length) {
       candidates = [buildTemplate(0, "list_summary", "Your health data at a glance", { cards, items })].filter(Boolean);
+    }
+  }
+
+  // Promote stageSpec.chartType to index 0 so GPT naturally prefers it
+  if (stageSpec?.chartType) {
+    const preferredIdx = candidates.findIndex((c) => c?.chart_type === stageSpec.chartType);
+    if (preferredIdx > 0) {
+      const [preferred] = candidates.splice(preferredIdx, 1);
+      candidates.unshift(preferred);
     }
   }
 

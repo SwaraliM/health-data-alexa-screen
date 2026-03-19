@@ -29,6 +29,15 @@ const CANONICAL_METRICS = new Set([
   "calories_intraday",
   "distance_intraday",
   "floors_intraday",
+  // NEW: sleep stage metrics
+  "sleep_deep",
+  "sleep_light",
+  "sleep_rem",
+  "sleep_awake",
+  "sleep_efficiency",
+  // NEW: respiratory metrics
+  "breathing_rate",
+  "spo2",
 ]);
 
 const METRIC_ALIASES = {
@@ -45,6 +54,15 @@ const METRIC_ALIASES = {
   calories_intraday: ["calories today by hour", "hourly calories", "calories intraday"],
   distance_intraday: ["distance today by hour", "hourly distance", "distance intraday"],
   floors_intraday: ["floors today by hour", "hourly floors", "floors intraday"],
+  // NEW: sleep stage aliases
+  sleep_deep: ["deep sleep", "slow wave sleep", "deep sleep minutes"],
+  sleep_light: ["light sleep", "light sleep minutes"],
+  sleep_rem: ["rem sleep", "rem", "dream sleep", "dreaming", "rem sleep minutes"],
+  sleep_awake: ["wake", "awake during sleep", "night wakings", "times awake"],
+  sleep_efficiency: ["sleep efficiency", "sleep quality score", "sleep score"],
+  // NEW: respiratory aliases
+  breathing_rate: ["breathing rate", "breathing", "respiration", "respiration rate", "breaths per minute"],
+  spo2: ["spo2", "blood oxygen", "oxygen saturation", "o2 levels", "oxygen levels", "blood o2"],
 };
 
 const CONCEPT_TO_METRICS = {
@@ -52,6 +70,12 @@ const CONCEPT_TO_METRICS = {
   "heart health": ["resting_hr", "hrv"],
   "physical activity": ["steps", "calories", "distance"],
   "activity today by hour": ["steps_intraday"],
+  // NEW: sleep and respiratory concepts
+  "sleep quality": ["sleep_deep", "sleep_rem", "sleep_efficiency"],
+  "sleep stages": ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"],
+  "sleep breakdown": ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"],
+  "respiratory health": ["breathing_rate", "spo2"],
+  "overnight health": ["sleep_minutes", "sleep_efficiency", "breathing_rate", "spo2", "resting_hr"],
 };
 
 function normalizeText(value = "") {

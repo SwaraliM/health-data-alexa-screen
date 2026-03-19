@@ -1,24 +1,15 @@
 /**
  * backend/services/qna/qnaOrchestrator.js
  *
- * Phase 4 primary orchestrator.
+ * Stage-reveal coordinator.
  *
- * Responsibilities:
- * - planner + continuation decision
- * - bundle action management (continue / branch / new)
- * - Fitbit fetch + lightweight normalization into bundle memory
- * - executor-first single-stage generation with response chaining
- * - legacy qnaEngine fallback for safety/timing compatibility
+ * Flow:
+ *   classifyIntent -> planQuestion -> fetchFitbitData -> start all executor jobs
+ *   -> return stage 0 as soon as ready -> reveal later stages one-by-one via controls
  */
 
 const mongoose = require("mongoose");
-const {
-  answerFollowupFromPayload,
-  answerQuestion,
-  buildFitbitInternalUrl,
-  getUserContext,
-  inferHeuristicFetchPlan,
-} = require("../qnaEngine");
+const User = require("../../models/Users");
 const {
   adaptCaloriesRange,
   adaptDistanceRange,
@@ -30,79 +21,46 @@ const {
   adaptRestingHeartRateRange,
   adaptSleepRange,
   adaptStepsRange,
+  adaptSleepStagesRange,
+  adaptBreathingRateRange,
+  adaptSpo2Range,
 } = require("../fitbit/endpointAdapters");
 const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
 const { buildNormalizedTable } = require("../fitbit/normalizeSeries");
-const { generateInitialStage, generateNextStage } = require("./executorAgent");
-const { analyzeFollowupIntent, classifyContinuation } = require("./continuationAgent");
+const { generateStageFromExecutor } = require("./executorAgent");
+const { planQuestion } = require("./plannerAgent");
 const {
-  buildCompletionState,
-  buildStageResponse,
-  buildLegacyFallbackStage,
-  getLatestStage,
-  normalizeRequestedStageIndex,
-  replayStoredStage,
-  extractStageSummary,
-  getNextStageIndex,
-} = require("./stageService");
-const {
-  applyStageReplayState,
-  beginRequest,
-  endRequest,
-  getActiveBundleId,
-  getActiveSessionState,
-  getSessionState,
-  isCurrentRequest,
-  isStaleRequest,
-  setActiveBundleForUser,
-  setActiveBundleId,
-  setCurrentStageIndex: setSessionStageIndex,
-  setLatestRequestKey,
-  setRequestBundleOwnership,
-  setRequestedStageIndex,
-} = require("./sessionService");
-const {
-  appendOrUpdateStageAndState,
+  appendStage,
   archiveOlderActiveBundles,
   createBranchBundle,
   createBundle,
   getBundleById,
   loadActiveBundleForUser,
-  releaseOlderActiveBundles,
   saveBundlePatch,
   setBundleRequestOwnership,
-  setCurrentStageIndex: setBundleStageIndex,
   setBundleStatus,
+  setCurrentStageIndex: setBundleStageIndex,
   storePlannerResult,
   toStoredPlannerResult,
-  touchBundle,
 } = require("./bundleService");
 const { recordSessionAudit } = require("./auditService");
-const { buildCompactBundleSummary, planQuestion } = require("./plannerAgent");
-const { AGENT_CONFIGS } = require("../../configs/agentConfigs");
+const sessionService = require("./sessionService");
+const {
+  buildLegacyFallbackStage,
+  buildStagePayload,
+  createStageRecord,
+  getCurrentStage,
+  getLatestStage,
+  getStageByIndex,
+  replayStoredStage,
+} = require("./stageService");
 
 const ORCHESTRATOR_DEBUG = process.env.QNA_ORCHESTRATOR_DEBUG !== "false";
-// Primary path: planner -> bundle -> executor. Do not set to "false" if you want executor as primary.
-const ORCHESTRATOR_PRIMARY_ENABLED = process.env.QNA_ORCHESTRATOR_PRIMARY !== "false";
-const SHADOW_MODE_ENABLED = process.env.QNA_PLANNER_SHADOW_MODE !== "false";
-const EXECUTOR_PRIMARY_ENABLED = AGENT_CONFIGS.executor?.primaryEnabled !== false
-  && process.env.QNA_EXECUTOR_STAGE_ENABLED !== "false";
-const EXECUTOR_ALLOW_STAGE1_FALLBACK = AGENT_CONFIGS.executor?.fallback?.useLegacyStage1Fallback !== false;
-const EXECUTOR_ALLOW_NAV_FALLBACK = AGENT_CONFIGS.executor?.fallback?.useLegacyNavigationFallback !== false;
-const EXECUTOR_MAX_STAGE_COUNT = Math.max(
-  1,
-  Math.floor(Number(AGENT_CONFIGS.executor?.progression?.maxStages || 4))
-);
-const EXECUTOR_MIN_STAGE_COUNT = Math.min(
-  EXECUTOR_MAX_STAGE_COUNT,
-  Math.max(1, Math.floor(Number(AGENT_CONFIGS.executor?.progression?.minStages || 2)))
-);
-const EXECUTOR_COMPLETE_BUNDLES_ON_FINAL_STAGE = AGENT_CONFIGS.executor?.progression?.completeBundleOnFinalStage === true;
-const BUNDLE_LIFECYCLE_POLICY = String(process.env.QNA_BUNDLE_LIFECYCLE_POLICY || "archive").toLowerCase();
 const BUNDLE_DATA_FETCH_TIMEOUT_MS = Number(process.env.QNA_BUNDLE_FETCH_TIMEOUT_MS || 4800);
-const STRICT_STALE_RESULT_REJECTION = AGENT_CONFIGS?.session?.strictStaleResultRejection !== false;
-const TERMINAL_STAGE_VOICE_ANSWER = "That was the last visual for this question. Ask another health question when you're ready.";
-const TERMINAL_STAGE_REASONS = new Set(["max_stage_count_reached", "no_more_stages"]);
+const BUNDLE_LIFECYCLE_POLICY = String(process.env.QNA_BUNDLE_LIFECYCLE_POLICY || "archive").toLowerCase();
+const DEFAULT_PENDING_VOICE = "Hang on, I'm still preparing the next chart.";
+const DEFAULT_INITIAL_PENDING_VOICE = "Hang on, I'm still pulling your data. Ask me again in a moment.";
+const DEFAULT_MAX_STAGE_COUNT = 4;
 
 const TIME_SCOPE_DAY_CONFIG = {
   today: { days: 1, offset: 0 },
@@ -113,6 +71,16 @@ const TIME_SCOPE_DAY_CONFIG = {
   last_7_days: { days: 7, offset: 0 },
   last_30_days: { days: 30, offset: 0 },
 };
+
+const SLEEP_STAGE_METRICS = new Set([
+  "sleep_deep",
+  "sleep_light",
+  "sleep_rem",
+  "sleep_awake",
+  "sleep_efficiency",
+]);
+
+const RUNTIME_STAGE_REQUESTS = new Map();
 
 function orchestratorLog(message, data = null) {
   if (!ORCHESTRATOR_DEBUG) return;
@@ -133,442 +101,331 @@ function orchestratorError(message, error = null) {
   });
 }
 
-function normalizeUsername(username = "") {
-  return String(username || "").trim().toLowerCase();
-}
-
-function sanitizeQuestion(question = "") {
-  return String(question || "").replace(/\s+/g, " ").trim();
-}
-
 function sanitizeText(value, max = 220, fallback = "") {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text ? text.slice(0, max) : fallback;
 }
 
-function asNumber(value, fallback = null) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function normalizeFollowupPhrase(value = "") {
-  return sanitizeText(value, 120, "").toLowerCase();
-}
-
-function enforceContinuationFollowups(followups = [], moreAvailable = false) {
-  const unique = [];
-  const blockedWhenComplete = new Set(["show more", "yes", "next", "more", "go on", "continue"]);
-  const append = (value) => {
-    const normalized = normalizeFollowupPhrase(value);
-    if (!normalized) return;
-    if (!moreAvailable && blockedWhenComplete.has(normalized)) return;
-    if (unique.includes(normalized)) return;
-    unique.push(normalized);
-  };
-
-  (Array.isArray(followups) ? followups : []).forEach((value) => append(value));
-  if (moreAvailable) {
-    if (!unique.includes("show more")) unique.unshift("show more");
-    if (!unique.includes("yes")) unique.splice(unique.includes("show more") ? 1 : 0, 0, "yes");
-  }
-  return unique.slice(0, 6);
-}
-
-function applyStageProgressionPolicy(stageRecord = null) {
-  if (!stageRecord || typeof stageRecord !== "object") return stageRecord;
-  const stageIndex = Math.max(0, Number(stageRecord.stageIndex) || 0);
-  const beforeMinimum = stageIndex < (EXECUTOR_MIN_STAGE_COUNT - 1);
-  const atOrBeyondMaximum = stageIndex >= (EXECUTOR_MAX_STAGE_COUNT - 1);
-  const moreAvailable = atOrBeyondMaximum
-    ? false
-    : (beforeMinimum ? true : Boolean(stageRecord.moreAvailable));
-
-  return {
-    ...stageRecord,
-    stageIndex,
-    moreAvailable,
-    suggestedFollowups: enforceContinuationFollowups(stageRecord.suggestedFollowups, moreAvailable),
-  };
-}
-
-function isTerminalStageReason(reason = "") {
-  return TERMINAL_STAGE_REASONS.has(String(reason || "").trim().toLowerCase());
-}
-
-function buildTerminalStageResult({
-  reason = "stage_sequence_complete",
-  bundle = null,
-  requestId = null,
-  question = "",
-  voiceAnswerSource = "gpt",
-} = {}) {
-  const latestStage = getLatestStage(bundle);
-  let payload = null;
-  if (bundle?.bundleId && latestStage) {
-    const stageResponse = buildStageResponse({
-      bundle,
-      stageRecord: latestStage,
-      question,
-      requestId,
-      voiceAnswerSource,
-      completeWhenDone: EXECUTOR_COMPLETE_BUNDLES_ON_FINAL_STAGE,
-    });
-    if (stageResponse?.payload) {
-      payload = {
-        ...stageResponse.payload,
-        status: "ready",
-        answer_ready: true,
-        payload_ready: true,
-        voice_answer_source: stageResponse.payload.voice_answer_source || voiceAnswerSource,
-        voice_answer: TERMINAL_STAGE_VOICE_ANSWER,
-        spoken_answer: TERMINAL_STAGE_VOICE_ANSWER,
-        suggested_followup_prompt: "Ask another health question to start a new visual analysis.",
-      };
-    }
-  }
-  if (!payload) {
-    payload = {
-      status: "ready",
-      requestId: requestId || null,
-      answer_ready: true,
-      payload_ready: true,
-      voice_answer_source: voiceAnswerSource,
-      voice_answer: TERMINAL_STAGE_VOICE_ANSWER,
-      spoken_answer: TERMINAL_STAGE_VOICE_ANSWER,
-      question: sanitizeText(question, 280, ""),
-      stageCount: Array.isArray(bundle?.stages) ? bundle.stages.length : 0,
-      activeStageIndex: Number(bundle?.currentStageIndex || 0),
-    };
-  }
-  return {
-    ok: true,
-    status: "complete",
-    answerReady: true,
-    reason,
-    voiceAnswerSource,
-    voiceAnswer: TERMINAL_STAGE_VOICE_ANSWER,
-    payload,
-    bundleId: bundle?.bundleId || null,
-  };
+function normalizeUsername(username = "") {
+  return String(username || "").trim().toLowerCase();
 }
 
 function isMongoReady() {
   return mongoose?.connection?.readyState === 1;
 }
 
-function resolveOrchestratorDeps(overrides = null) {
-  const defaults = {
-    answerFollowupFromPayload,
-    analyzeFollowupIntent,
-    applyStageReplayState,
-    beginRequest,
-    branchBundle,
-    buildLegacyFallbackStage,
-    classifyContinuation,
-    continueExistingBundle,
-    endRequest,
-    ensureBundleHasNormalizedData,
-    finalizeBundleIfDone,
-    getActiveBundleId,
-    getActiveSessionState,
-    getBundleById,
-    getLatestStage,
-    generateNextMissingStage,
-    generateOrReplayStage,
-    getNextStageIndex,
-    getSessionState,
-    getUserContext,
-    isMongoReady,
-    isCurrentRequest,
-    isStaleRequest,
-    loadActiveBundleForUser,
-    persistStageResult,
-    planQuestion,
-    recordSessionAudit,
-    replayStoredStage,
-    runLegacyStage1,
-    setActiveBundleForUser,
-    setActiveBundleId,
-    setBundleRequestOwnership,
-    setBundleStageIndex,
-    setBundleStatus,
-    setLatestRequestKey,
-    setRequestBundleOwnership,
-    setRequestedStageIndex,
-    setSessionStageIndex,
-    shouldGenerateNextStage,
-    startNewBundleFromPlanner,
-    tryExecutorStageGeneration,
-  };
-  if (!overrides || typeof overrides !== "object") return defaults;
-  return {
-    ...defaults,
-    ...overrides,
-  };
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
-function makeRequestKey(requestId = null) {
-  if (requestId && String(requestId).trim()) return String(requestId).trim();
-  return `req_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+function withTimeout(promise, timeoutMs) {
+  const ms = Math.max(0, Number(timeoutMs) || 0);
+  if (!ms) return Promise.resolve({ timedOut: true, value: null });
+  return Promise.race([
+    Promise.resolve(promise).then((value) => ({ timedOut: false, value })),
+    delay(ms).then(() => ({ timedOut: true, value: null })),
+  ]);
 }
 
-function isCurrentRequestGuard(services, username, requestKey, bundleId = null) {
-  if (!requestKey) return true;
-  if (typeof services?.isCurrentRequest === "function") {
-    return services.isCurrentRequest({
-      username,
-      requestKey,
-      bundleId: bundleId || null,
-    });
+function pickStageRole(stageSpec = {}, stageIndex = 0, stageCount = 0) {
+  const explicit = String(stageSpec?.stageRole || "").trim().toLowerCase();
+  if (["primary", "comparison", "deep_dive", "summary"].includes(explicit)) return explicit;
+
+  const type = String(stageSpec?.stageType || "").trim().toLowerCase();
+  if (stageIndex === 0) return "primary";
+  if (type === "comparison") return "comparison";
+  if (["takeaway"].includes(type) || stageIndex === stageCount - 1) return "summary";
+  if (["relationship", "anomaly", "sleep_detail", "heart_recovery", "respiratory_health"].includes(type)) {
+    return "deep_dive";
   }
-  if (typeof services?.isStaleRequest === "function") {
-    return !services.isStaleRequest(username, requestKey);
+  return "deep_dive";
+}
+
+function normalizeFollowupLabel(value = "") {
+  const label = sanitizeText(value, 120, "").toLowerCase();
+  if (!label) return "";
+  if (/^(show more|more|next|continue|okay|ok)$/.test(label)) return "show more";
+  if (/^(yes|yeah|sure)$/.test(label)) return "yes";
+  if (/^(go back|back|previous)$/.test(label)) return "go back";
+  if (/^(compare|compare that|compare this)$/.test(label)) return "compare that";
+  if (/^(go deeper|tell me more|explore more)$/.test(label)) return "go deeper";
+  if (/^(explain|explain that|explain this)$/.test(label)) return "explain that";
+  if (/^(summarize|summarize this)$/.test(label)) return "summarize this";
+  if (/^(start over|restart)$/.test(label)) return "start over";
+  return label;
+}
+
+function uniqueFollowups(values = []) {
+  const seen = new Set();
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = normalizeFollowupLabel(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
   }
-  return true;
+  return out;
 }
 
-function recordStaleDiscard(services, {
-  username,
-  bundleId = null,
-  requestKey = null,
-  source = "internal",
-  reason = "stale_result_discarded",
-  scope = "orchestrator",
-} = {}) {
-  if (typeof services?.recordSessionAudit !== "function") return;
-  services.recordSessionAudit({
-    eventType: "stale_result_discarded",
-    username,
-    bundleId,
-    requestKey,
-    source,
-    reason,
-    result: scope,
-  });
+function getPlannerStageCount(bundle = null) {
+  const planned = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
+    ? bundle.stagesPlan.length
+    : Array.isArray(bundle?.plannerOutput?.candidate_stage_types) && bundle.plannerOutput.candidate_stage_types.length
+      ? bundle.plannerOutput.candidate_stage_types.length
+      : Array.isArray(bundle?.stages) && bundle.stages.length
+        ? Math.max(DEFAULT_MAX_STAGE_COUNT, bundle.stages.length)
+        : DEFAULT_MAX_STAGE_COUNT;
+  return Math.max(1, Math.min(6, Number(planned) || 1));
 }
 
-function staleResultResponse({
-  reason = "stale_result_discarded",
-  bundleId = null,
-} = {}) {
+function applyStageProgressionPolicy(stageRecord = {}, options = {}) {
+  const stageIndex = Math.max(0, Number(stageRecord?.stageIndex || 0));
+  const stageCount = Math.max(1, Number(options.stageCount || options.plannedStageCount || DEFAULT_MAX_STAGE_COUNT) || 1);
+  const moreAvailable = stageIndex < stageCount - 1;
+  const followups = uniqueFollowups(stageRecord?.suggestedFollowups || []);
+  const nextFollowups = [];
+
+  if (moreAvailable) {
+    nextFollowups.push("show more", "yes");
+  }
+  nextFollowups.push("go back", "explain that", "what does this mean");
+  if (pickStageRole(stageRecord?.metadata?.stageSpec || {}, stageIndex, stageCount) !== "comparison") {
+    nextFollowups.push("compare that");
+  }
+  if (!moreAvailable) nextFollowups.push("start over", "go deeper");
+  nextFollowups.push(...followups);
+
   return {
-    ok: false,
-    stale: true,
-    status: "stale",
-    reason,
-    answerReady: false,
-    voiceAnswerSource: "fallback",
-    voiceAnswer: "",
-    payload: null,
-    bundleId: bundleId || null,
-    orchestrator: {
-      used: true,
-      stageGenerator: "stale_discarded",
-      fallbackReason: reason,
-      bundleId: bundleId || null,
+    ...stageRecord,
+    moreAvailable,
+    suggestedFollowups: uniqueFollowups(nextFollowups).slice(0, 6),
+    metadata: {
+      ...(stageRecord?.metadata || {}),
+      stageRole: pickStageRole(stageRecord?.metadata?.stageSpec || {}, stageIndex, stageCount),
+      plannedStageCount: stageCount,
     },
   };
 }
 
-async function bindRequestToBundle({
-  services,
-  username,
-  requestKey,
-  bundleId,
-  source = "internal",
+function buildPendingResponse({
+  bundle = null,
+  requestId = null,
+  voiceAnswer = DEFAULT_PENDING_VOICE,
+  activeStageIndex = null,
+  requestedStageIndex = null,
+  reason = "stage_pending",
+  orchestrator = {},
 } = {}) {
-  if (!bundleId) return;
-  try {
-    if (typeof services?.setRequestBundleOwnership === "function") {
-      services.setRequestBundleOwnership({
-        username,
-        requestKey,
-        bundleId,
-      });
-    }
-  } catch (error) {
-    orchestratorWarn("failed to set in-memory request bundle ownership", {
-      username,
-      bundleId,
-      requestKey,
-      message: error?.message || String(error),
-    });
-  }
-
-  try {
-    if (typeof services?.setBundleRequestOwnership === "function") {
-      await services.setBundleRequestOwnership(bundleId, requestKey, source);
-    }
-  } catch (error) {
-    orchestratorWarn("failed to persist bundle request ownership", {
-      username,
-      bundleId,
-      requestKey,
-      message: error?.message || String(error),
-    });
-  }
-}
-
-function parseStageIndexInput(input = null) {
-  if (typeof input === "number" && Number.isFinite(input)) {
-    return Math.max(0, Math.floor(input));
-  }
-  const raw = String(input == null ? "" : input).trim().toLowerCase();
-  if (!raw) return null;
-  const parsed = Number(raw.replace(/[^\d-]/g, ""));
-  if (!Number.isFinite(parsed)) return null;
-  return Math.max(0, Math.floor(parsed));
-}
-
-function normalizeNavigationAction(action = "") {
-  const value = String(action || "").trim().toLowerCase();
-  if (["stage_next", "next", "show_more"].includes(value)) return "stage_next";
-  if (["stage_back", "back", "previous"].includes(value)) return "stage_back";
-  if (["stage_replay", "replay"].includes(value)) return "stage_replay";
-  if (["stage_goto", "go_to_stage", "goto_stage"].includes(value)) return "stage_goto";
-  return value;
-}
-
-function parseNonNegativeInt(value, fallback = null) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(0, Math.floor(parsed));
-}
-
-function sanitizeSessionHints(sessionHints = null) {
-  if (!sessionHints || typeof sessionHints !== "object") return null;
-  const normalized = {
-    activeStageIndex: parseNonNegativeInt(sessionHints.activeStageIndex, null),
-    stageCount: parseNonNegativeInt(sessionHints.stageCount, null),
-    pendingAction: sanitizeText(sessionHints.pendingAction, 40, ""),
-    lastQuestion: sanitizeQuestion(sessionHints.lastQuestion || ""),
-  };
-  const hasValues = normalized.activeStageIndex != null
-    || normalized.stageCount != null
-    || Boolean(normalized.pendingAction)
-    || Boolean(normalized.lastQuestion);
-  return hasValues ? normalized : null;
-}
-
-function applySessionHintsToRequest({
-  services,
-  username,
-  sessionHints = null,
-  requestKey = null,
-} = {}) {
-  const hints = sanitizeSessionHints(sessionHints);
-  if (!hints || !services || !username) return hints;
-
-  try {
-    if (requestKey && typeof services.setLatestRequestKey === "function") {
-      services.setLatestRequestKey(username, requestKey);
-    }
-    if (hints.activeStageIndex != null) {
-      if (typeof services.setSessionStageIndex === "function") {
-        services.setSessionStageIndex(username, hints.activeStageIndex);
-      }
-      if (typeof services.setRequestedStageIndex === "function") {
-        services.setRequestedStageIndex(username, hints.activeStageIndex);
-      }
-    }
-  } catch (error) {
-    orchestratorWarn("failed to apply session hints", {
-      username,
-      message: error?.message || String(error),
-      hints,
-    });
-  }
-
-  return hints;
-}
-
-function normalizeControlAction(action = "") {
-  const value = String(action || "").trim().toLowerCase();
-  if ([
-    "show_more",
-    "next",
-    "more",
-    "tell_me_more",
-    "go_on",
-    "stage_next",
-  ].includes(value)) return "show_more";
-  if (["back", "go_back", "previous", "stage_back"].includes(value)) return "back";
-  if (["replay", "repeat", "stage_replay"].includes(value)) return "replay";
-  if (["stage_goto", "goto_stage", "go_to_stage", "goto"].includes(value)) return "goto_stage";
-  if (["compare", "comparison", "compare_that"].includes(value)) return "compare";
-  if ([
-    "explain",
-    "description",
-    "what_does_this_mean",
-    "why_is_that",
-    "what_stands_out",
-    "what_am_i_looking_at",
-  ].includes(value)) return "explain";
-  if (["summarize", "summary", "recap"].includes(value)) return "summarize";
-  if (["start_over", "restart", "reset"].includes(value)) return "start_over";
-  return value;
-}
-
-function resolveControlQuestion({
-  action,
-  question = "",
-  sessionHints = null,
-} = {}) {
-  const normalizedAction = normalizeControlAction(action);
-  const explicitQuestion = sanitizeQuestion(question || "");
-  if (explicitQuestion) return explicitQuestion;
-  if (normalizedAction === "compare") {
-    return "Compare this stage with the previous period in one narrated chart stage.";
-  }
-  if (normalizedAction === "explain") {
-    return "Explain this stage in plain language: what is on screen, what stands out, and what it means.";
-  }
-  if (normalizedAction === "summarize") {
-    return "Summarize this stage in one clear takeaway.";
-  }
-  const hintedQuestion = sanitizeQuestion(sessionHints?.lastQuestion || "");
-  if (hintedQuestion && normalizedAction !== "start_over") return hintedQuestion;
-  if (normalizedAction === "show_more") return "Show more.";
-  if (normalizedAction === "back") return "Go back.";
-  if (normalizedAction === "start_over") return "Start over with a fresh chart-by-chart analysis.";
-  return "";
-}
-
-function buildControlActionQuestion({
-  action = "",
-  stage = null,
-  fallbackQuestion = "",
-} = {}) {
-  const normalizedAction = normalizeControlAction(action);
-  const stageTitle = sanitizeText(stage?.title, 80, "");
-  const stageReference = stageTitle
-    ? `the current stage titled "${stageTitle}"`
-    : "the current stage";
-  const explicit = sanitizeQuestion(fallbackQuestion || "");
-  if (explicit) return explicit;
-
-  if (normalizedAction === "compare") {
-    return `Compare ${stageReference} with the previous period and generate one narrated comparison stage.`;
-  }
-  if (normalizedAction === "explain") {
-    return `Explain ${stageReference} in simple terms for an older adult. Describe what is on screen, what stands out, and what it means.`;
-  }
-  if (normalizedAction === "summarize") {
-    return `Summarize ${stageReference} as one narrated takeaway stage in plain language.`;
-  }
-
-  return sanitizeQuestion(fallbackQuestion || "");
-}
-
-function toBundlePlannerPayload(plannerResult = {}) {
+  const safeBundle = bundle && typeof bundle === "object" ? bundle : {};
+  const currentIndex = activeStageIndex != null
+    ? Math.max(0, Number(activeStageIndex) || 0)
+    : Math.max(0, Number(safeBundle.currentStageIndex || 0));
+  const targetIndex = requestedStageIndex == null
+    ? currentIndex
+    : Math.max(0, Number(requestedStageIndex) || 0);
   return {
-    ...toStoredPlannerResult(plannerResult),
-    phase: "phase4_primary",
+    ok: false,
+    status: "pending",
+    answerReady: false,
+    answer_ready: false,
+    voiceAnswer: sanitizeText(voiceAnswer, 220, DEFAULT_PENDING_VOICE),
+    voice_answer: sanitizeText(voiceAnswer, 220, DEFAULT_PENDING_VOICE),
+    requestId: requestId || null,
+    stageCount: getPlannerStageCount(safeBundle),
+    activeStageIndex: currentIndex,
+    requestedStageIndex: targetIndex,
+    bundle_complete: false,
+    payload: null,
+    bundleId: safeBundle.bundleId || null,
+    reason,
+    orchestrator: {
+      used: true,
+      stageGenerator: "pending_stage",
+      ...orchestrator,
+    },
   };
 }
 
-function buildActiveBundleSummary(bundle) {
-  return buildCompactBundleSummary(bundle);
+function buildTerminalResponse({ bundle = null, requestId = null } = {}) {
+  const stage = getCurrentStage(bundle) || getLatestStage(bundle) || createStageRecord({
+    stageIndex: Math.max(0, Number(bundle?.currentStageIndex || 0)),
+    title: "Last chart",
+    spokenText: "That was the last visual in this analysis.",
+    screenText: "That was the last visual in this analysis.",
+    chartSpec: null,
+    moreAvailable: false,
+    suggestedFollowups: ["start over", "go deeper"],
+    source: "stage_limit_reached",
+  });
+  const payload = buildStagePayload({
+    bundle: { ...(bundle || {}), currentStageIndex: stage.stageIndex },
+    stageRecord: {
+      ...stage,
+      spokenText: "That was the last visual in this analysis. Ask a new health question, or say go deeper.",
+      screenText: stage.screenText || "That was the last visual in this analysis.",
+      moreAvailable: false,
+    },
+    question: bundle?.question || "",
+    requestId,
+  });
+  payload.answer_ready = true;
+  payload.voice_answer = payload.spoken_answer = "That was the last visual in this analysis. Ask a new health question, or say go deeper.";
+  payload.bundle_complete = true;
+
+  return {
+    ok: true,
+    status: "complete",
+    answerReady: true,
+    answer_ready: true,
+    voiceAnswer: payload.voice_answer,
+    voice_answer: payload.voice_answer,
+    requestId: requestId || null,
+    stageCount: getPlannerStageCount(bundle),
+    activeStageIndex: Number(stage.stageIndex || 0),
+    bundle_complete: true,
+    payload,
+    stage,
+    bundleId: bundle?.bundleId || null,
+    orchestrator: {
+      used: true,
+      stageGenerator: "stage_limit_reached",
+    },
+  };
+}
+
+function buildStageResult({
+  bundle = null,
+  stage = null,
+  requestId = null,
+  voiceAnswerSource = "gpt",
+  orchestrator = {},
+} = {}) {
+  const payload = buildStagePayload({
+    bundle,
+    stageRecord: stage,
+    question: bundle?.question || "",
+    requestId,
+    voiceAnswerSource,
+  });
+  const activeStageIndex = Math.max(0, Number(stage?.stageIndex || payload?.activeStageIndex || 0));
+  const bundleComplete = Boolean(payload?.bundle_complete);
+  return {
+    ok: true,
+    status: bundleComplete ? "complete" : "ready",
+    answerReady: true,
+    answer_ready: true,
+    voiceAnswer: payload.voice_answer,
+    voice_answer: payload.voice_answer,
+    requestId: requestId || payload.requestId || null,
+    stageCount: Number(payload.stageCount || getPlannerStageCount(bundle)),
+    activeStageIndex,
+    bundle_complete: bundleComplete,
+    payload,
+    stage,
+    bundleId: bundle?.bundleId || null,
+    orchestrator: {
+      used: true,
+      ...orchestrator,
+    },
+  };
+}
+
+function getStagePlan(bundle = null) {
+  if (Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length) return bundle.stagesPlan.slice();
+  const plannerStages = Array.isArray(bundle?.plannerOutput?.raw?.stages_plan) ? bundle.plannerOutput.raw.stages_plan : [];
+  if (plannerStages.length) return plannerStages.slice();
+  const candidateTypes = Array.isArray(bundle?.plannerOutput?.candidate_stage_types)
+    ? bundle.plannerOutput.candidate_stage_types
+    : [];
+  return candidateTypes.map((stageType, idx) => ({
+    stageIndex: idx,
+    stageType,
+    stageRole: pickStageRole({ stageType }, idx, candidateTypes.length),
+    focusMetrics: Array.isArray(bundle?.metricsRequested) ? bundle.metricsRequested.slice(0, 4) : [],
+    chartType: "bar",
+    title: "",
+    goal: "",
+  }));
+}
+
+function findPlannedStageIndexByRole(bundle = null, role = "", currentIndex = 0) {
+  const normalizedRole = String(role || "").trim().toLowerCase();
+  if (!normalizedRole) return null;
+  const stagesPlan = getStagePlan(bundle);
+  const afterCurrent = stagesPlan.find((stageSpec) => {
+    const stageIndex = Math.max(0, Number(stageSpec?.stageIndex || 0));
+    return stageIndex > currentIndex && pickStageRole(stageSpec, stageIndex, stagesPlan.length) === normalizedRole;
+  });
+  if (afterCurrent) return Math.max(0, Number(afterCurrent.stageIndex || 0));
+  const anyMatch = stagesPlan.find((stageSpec) => pickStageRole(stageSpec, stageSpec?.stageIndex || 0, stagesPlan.length) === normalizedRole);
+  return anyMatch ? Math.max(0, Number(anyMatch.stageIndex || 0)) : null;
+}
+
+function getRuntimeKey(requestKey = null, username = "") {
+  const safeRequestKey = sanitizeText(requestKey, 120, "");
+  const safeUsername = normalizeUsername(username);
+  return safeRequestKey || `user:${safeUsername}`;
+}
+
+function getRuntimeState({ requestKey = null, username = "" } = {}) {
+  const exact = RUNTIME_STAGE_REQUESTS.get(getRuntimeKey(requestKey, username));
+  if (exact) return exact;
+  const byUser = RUNTIME_STAGE_REQUESTS.get(`user:${normalizeUsername(username)}`);
+  if (byUser && (!requestKey || byUser.requestKey === requestKey)) return byUser;
+  return null;
+}
+
+function setRuntimeState(state) {
+  if (!state) return null;
+  RUNTIME_STAGE_REQUESTS.set(getRuntimeKey(state.requestKey, state.username), state);
+  RUNTIME_STAGE_REQUESTS.set(`user:${normalizeUsername(state.username)}`, state);
+  return state;
+}
+
+function clearRuntimeState(username = null, requestKey = null) {
+  if (!username && !requestKey) {
+    RUNTIME_STAGE_REQUESTS.clear();
+    return;
+  }
+  if (username) RUNTIME_STAGE_REQUESTS.delete(`user:${normalizeUsername(username)}`);
+  if (requestKey) RUNTIME_STAGE_REQUESTS.delete(getRuntimeKey(requestKey, username || ""));
+}
+
+function completeRuntimeState(state) {
+  if (!state) return;
+  state.completed = true;
+  state.completedAt = Date.now();
+  setRuntimeState(state);
+}
+
+function normalizeInternalApiBase(candidate = "") {
+  const value = String(candidate || "").trim();
+  if (!value) return "";
+  return value.replace(/\/+$/, "").replace(/\/api$/, "");
+}
+
+function resolveInternalApiBaseUrl() {
+  const configuredBase = [
+    process.env.REACT_APP_FETCH_DATA_URL,
+    process.env.QNA_INTERNAL_API_URL,
+    process.env.INTERNAL_API_URL,
+    process.env.BACKEND_URL,
+    process.env.API_URL,
+    process.env.RENDER_EXTERNAL_URL,
+    process.env.PUBLIC_BASE_URL,
+  ]
+    .map((value) => normalizeInternalApiBase(value))
+    .find(Boolean);
+
+  if (configuredBase) return configuredBase;
+
+  const port = Number.parseInt(process.env.PORT, 10);
+  const safePort = Number.isFinite(port) && port > 0 ? port : 5001;
+  return `http://127.0.0.1:${safePort}`;
+}
+
+function isSingleDayScope(timeScope = "") {
+  return ["today", "yesterday", "last_night"].includes(String(timeScope || "").toLowerCase());
 }
 
 function formatDate(date) {
@@ -593,13 +450,60 @@ function computeDateWindow(timeScope = "last_7_days") {
   };
 }
 
-function resolveTimeScope(plannerResult = null, bundle = null, question = "") {
-  const fromPlanner = String(plannerResult?.timeScope || plannerResult?.time_scope || "").trim().toLowerCase();
-  if (fromPlanner) return fromPlanner;
-  const fromBundle = String(bundle?.plannerOutput?.time_scope || bundle?.plannerOutput?.timeScope || "").trim().toLowerCase();
-  if (fromBundle) return fromBundle;
-  const heuristic = inferHeuristicFetchPlan(question || "");
-  return String(heuristic?.time_scope || "last_7_days").toLowerCase();
+function buildFitbitInternalUrl({ username, metricKey, startDate, endDate, timeScope = "last_7_days" }) {
+  const base = resolveInternalApiBaseUrl();
+  const user = String(username || "").toLowerCase();
+
+  if (["sleep_minutes", "sleep_efficiency", "wake_minutes", "sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"].includes(metricKey)) {
+    if (isSingleDayScope(timeScope)) return `${base}/api/fitbit/${user}/sleep/single-day/date/${endDate}`;
+    return `${base}/api/fitbit/${user}/sleep/range/date/${startDate}/${endDate}`;
+  }
+  if (metricKey === "breathing_rate") {
+    if (isSingleDayScope(timeScope)) return `${base}/api/fitbit/${user}/br/single-day/date/${endDate}`;
+    return `${base}/api/fitbit/${user}/br/range/date/${startDate}/${endDate}`;
+  }
+  if (metricKey === "spo2") {
+    if (isSingleDayScope(timeScope)) return `${base}/api/fitbit/${user}/spo2/single-day/date/${endDate}`;
+    return `${base}/api/fitbit/${user}/spo2/range/date/${startDate}/${endDate}`;
+  }
+  if (metricKey === "weight") {
+    if (isSingleDayScope(timeScope)) return `${base}/api/fitbit/${user}/body/log/weight/date/${endDate}`;
+    return `${base}/api/fitbit/${user}/body/log/weight/date/${startDate}/${endDate}`;
+  }
+  if (metricKey === "body_fat") {
+    if (isSingleDayScope(timeScope)) return `${base}/api/fitbit/${user}/body/log/fat/date/${endDate}`;
+    return `${base}/api/fitbit/${user}/body/log/fat/date/${startDate}/${endDate}`;
+  }
+  if (metricKey === "resting_hr") return `${base}/api/fitbit/${user}/heart/range/date/${startDate}/${endDate}`;
+  if (metricKey === "heart_intraday") return `${base}/api/fitbit/${user}/heart/intraday/${startDate}`;
+  if (metricKey === "steps_intraday") return `${base}/api/fitbit/${user}/activities/intraday/steps/${startDate}`;
+  if (metricKey === "calories_intraday") return `${base}/api/fitbit/${user}/activities/intraday/calories/${startDate}`;
+  if (metricKey === "distance_intraday") return `${base}/api/fitbit/${user}/activities/intraday/distance/${startDate}`;
+  if (metricKey === "floors_intraday") return `${base}/api/fitbit/${user}/activities/intraday/floors/${startDate}`;
+  if (metricKey === "calories") return `${base}/api/fitbit/${user}/activities/range/calories/date/${startDate}/${endDate}`;
+  if (metricKey === "distance") return `${base}/api/fitbit/${user}/activities/range/distance/date/${startDate}/${endDate}`;
+  if (metricKey === "floors") return `${base}/api/fitbit/${user}/activities/range/floors/date/${startDate}/${endDate}`;
+  if (metricKey === "elevation") return `${base}/api/fitbit/${user}/activities/range/elevation/date/${startDate}/${endDate}`;
+  if (metricKey === "hrv") return `${base}/api/fitbit/${user}/hrv/range/date/${startDate}/${endDate}`;
+  return `${base}/api/fitbit/${user}/activities/range/steps/date/${startDate}/${endDate}`;
+}
+
+async function getUserContext(username) {
+  try {
+    const user = await User.findOne({ username: String(username || "").toLowerCase() });
+    if (!user) return null;
+    return {
+      age: user?.userProfile?.age || null,
+      healthGoals: Array.isArray(user?.userProfile?.healthGoals) ? user.userProfile.healthGoals : [],
+      preferences: {
+        dailyStepGoal: Number(user?.userProfile?.preferences?.dailyStepGoal) || 10000,
+        sleepGoalMinutes: Number(user?.userProfile?.preferences?.sleepGoalMinutes) || 480,
+      },
+    };
+  } catch (error) {
+    orchestratorWarn("failed to load user context", { message: error?.message || String(error) });
+    return null;
+  }
 }
 
 function mapMetricPayload(metric, payload) {
@@ -613,16 +517,18 @@ function mapMetricPayload(metric, payload) {
   if (metricKey === "resting_hr") return adaptRestingHeartRateRange(payload);
   if (metricKey === "hrv") return adaptHrvRange(payload);
   if (metricKey === "heart_intraday") return adaptIntradayHeart(payload);
+  if (SLEEP_STAGE_METRICS.has(metricKey)) return adaptSleepStagesRange(payload);
+  if (metricKey === "breathing_rate") return adaptBreathingRateRange(payload);
+  if (metricKey === "spo2") return adaptSpo2Range(payload);
   if (metricKey.endsWith("_intraday")) {
     const resource = metricKey.replace(/_intraday$/, "");
     return adaptIntradayActivity(payload, resource);
   }
-  // Conservative fallback keeps data flow alive.
   return adaptStepsRange(payload);
 }
 
 async function fetchJsonWithTimeout(url, timeoutMs = BUNDLE_DATA_FETCH_TIMEOUT_MS) {
-  const ms = Math.max(1200, asNumber(timeoutMs, BUNDLE_DATA_FETCH_TIMEOUT_MS));
+  const ms = Math.max(1200, Number(timeoutMs) || BUNDLE_DATA_FETCH_TIMEOUT_MS);
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timeout = controller ? setTimeout(() => controller.abort(), ms) : null;
   try {
@@ -637,42 +543,63 @@ async function fetchJsonWithTimeout(url, timeoutMs = BUNDLE_DATA_FETCH_TIMEOUT_M
   }
 }
 
-/**
- * Phase 4 lightweight data hydration:
- * - fetch planner-requested metrics from internal Fitbit proxy endpoints
- * - adapt endpoint-specific payloads into normalized point lists
- * - build a GPT-friendly wide normalized table
- */
-async function ensureBundleHasNormalizedData({
-  bundle,
-  username,
-  question,
-  plannerResult = null,
-  fetchTimeoutMs = null,
-} = {}) {
+async function fetchFitbitDataForBundle({ bundle, username, metricsNeeded, timeScope, fetchTimeoutMs = null } = {}) {
   if (!bundle?.bundleId) return bundle;
 
-  const metricsFromPlanner = resolveRequestedMetrics(plannerResult?.metricsNeeded || plannerResult?.metrics_needed || []);
-  const existingMetrics = Array.isArray(bundle.metricsRequested) ? bundle.metricsRequested : [];
-  const heuristicMetrics = resolveRequestedMetrics(inferHeuristicFetchPlan(question || "").metrics_needed || []);
-  const metrics = resolveRequestedMetrics([...metricsFromPlanner, ...existingMetrics, ...heuristicMetrics]).slice(0, 8);
-  const timeScope = resolveTimeScope(plannerResult, bundle, question);
-  const window = computeDateWindow(timeScope);
-
-  const existingCache = bundle.rawFitbitCache && typeof bundle.rawFitbitCache === "object"
-    ? { ...bundle.rawFitbitCache }
-    : {};
+  const metrics = resolveRequestedMetrics(metricsNeeded || []).slice(0, 8);
+  const window = computeDateWindow(timeScope || "last_7_days");
+  const existingCache = bundle.rawFitbitCache && typeof bundle.rawFitbitCache === "object" ? { ...bundle.rawFitbitCache } : {};
   const metricSeriesMap = {};
+  const sleepStageRequested = metrics.filter((m) => SLEEP_STAGE_METRICS.has(m));
+  const allSleepStagesCached = sleepStageRequested.every((m) => {
+    const entry = existingCache[m];
+    return entry
+      && entry.timeScope === window.timeScope
+      && entry.startDate === window.startDate
+      && entry.endDate === window.endDate
+      && Array.isArray(entry.adaptedPoints)
+      && entry.adaptedPoints.length > 0;
+  });
+
+  if (sleepStageRequested.length > 0 && !allSleepStagesCached) {
+    const sleepUrl = buildFitbitInternalUrl({
+      username,
+      metricKey: "sleep_minutes",
+      startDate: window.startDate,
+      endDate: window.endDate,
+      timeScope: window.timeScope,
+    });
+    try {
+      const sleepRaw = await fetchJsonWithTimeout(sleepUrl, fetchTimeoutMs || BUNDLE_DATA_FETCH_TIMEOUT_MS);
+      const sleepStagePoints = adaptSleepStagesRange(sleepRaw);
+      for (const stageMetric of SLEEP_STAGE_METRICS) {
+        existingCache[stageMetric] = {
+          metric: stageMetric,
+          timeScope: window.timeScope,
+          startDate: window.startDate,
+          endDate: window.endDate,
+          fetchedAt: new Date().toISOString(),
+          sourceUrl: sleepUrl,
+          raw: sleepRaw,
+          adaptedPoints: sleepStagePoints,
+        };
+      }
+    } catch (error) {
+      orchestratorWarn("sleep stage dedup fetch failed", {
+        bundleId: bundle.bundleId,
+        message: error?.message || String(error),
+      });
+    }
+  }
 
   for (const metric of metrics) {
     const cacheEntry = existingCache[metric];
     const isReusable = cacheEntry
-      && cacheEntry.timeScope === timeScope
+      && cacheEntry.timeScope === window.timeScope
       && cacheEntry.startDate === window.startDate
       && cacheEntry.endDate === window.endDate
       && Array.isArray(cacheEntry.adaptedPoints)
       && cacheEntry.adaptedPoints.length > 0;
-
     if (isReusable) {
       metricSeriesMap[metric] = cacheEntry.adaptedPoints;
       continue;
@@ -683,16 +610,15 @@ async function ensureBundleHasNormalizedData({
       metricKey: metric,
       startDate: window.startDate,
       endDate: window.endDate,
-      timeScope,
+      timeScope: window.timeScope,
     });
-
     try {
       const raw = await fetchJsonWithTimeout(url, fetchTimeoutMs || BUNDLE_DATA_FETCH_TIMEOUT_MS);
       const adaptedPoints = mapMetricPayload(metric, raw);
       metricSeriesMap[metric] = adaptedPoints;
       existingCache[metric] = {
         metric,
-        timeScope,
+        timeScope: window.timeScope,
         startDate: window.startDate,
         endDate: window.endDate,
         fetchedAt: new Date().toISOString(),
@@ -701,7 +627,7 @@ async function ensureBundleHasNormalizedData({
         adaptedPoints,
       };
     } catch (error) {
-      orchestratorWarn("metric fetch failed during bundle hydration", {
+      orchestratorWarn("metric fetch failed", {
         bundleId: bundle.bundleId,
         metric,
         message: error?.message || String(error),
@@ -709,7 +635,7 @@ async function ensureBundleHasNormalizedData({
       metricSeriesMap[metric] = [];
       existingCache[metric] = {
         metric,
-        timeScope,
+        timeScope: window.timeScope,
         startDate: window.startDate,
         endDate: window.endDate,
         fetchedAt: new Date().toISOString(),
@@ -722,2291 +648,1069 @@ async function ensureBundleHasNormalizedData({
   }
 
   const normalizedTable = buildNormalizedTable(metricSeriesMap);
-  const patched = await saveBundlePatch(bundle.bundleId, {
+  return saveBundlePatch(bundle.bundleId, {
     metricsRequested: metrics,
     rawFitbitCache: existingCache,
     normalizedTable,
-  });
-
-  orchestratorLog("bundle normalized data ready", {
-    bundleId: bundle.bundleId,
-    metrics,
-    normalizedRows: Array.isArray(normalizedTable) ? normalizedTable.length : 0,
-  });
-
-  return patched || bundle;
+  }) || bundle;
 }
 
-/**
- * Decide normalized bundle action from planner + continuation layer.
- */
-function resolveBundleAction({ activeBundle, plannerResult, continuationDecision } = {}) {
-  if (!activeBundle?.bundleId) {
-    return {
-      action: "new",
-      reason: "no_active_bundle",
-    };
-  }
-
-  const decision = String(continuationDecision || "").toLowerCase();
-  if (decision === "branch") {
-    return { action: "branch", reason: "continuation_agent_branch" };
-  }
-  if (decision === "new") {
-    return { action: "new", reason: "continuation_agent_new" };
-  }
-  if (decision === "continue") {
-    return { action: "continue", reason: "continuation_agent_continue" };
-  }
-
-  const plannerMode = String(plannerResult?.mode || "").toLowerCase();
-  if (plannerMode === "branch_analysis") return { action: "branch", reason: "planner_mode" };
-  if (plannerMode === "new_analysis") return { action: "new", reason: "planner_mode" };
-  return { action: "continue", reason: "safe_default" };
+function buildCombinedVoiceAnswer(stages = []) {
+  const parts = (Array.isArray(stages) ? stages : [])
+    .map((stage) => sanitizeText(stage?.spokenText, 600, ""))
+    .filter(Boolean);
+  if (!parts.length) return "I couldn't generate a health summary right now. Please try again.";
+  return parts.join(' <break time="2s"/> ');
 }
 
-async function storePlannerResultInBundle(bundleId, plannerResult) {
-  const normalizedPlannerResult = {
-    ...plannerResult,
-    rawPlannerOutput: plannerResult?.rawPlannerOutput || null,
-  };
-  const updated = await storePlannerResult(bundleId, {
-    ...normalizedPlannerResult,
+function buildNarrationTimings(stages = []) {
+  const timings = [];
+  let elapsed = 0;
+  for (const stage of stages) {
+    timings.push(elapsed);
+    const words = sanitizeText(stage?.spokenText, 600, "").split(/\s+/).filter(Boolean).length;
+    const narrationMs = Math.max(1500, Math.round((words / 120) * 60000));
+    elapsed += narrationMs + 2000;
+  }
+  return timings;
+}
+
+async function applyLifecyclePolicy(username, keepBundleId) {
+  if (BUNDLE_LIFECYCLE_POLICY === "none") return;
+  await archiveOlderActiveBundles(username, keepBundleId, `stage_reveal_${BUNDLE_LIFECYCLE_POLICY}`);
+}
+
+async function persistPlannerResult(bundleId, plannerResult) {
+  const stored = await storePlannerResult(bundleId, {
+    ...toStoredPlannerResult(plannerResult),
     plannerMeta: {
-      ...(normalizedPlannerResult.plannerMeta || {}),
-      phase: "phase4_primary",
+      ...(plannerResult?.plannerMeta || {}),
+      phase: "stage_reveal",
     },
   });
-  return updated || null;
-}
-
-async function applyLifecyclePolicyForNewBundle({ username, keepBundleId = null, activeBundle = null } = {}) {
-  const mode = BUNDLE_LIFECYCLE_POLICY;
-  if (mode === "none") {
-    orchestratorLog("bundle lifecycle policy skipped", {
-      mode,
-      username,
-      keepBundleId,
-      activeBundleId: activeBundle?.bundleId || null,
-    });
-    return;
+  if (Array.isArray(plannerResult?.stagesPlan) && plannerResult.stagesPlan.length) {
+    await saveBundlePatch(bundleId, { stagesPlan: plannerResult.stagesPlan });
   }
-
-  if (mode === "release") {
-    await releaseOlderActiveBundles(username, keepBundleId, "new_analysis_release_policy");
-    return;
-  }
-
-  await archiveOlderActiveBundles(username, keepBundleId, "new_analysis_archive_policy");
+  return stored || null;
 }
 
-async function startNewBundleFromPlanner({
-  username,
-  question,
-  plannerResult,
-  activeBundle = null,
-  reason = "new_analysis",
-  requestKey = null,
-  requestSource = "alexa",
-} = {}) {
-  const createdBundle = await createBundle({
-    username,
-    question,
-    plannerOutput: toBundlePlannerPayload(plannerResult),
-    metricsRequested: plannerResult?.metricsNeeded || [],
-    status: "active",
-    requestKey,
-    requestSource,
-  });
-
-  await storePlannerResultInBundle(createdBundle.bundleId, plannerResult);
-  await applyLifecyclePolicyForNewBundle({
-    username,
-    keepBundleId: createdBundle.bundleId,
-    activeBundle,
-  });
-
-  orchestratorLog("started new bundle from planner", {
-    username,
-    bundleId: createdBundle.bundleId,
-    previousBundleId: activeBundle?.bundleId || null,
-    reason,
-    lifecyclePolicy: BUNDLE_LIFECYCLE_POLICY,
-  });
-
-  return createdBundle;
-}
-
-async function continueExistingBundle({ activeBundle, plannerResult } = {}) {
-  if (!activeBundle?.bundleId) return null;
-  await storePlannerResultInBundle(activeBundle.bundleId, plannerResult);
-  await setBundleStatus(activeBundle.bundleId, "active", {}, "continue_existing_bundle");
-  await touchBundle(activeBundle.bundleId);
-  return getBundleById(activeBundle.bundleId);
-}
-
-async function branchBundle({
-  activeBundle,
-  username,
-  question,
-  plannerResult,
-  requestKey = null,
-  requestSource = "followup",
-} = {}) {
-  if (!activeBundle?.bundleId) {
-    return startNewBundleFromPlanner({
+function getDefaultDeps() {
+  return {
+    beginRequest: sessionService.beginRequest,
+    endRequest: sessionService.endRequest,
+    setRequestBundleOwnership: sessionService.setRequestBundleOwnership,
+    setLatestRequestKey: sessionService.setLatestRequestKey,
+    setActiveBundleForUser: sessionService.setActiveBundleForUser,
+    setActiveBundleId: sessionService.setActiveBundleId,
+    setRequestedStageIndex: sessionService.setRequestedStageIndex,
+    setSessionStageIndex: sessionService.setCurrentStageIndex,
+    applyStageReplayState: sessionService.applyStageReplayState,
+    getSessionState: sessionService.getActiveSessionState,
+    getActiveBundleId: sessionService.getActiveBundleId,
+    isCurrentRequest: sessionService.isCurrentRequest,
+    isStaleRequest: sessionService.isStaleRequest,
+    getUserContext,
+    isMongoReady,
+    planQuestion,
+    loadActiveBundleForUser,
+    getBundleById,
+    setBundleRequestOwnership,
+    startNewBundleFromPlanner: async ({
       username,
       question,
       plannerResult,
-      activeBundle: null,
-      reason: "branch_without_active_bundle",
       requestKey,
-      requestSource,
-    });
-  }
-
-  const branchDoc = await createBranchBundle({
-    sourceBundle: activeBundle,
-    username,
-    question,
-    plannerOutput: toBundlePlannerPayload(plannerResult),
-    metricsRequested: plannerResult?.metricsNeeded || [],
-    requestKey,
-    requestSource,
-  });
-  await storePlannerResultInBundle(branchDoc.bundleId, plannerResult);
-  return getBundleById(branchDoc.bundleId);
-}
-
-async function persistStageResult({
-  bundle,
-  stageRecord,
-  executorResponseId = null,
-  statusReason = "stage_persisted",
-  requestKey = null,
-  rejectStaleRequest = false,
-} = {}) {
-  if (!bundle?.bundleId || !stageRecord) return null;
-  const governedStageRecord = applyStageProgressionPolicy(stageRecord);
-
-  const reloaded = await appendOrUpdateStageAndState({
-    bundleId: bundle.bundleId,
-    stageRecord: governedStageRecord,
-    executorResponseId: executorResponseId != null ? executorResponseId : bundle.executorResponseId || null,
-    completeWhenDone: EXECUTOR_COMPLETE_BUNDLES_ON_FINAL_STAGE,
-    statusReason,
-    requestKey,
-    rejectStaleRequest,
-  });
-  if (!reloaded) return null;
-
-  const completionState = buildCompletionState({
-    bundle: reloaded,
-    stageRecord: governedStageRecord,
-    completeWhenDone: EXECUTOR_COMPLETE_BUNDLES_ON_FINAL_STAGE,
-  });
-
-  return {
-    bundle: reloaded,
-    stageRecord: governedStageRecord,
-    stageSummary: extractStageSummary(governedStageRecord),
-    completionState,
-  };
-}
-
-async function runLegacyStage1({
-  requestId = null,
-  username,
-  question,
-  userContext = null,
-  voiceDeadlineMs = null,
-  allowFetchPlannerLLM = true,
-  allowPresenterLLM = true,
-  enableVisualContinuation = true,
-  fetchPlanTimeoutMs,
-  fetchTimeoutMs = null,
-} = {}) {
-  return answerQuestion({
-    requestId,
-    username,
-    question,
-    userContext,
-    voiceDeadlineMs,
-    allowFetchPlannerLLM,
-    allowPresenterLLM,
-    enableVisualContinuation,
-    fetchPlanTimeoutMs,
-    fetchTimeoutMs,
-  });
-}
-
-function shouldGenerateNextStage(bundleAction, continuation, bundle) {
-  const stages = Array.isArray(bundle?.stages) ? bundle.stages : [];
-  if (!stages.length) return false;
-  if (bundleAction?.action !== "continue") return false;
-  if (String(continuation?.decision || "").toLowerCase() !== "continue") return false;
-  return true;
-}
-
-async function tryExecutorStageGeneration({
-  requestId,
-  requestKey = null,
-  requestSource = "alexa",
-  username,
-  question,
-  userContext,
-  plannerResult,
-  bundleAction,
-  continuation,
-  resolvedBundle,
-  voiceDeadlineMs,
-  explicitStageIndex = null,
-  deps = null,
-} = {}) {
-  const services = resolveOrchestratorDeps(deps);
-  const safeRequestKey = makeRequestKey(requestKey || requestId);
-
-  if (!EXECUTOR_PRIMARY_ENABLED) {
-    orchestratorWarn("executor disabled; legacy will be used for stage1", { username, bundleId: resolvedBundle?.bundleId || null });
-    return {
-      ok: false,
-      reason: "executor_disabled",
-    };
-  }
-  if (!resolvedBundle?.bundleId) {
-    return {
-      ok: false,
-      reason: "missing_bundle",
-    };
-  }
-
-  if (STRICT_STALE_RESULT_REJECTION && !isCurrentRequestGuard(services, username, safeRequestKey, resolvedBundle.bundleId)) {
-    return {
-      ok: false,
-      stale: true,
-      reason: "stale_request_discarded",
-      status: "stale",
-      bundle: resolvedBundle,
-    };
-  }
-
-  const hasExplicitStageIndex = explicitStageIndex != null && explicitStageIndex !== "";
-  const generateNext = hasExplicitStageIndex
-    ? true
-    : shouldGenerateNextStage(bundleAction, continuation, resolvedBundle);
-  const stageIndex = hasExplicitStageIndex
-    ? Math.max(0, Number(explicitStageIndex) || 0)
-    : (generateNext ? getNextStageIndex(resolvedBundle) : 0);
-  if (stageIndex >= EXECUTOR_MAX_STAGE_COUNT) {
-    return {
-      ok: false,
-      reason: "max_stage_count_reached",
-      status: "completed",
-    };
-  }
-
-  const generatorInput = {
-    bundle: resolvedBundle,
-    question,
-    userContext,
-    voiceDeadlineMs,
-    requestId,
-    previousResponseId: resolvedBundle.executorResponseId || null,
-    toolContext: {
-      username,
-      bundleId: resolvedBundle.bundleId,
-      requestKey: safeRequestKey,
-      source: requestSource,
-      canWriteToBundle: ({ bundleId, requestKey: toolRequestKey, username: writeUsername } = {}) => {
-        if (!bundleId || !toolRequestKey || !writeUsername) return false;
-        return isCurrentRequestGuard(services, writeUsername, toolRequestKey, bundleId);
-      },
-      markBundleComplete: async ({ reason } = {}) => {
-        await setBundleStatus(
-          resolvedBundle.bundleId,
-          "completed",
-          {},
-          reason || "executor_mark_complete_tool",
-          {
-            requestKey: safeRequestKey,
-            rejectStaleRequest: true,
-          }
-        );
-        return { bundleId: resolvedBundle.bundleId };
-      },
-      appendStageNote: async ({ note } = {}) => {
-        const existing = await services.getBundleById(resolvedBundle.bundleId);
-        const lineage = {
-          ...(existing?.lineage || {}),
-          executorNote: sanitizeText(note, 220, ""),
-          executorNotedAt: new Date().toISOString(),
-        };
-        return saveBundlePatch(resolvedBundle.bundleId, { lineage }, {
-          requestKey: safeRequestKey,
-          rejectStaleRequest: true,
-        });
-      },
-      releaseBundle: async ({ reason } = {}) => {
-        return setBundleStatus(
-          resolvedBundle.bundleId,
-          "released",
-          { releasedAt: new Date() },
-          reason || "executor_release_bundle_tool",
-          {
-            requestKey: safeRequestKey,
-            rejectStaleRequest: true,
-          }
-        );
-      },
-      fetchAdditionalFitbitData: async () => ({
-        fetched: false,
-        reason: "fetch_additional_fitbit_data_not_enabled",
-      }),
-    },
-  };
-
-  const executorResult = generateNext
-    ? await generateNextStage({
-        ...generatorInput,
-        stageIndex,
-      })
-    : await generateInitialStage(generatorInput);
-
-  if (!executorResult?.ok || !executorResult?.stage) {
-    return {
-      ok: false,
-      reason: executorResult?.error || "executor_generation_failed",
-      status: executorResult?.status || "error",
-    };
-  }
-
-  if (STRICT_STALE_RESULT_REJECTION && !isCurrentRequestGuard(services, username, safeRequestKey, resolvedBundle.bundleId)) {
-    return {
-      ok: false,
-      stale: true,
-      reason: "stale_request_discarded",
-      status: "stale",
-      bundle: resolvedBundle,
-    };
-  }
-
-  const persisted = await persistStageResult({
-    bundle: resolvedBundle,
-    stageRecord: executorResult.stage,
-    executorResponseId: executorResult.executorResponseId || resolvedBundle.executorResponseId || null,
-    statusReason: generateNext ? "executor_next_stage_persisted" : "executor_stage1_persisted",
-    requestKey: safeRequestKey,
-    rejectStaleRequest: true,
-  });
-
-  if (!persisted?.stageRecord) {
-    return {
-      ok: false,
-      reason: "executor_stage_persist_failed_or_stale",
-      status: "error",
-    };
-  }
-
-  const stageResponse = buildStageResponse({
-    bundle: persisted.bundle,
-    stageRecord: persisted.stageRecord,
-    question,
-    requestId,
-    voiceAnswerSource: "gpt",
-    completeWhenDone: EXECUTOR_COMPLETE_BUNDLES_ON_FINAL_STAGE,
-  });
-  const payload = stageResponse.payload;
-
-  // ── Background prefill: kick off remaining stages after stage 0 is delivered ─
-  if (!generateNext && persisted?.stageRecord?.moreAvailable) {
-    setTimeout(() => {
-      prefillRemainingStages({
-        bundle: persisted.bundle,
+      requestSource = "alexa",
+    }) => {
+      const bundle = await createBundle({
         username,
         question,
-        plannerResult,
-        userContext,
-      }).catch((err) =>
-        orchestratorWarn("prefillRemainingStages failed", {
-          message: err?.message || String(err),
-        })
-      );
-    }, 800);
-  }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  return {
-    ok: true,
-    stage: persisted.stageRecord,
-    stageSummary: persisted.stageSummary,
-    bundle: persisted.bundle,
-    payload,
-    completionState: stageResponse.completionState || persisted.completionState || null,
-    stageGenerator: hasExplicitStageIndex
-      ? "executor_requested_stage"
-      : (generateNext ? "executor_next_stage" : "executor_stage1"),
-  };
-}
-
-function buildStageResultEnvelope({
-  payload,
-  stageRecord,
-  stageSummary,
-  plannerResult,
-  bundleId,
-  bundleAction,
-  continuation,
-  userContext,
-  stageGenerator,
-  fallbackReason = null,
-} = {}) {
-  return {
-    status: "complete",
-    answerReady: true,
-    voiceAnswerSource: payload?.voice_answer_source || "gpt",
-    voiceAnswer: payload?.voice_answer || "",
-    payload,
-    planner: plannerResult,
-    plannerResult,
-    rawData: null,
-    userContext,
-    visualContinuationPromise: null,
-    speechReadyPromise: null,
-    bundleId: bundleId || null,
-    stage: stageRecord || null,
-    orchestrator: {
-      used: true,
-      bundleId: bundleId || null,
-      bundleAction: bundleAction?.action || null,
-      continuationDecision: continuation?.decision || null,
-      plannerMode: plannerResult?.mode || null,
-      stageSummary: stageSummary || extractStageSummary(stageRecord || {}),
-      stageGenerator: stageGenerator || null,
-      fallbackReason: fallbackReason || null,
+        plannerOutput: toStoredPlannerResult(plannerResult),
+        metricsRequested: plannerResult.metricsNeeded || [],
+        status: "active",
+        requestKey,
+        requestSource,
+      });
+      await persistPlannerResult(bundle.bundleId, plannerResult);
+      await applyLifecyclePolicy(username, bundle.bundleId);
+      return bundle;
     },
-  };
-}
-
-function toPlannerResultFromBundle(bundle = null) {
-  const planner = bundle?.plannerOutput && typeof bundle.plannerOutput === "object"
-    ? bundle.plannerOutput
-    : {};
-  return {
-    mode: planner.mode || null,
-    metricsNeeded: Array.isArray(planner.metrics_needed)
-      ? planner.metrics_needed
-      : Array.isArray(bundle?.metricsRequested)
-        ? bundle.metricsRequested
-        : [],
-    timeScope: planner.time_scope || planner.timeScope || null,
-    analysisGoal: planner.analysis_goal || planner.analysisGoal || null,
-    candidateStageTypes: Array.isArray(planner.candidate_stage_types)
-      ? planner.candidate_stage_types
-      : Array.isArray(planner.candidateStageTypes)
-        ? planner.candidateStageTypes
-        : [],
-  };
-}
-
-async function finalizeBundleIfDone({
-  bundle,
-  stageRecord,
-  deps = null,
-  reason = "executor_stage_finalized",
-} = {}) {
-  const services = resolveOrchestratorDeps(deps);
-  if (!bundle?.bundleId || !stageRecord) return bundle || null;
-
-  const completionState = buildCompletionState({
-    bundle,
-    stageRecord,
-    completeWhenDone: EXECUTOR_COMPLETE_BUNDLES_ON_FINAL_STAGE,
-  });
-  const targetStatus = completionState.bundleStatus || null;
-  if (!targetStatus) return bundle;
-  if (String(bundle.status || "").toLowerCase() === String(targetStatus).toLowerCase()) {
-    return bundle;
-  }
-
-  const updated = await services.setBundleStatus(bundle.bundleId, targetStatus, {}, reason);
-  return updated || bundle;
-}
-
-/**
- * Background prefill: generates stages 1..N immediately after stage 0 lands.
- * Fire-and-forget — never awaited on the hot path.
- */
-async function prefillRemainingStages({
-  bundle,
-  username,
-  question,
-  plannerResult,
-  userContext = null,
-} = {}) {
-  const candidateCount = Array.isArray(plannerResult?.candidateStageTypes)
-    ? plannerResult.candidateStageTypes.length
-    : EXECUTOR_MIN_STAGE_COUNT;
-  const expectedTotal = Math.min(EXECUTOR_MAX_STAGE_COUNT, Math.max(EXECUTOR_MIN_STAGE_COUNT, candidateCount));
-
-  let workingBundle = bundle;
-
-  for (let nextIndex = 1; nextIndex < expectedTotal; nextIndex++) {
-    try {
-      // Always re-fetch so we have the latest executorResponseId + stage list
-      const freshBundle = await getBundleById(workingBundle.bundleId);
-      if (!freshBundle) break;
-
-      // Skip if already generated by a concurrent request
-      const alreadyExists = Array.isArray(freshBundle.stages)
-        && freshBundle.stages.some((s) => Number(s?.stageIndex) === nextIndex);
-      if (alreadyExists) {
-        workingBundle = freshBundle;
-        continue;
-      }
-
-      const result = await generateNextStage({
-        bundle: freshBundle,
-        question,
-        stageIndex: nextIndex,
-        previousResponseId: freshBundle.executorResponseId || null,
-        userContext,
-        voiceDeadlineMs: 7000, // relaxed — not on the voice path
-        requestId: `prefill_${freshBundle.bundleId}_s${nextIndex}`,
-      });
-
-      if (!result?.ok || !result?.stage) {
-        orchestratorWarn("background prefill stopped — stage generation failed", {
-          bundleId: workingBundle.bundleId,
-          nextIndex,
-          reason: result?.error || "unknown",
-        });
-        break;
-      }
-
-      await persistStageResult({
-        bundle: freshBundle,
-        stageRecord: result.stage,
-        executorResponseId: result.executorResponseId || null,
-        statusReason: `background_prefill_stage_${nextIndex}`,
-        rejectStaleRequest: false, // background — don't reject on ownership mismatch
-      });
-
-      orchestratorLog("background stage prefilled", {
-        bundleId: workingBundle.bundleId,
-        stageIndex: nextIndex,
-      });
-
-      workingBundle = await getBundleById(freshBundle.bundleId) || freshBundle;
-      if (!result.stage.moreAvailable) break;
-
-    } catch (err) {
-      orchestratorWarn("background prefill error at stage", {
-        bundleId: workingBundle.bundleId,
-        nextIndex,
-        message: err?.message || String(err),
-      });
-      break;
-    }
-  }
-}
-
-async function generateNextMissingStage({
-  requestId,
-  requestKey = null,
-  requestSource = "internal",
-  username,
-  question,
-  userContext,
-  plannerResult,
-  bundleAction,
-  continuation,
-  bundle,
-  voiceDeadlineMs = 4200,
-  targetStageIndex = null,
-  deps = null,
-} = {}) {
-  const services = resolveOrchestratorDeps(deps);
-  if (!bundle?.bundleId) {
-    return {
-      ok: false,
-      reason: "missing_bundle",
-      status: "error",
-    };
-  }
-
-  if (requestKey && STRICT_STALE_RESULT_REJECTION
-    && !isCurrentRequestGuard(services, username, requestKey, bundle.bundleId)) {
-    return {
-      ok: false,
-      stale: true,
-      reason: "stale_request_discarded",
-      status: "stale",
-      bundle,
-    };
-  }
-
-  const nextStageIndex = targetStageIndex == null
-    ? services.getNextStageIndex(bundle)
-    : Math.max(0, Number(targetStageIndex) || 0);
-  if (nextStageIndex >= EXECUTOR_MAX_STAGE_COUNT) {
-    return {
-      ok: false,
-      reason: "max_stage_count_reached",
-      status: "completed",
-      requestedStageIndex: nextStageIndex,
-    };
-  }
-
-  const generated = await services.tryExecutorStageGeneration({
-    requestId,
-    requestKey,
-    requestSource,
-    username,
-    question,
-    userContext,
-    plannerResult,
-    bundleAction,
-    continuation,
-    resolvedBundle: bundle,
-    voiceDeadlineMs,
-    explicitStageIndex: nextStageIndex,
-    deps: services,
-  });
-
-  if (!generated?.ok || !generated?.stage) {
-    return {
-      ok: false,
-      reason: generated?.reason || "executor_stage_generation_failed",
-      status: generated?.status || "error",
-      requestedStageIndex: nextStageIndex,
-      bundle: generated?.bundle || bundle,
-    };
-  }
-
-  const finalizedBundle = await finalizeBundleIfDone({
-    bundle: generated.bundle || bundle,
-    stageRecord: generated.stage,
-    deps: services,
-    reason: "generate_next_missing_stage_finalize",
-  });
-
-  return {
-    ...generated,
-    ok: true,
-    bundle: finalizedBundle || generated.bundle || bundle,
-  };
-}
-
-async function generateOrReplayStage({
-  requestId,
-  requestKey = null,
-  requestSource = "internal",
-  username,
-  question,
-  userContext = null,
-  plannerResult = null,
-  bundleAction = null,
-  continuation = null,
-  bundle,
-  targetStageIndex = null,
-  voiceDeadlineMs = 4200,
-  preferReplay = true,
-  allowGeneration = true,
-  deps = null,
-} = {}) {
-  const services = resolveOrchestratorDeps(deps);
-  if (!bundle?.bundleId) {
-    return {
-      ok: false,
-      reason: "missing_bundle",
-      status: "error",
-      bundle: bundle || null,
-    };
-  }
-
-  if (requestKey && STRICT_STALE_RESULT_REJECTION
-    && !isCurrentRequestGuard(services, username, requestKey, bundle.bundleId)) {
-    return {
-      ok: false,
-      stale: true,
-      reason: "stale_request_discarded",
-      status: "stale",
-      bundle,
-    };
-  }
-
-  const normalizedTarget = targetStageIndex == null
-    ? null
-    : Math.max(0, Number(targetStageIndex) || 0);
-
-  if (preferReplay && normalizedTarget != null) {
-    const replayed = await maybeReplayStoredStage({
-      username,
-      bundle,
-      stageIndex: normalizedTarget,
-      question,
-      requestId,
-      deps: services,
-    });
-    if (replayed?.ok && replayed?.stage && replayed?.payload) {
-      return replayed;
-    }
-  }
-
-  if (!allowGeneration) {
-    return {
-      ok: false,
-      reason: "replay_not_available",
-      status: "error",
-      bundle,
-      requestedStageIndex: normalizedTarget,
-    };
-  }
-
-  if (normalizedTarget != null && normalizedTarget >= EXECUTOR_MAX_STAGE_COUNT) {
-    return {
-      ok: false,
-      reason: "max_stage_count_reached",
-      status: "completed",
-      requestedStageIndex: normalizedTarget,
-      bundle,
-    };
-  }
-
-  let workingBundle = bundle;
-  let attempts = 0;
-  const maxAttempts = Math.max(1, EXECUTOR_MAX_STAGE_COUNT);
-
-  while (attempts < maxAttempts) {
-    const nextMissingIndex = services.getNextStageIndex(workingBundle);
-    const stageToGenerate = normalizedTarget == null
-      ? nextMissingIndex
-      : Math.max(nextMissingIndex, Math.min(normalizedTarget, EXECUTOR_MAX_STAGE_COUNT - 1));
-
-    const generated = await generateNextMissingStage({
-      requestId,
-      requestKey,
-      requestSource,
+    branchBundle: async ({
+      activeBundle,
       username,
       question,
-      userContext,
       plannerResult,
-      bundleAction: bundleAction || { action: "continue", reason: "generate_or_replay_missing_stage" },
-      continuation: continuation || { decision: "continue", reason: "generate_or_replay_missing_stage" },
-      bundle: workingBundle,
-      voiceDeadlineMs,
-      targetStageIndex: stageToGenerate,
-      deps: services,
-    });
-
-    if (!generated?.ok || !generated?.stage || !generated?.payload) {
-      return generated || {
-        ok: false,
-        reason: "stage_generation_failed",
-        status: "error",
-        bundle: workingBundle,
-      };
-    }
-
-    workingBundle = generated.bundle || workingBundle;
-    const producedIndex = Number(generated.stage.stageIndex || 0);
-    if (normalizedTarget == null || producedIndex >= normalizedTarget) {
-      return generated;
-    }
-
-    if (!generated.stage.moreAvailable) {
+      requestKey,
+      requestSource = "followup",
+    }) => {
+      const bundle = await createBranchBundle({
+        sourceBundle: activeBundle,
+        username,
+        question,
+        plannerOutput: toStoredPlannerResult(plannerResult),
+        metricsRequested: plannerResult.metricsNeeded || [],
+        requestKey,
+        requestSource,
+      });
+      await persistPlannerResult(bundle.bundleId, plannerResult);
+      await applyLifecyclePolicy(username, bundle.bundleId);
+      return bundle;
+    },
+    continueExistingBundle: async ({ activeBundle }) => activeBundle,
+    ensureBundleHasNormalizedData: async ({ bundle, username, plannerResult }) => fetchFitbitDataForBundle({
+      bundle,
+      username,
+      metricsNeeded: plannerResult?.metricsNeeded || bundle?.metricsRequested,
+      timeScope: plannerResult?.timeScope || bundle?.plannerOutput?.time_scope,
+    }),
+    tryExecutorStageGeneration: async ({ resolvedBundle, explicitStageIndex = 0, requestId = null, stageSpec = null, userContext = null }) => {
+      const stageResult = await generateStageFromExecutor({
+        bundle: resolvedBundle,
+        question: resolvedBundle?.question || "",
+        stageIndex: explicitStageIndex,
+        userContext,
+        stageSpec,
+        requestId,
+      });
+      if (!stageResult?.ok || !stageResult?.stage) {
+        return {
+          ok: false,
+          status: "error",
+          reason: stageResult?.error || "executor_stage_failed",
+        };
+      }
       return {
-        ok: false,
-        reason: "no_more_stages",
-        status: "completed",
-        bundle: workingBundle,
-        requestedStageIndex: normalizedTarget,
-        stage: generated.stage,
-        payload: generated.payload,
+        ok: true,
+        stage: stageResult.stage,
+        stageGenerator: explicitStageIndex === 0 ? "executor_stage1" : "executor_next_stage",
       };
-    }
-
-    attempts += 1;
-  }
-
-  return {
-    ok: false,
-    reason: "stage_generation_exhausted",
-    status: "error",
-    bundle: workingBundle,
+    },
+    persistStageResult: async ({ bundle, stageRecord, requestKey = null }) => {
+      const updatedBundle = await appendStage(bundle.bundleId, stageRecord, {
+        requestKey,
+        rejectStaleRequest: Boolean(requestKey),
+      });
+      if (!updatedBundle) {
+        return {
+          bundle,
+          stageRecord,
+        };
+      }
+      await setBundleStatus(
+        updatedBundle.bundleId,
+        stageRecord.moreAvailable ? "partial" : "ready",
+        {},
+        "stage_reveal_stage_ready",
+        {
+          requestKey,
+          rejectStaleRequest: Boolean(requestKey),
+        }
+      );
+      return {
+        bundle: updatedBundle,
+        stageRecord,
+      };
+    },
+    setBundleStageIndex,
+    setBundleStatus,
+    buildLegacyFallbackStage: ({ bundle, requestId, question, stageIndex = 0, reason = "fallback" }) => buildLegacyFallbackStage({
+      legacyResult: {
+        payload: {
+          voice_answer: "I had trouble generating that chart, so here is a simpler summary.",
+          spoken_answer: "I had trouble generating that chart, so here is a simpler summary.",
+          summary: { shortText: "Fallback summary" },
+        },
+      },
+      payload: {
+        voice_answer: "I had trouble generating that chart, so here is a simpler summary.",
+        spoken_answer: "I had trouble generating that chart, so here is a simpler summary.",
+        summary: { shortText: "Fallback summary" },
+      },
+      plannerResult: bundle?.plannerOutput || null,
+      stageIndex,
+      requestId,
+      question,
+      source: `legacy_fallback_${reason}`,
+    }),
+    answerFollowupFromPayload: async ({ payload, question }) => ({
+      answer: sanitizeText(question, 220, payload?.voice_answer || payload?.spoken_answer || ""),
+      answer_ready: true,
+      voice_answer_source: "fallback",
+      payload: {
+        ...(payload || {}),
+        answer_ready: true,
+        voice_answer_source: "fallback",
+        voice_answer: sanitizeText(question, 220, payload?.voice_answer || payload?.spoken_answer || ""),
+        spoken_answer: sanitizeText(question, 220, payload?.voice_answer || payload?.spoken_answer || ""),
+      },
+    }),
   };
 }
 
-async function maybeReplayStoredStage({
+function mergeDeps(overrides = null) {
+  return {
+    ...getDefaultDeps(),
+    ...(overrides || {}),
+  };
+}
+
+async function markActiveStage({
+  deps,
+  username,
+  bundleId,
+  stageIndex,
+  requestKey = null,
+}) {
+  deps.setRequestedStageIndex?.(username, null);
+  deps.setSessionStageIndex?.(username, stageIndex);
+  await deps.setBundleStageIndex?.(bundleId, stageIndex, {
+    requestKey,
+    rejectStaleRequest: Boolean(requestKey),
+  });
+  deps.applyStageReplayState?.(username, { activeStageIndex: stageIndex, requestedStageIndex: null });
+}
+
+async function launchBackgroundStageJobs({
+  deps,
   username,
   bundle,
-  stageIndex,
-  question = "",
-  requestId = null,
-  deps = null,
-} = {}) {
-  const services = resolveOrchestratorDeps(deps);
-  if (!bundle?.bundleId) {
-    return {
-      ok: false,
-      reason: "missing_bundle",
-      bundle: bundle || null,
-      stage: null,
-      payload: null,
-      stageSummary: null,
-    };
-  }
-
-  const replayResult = services.replayStoredStage({
-    bundle,
-    stageIndex,
-    question,
-    requestId,
-    voiceAnswerSource: "gpt",
+  plannerResult,
+  userContext,
+  requestKey,
+  requestId,
+}) {
+  const stagesPlan = getStagePlan({
+    ...bundle,
+    stagesPlan: bundle?.stagesPlan?.length ? bundle.stagesPlan : plannerResult?.stagesPlan || [],
+    plannerOutput: bundle?.plannerOutput || toStoredPlannerResult(plannerResult),
   });
-
-  if (!replayResult?.ok || !replayResult?.stage || !replayResult?.payload) {
-    return {
-      ok: false,
-      reason: replayResult?.reason || "replay_not_available",
-      requestedStageIndex: replayResult?.stageIndex ?? stageIndex ?? null,
-      bundle,
-      stage: null,
-      payload: null,
-      stageSummary: null,
-    };
-  }
-
-  const replayedStageIndex = Number(replayResult.stage.stageIndex || 0);
-  const patchedBundle = await services.setBundleStageIndex(bundle.bundleId, replayedStageIndex);
-  services.applyStageReplayState(username, {
-    activeStageIndex: replayedStageIndex,
-    requestedStageIndex: replayedStageIndex,
-  });
-  orchestratorLog("stored stage replay resolved", {
+  const runtime = setRuntimeState({
     username,
+    requestKey,
+    requestId: requestId || requestKey,
     bundleId: bundle.bundleId,
-    stageIndex: replayedStageIndex,
+    stagesPlan,
+    readyStages: new Map(),
+    stagePromises: new Map(),
+    completed: false,
+    startedAt: Date.now(),
   });
 
-  return {
-    ok: true,
-    reason: "replayed_stored_stage",
-    stageGenerator: "replay_stored_stage",
-    bundle: patchedBundle || bundle,
-    stage: replayResult.stage,
-    payload: replayResult.payload,
-    stageSummary: replayResult.stageSummary || extractStageSummary(replayResult.stage),
-  };
+  const stageCount = Math.max(1, stagesPlan.length || 1);
+  stagesPlan.forEach((stageSpec, rawIndex) => {
+    const stageIndex = Math.max(0, Number(stageSpec?.stageIndex ?? rawIndex));
+    const promise = (async () => {
+      try {
+        const currentBundle = await deps.getBundleById(bundle.bundleId) || bundle;
+        if (deps.isStaleRequest?.(username, requestKey)) {
+          return { ok: false, stale: true, reason: "stale_request" };
+        }
+
+        const generation = await deps.tryExecutorStageGeneration({
+          resolvedBundle: currentBundle,
+          explicitStageIndex: stageIndex,
+          requestId,
+          stageSpec,
+          userContext,
+        });
+
+        let nextStage = generation?.stage || null;
+        if (!generation?.ok || !nextStage) {
+          nextStage = deps.buildLegacyFallbackStage?.({
+            bundle: currentBundle,
+            requestId,
+            question: currentBundle.question || "",
+            stageIndex,
+            reason: generation?.reason || "executor_failed",
+          });
+          generation.ok = Boolean(nextStage);
+          generation.reason = generation?.reason || "executor_failed";
+        }
+
+        if (!nextStage) {
+          return {
+            ok: false,
+            reason: generation?.reason || "stage_not_generated",
+          };
+        }
+
+        nextStage = applyStageProgressionPolicy({
+          ...nextStage,
+          metadata: {
+            ...(nextStage.metadata || {}),
+            stageSpec,
+          },
+        }, { stageCount });
+
+        const persisted = await deps.persistStageResult({
+          bundle: currentBundle,
+          stageRecord: nextStage,
+          requestKey,
+        });
+        runtime.readyStages.set(stageIndex, {
+          bundle: persisted?.bundle || currentBundle,
+          stage: nextStage,
+        });
+        if (stageIndex === stageCount - 1) completeRuntimeState(runtime);
+        return {
+          ok: true,
+          bundle: persisted?.bundle || currentBundle,
+          stage: nextStage,
+          stageGenerator: generation?.stageGenerator || (stageIndex === 0 ? "executor_stage1" : "executor_next_stage"),
+        };
+      } catch (error) {
+        orchestratorWarn("background stage job failed", {
+          username,
+          requestKey,
+          stageIndex,
+          message: error?.message || String(error),
+        });
+        return {
+          ok: false,
+          reason: error?.message || "stage_job_failed",
+        };
+      }
+    })();
+
+    runtime.stagePromises.set(stageIndex, promise);
+  });
+
+  Promise.allSettled([...runtime.stagePromises.values()]).then(() => {
+    completeRuntimeState(runtime);
+    deps.endRequest?.({
+      username,
+      requestKey,
+      status: "completed",
+      bundleId: bundle.bundleId,
+    });
+  }).catch(() => {});
+
+  return runtime;
 }
 
-async function handleStageReplay({
+async function getStageIfReady({ deps, username, requestKey, bundleId, stageIndex }) {
+  const freshBundle = bundleId ? await deps.getBundleById(bundleId) : null;
+  const storedStage = getStageByIndex(freshBundle, stageIndex);
+  if (storedStage) return { ok: true, bundle: freshBundle, stage: storedStage };
+
+  const runtime = getRuntimeState({ requestKey, username });
+  const readyStage = runtime?.readyStages?.get(stageIndex) || null;
+  if (readyStage?.stage) return { ok: true, bundle: readyStage.bundle || freshBundle, stage: readyStage.stage };
+  return { ok: false, bundle: freshBundle };
+}
+
+async function waitForStageIfNeeded({
+  deps,
   username,
-  bundleId = null,
-  stageIndex = null,
-  question = "",
+  requestKey,
+  bundleId,
+  stageIndex,
+  timeoutMs,
+}) {
+  const immediate = await getStageIfReady({ deps, username, requestKey, bundleId, stageIndex });
+  if (immediate.ok) return { ok: true, ...immediate };
+
+  const runtime = getRuntimeState({ requestKey, username });
+  const promise = runtime?.stagePromises?.get(stageIndex);
+  if (!promise) return { ok: false, bundle: immediate.bundle };
+  const waited = await withTimeout(promise, timeoutMs);
+  if (waited.timedOut) return { ok: false, bundle: immediate.bundle };
+  return getStageIfReady({ deps, username, requestKey, bundleId, stageIndex });
+}
+
+async function maybeStartFollowupBundle({
+  deps,
+  username,
+  requestId,
+  activeBundle,
+  action,
+}) {
+  const baseQuestion = sanitizeText(activeBundle?.question, 240, "this health topic");
+  const followupQuestion = action === "go_deeper"
+    ? `Give me a deeper analysis of ${baseQuestion}`
+    : `Compare ${baseQuestion}`;
+  return startQuestionWithOrchestrator({
+    username,
+    question: followupQuestion,
+    requestId,
+    requestSource: "followup",
+    __deps: deps,
+  });
+}
+
+async function startQuestionWithOrchestrator({
+  username,
+  question,
+  enrichedIntent = null,
   requestId = null,
+  requestSource = "alexa",
+  voiceDeadlineMs = 4200,
+  sessionHints = null,
   __deps = null,
 } = {}) {
-  const services = resolveOrchestratorDeps(__deps);
+  const deps = mergeDeps(__deps);
   const safeUsername = normalizeUsername(username);
-  const safeQuestion = sanitizeQuestion(question);
-  const safeRequestId = requestId || makeRequestKey(requestId);
-
-  if (!services.isMongoReady()) {
-    return {
-      ok: false,
-      status: "error",
-      reason: "mongo_not_ready",
-      voiceAnswer: "I could not load that stage right now.",
-      payload: null,
-      bundleId: null,
-      stage: null,
-    };
-  }
-
-  const sessionBundleId = services.getActiveBundleId(safeUsername);
-  const lookupBundleId = bundleId || sessionBundleId || null;
-  const bundle = lookupBundleId
-    ? await services.getBundleById(lookupBundleId)
-    : await services.loadActiveBundleForUser(safeUsername);
-
-  if (!bundle?.bundleId) {
-    return {
-      ok: false,
-      status: "error",
-      reason: "bundle_not_found",
-      voiceAnswer: "I do not have an active analysis to replay yet.",
-      payload: null,
-      bundleId: null,
-      stage: null,
-    };
-  }
-
-  services.setActiveBundleId(safeUsername, bundle.bundleId);
-  const latestStage = services.getLatestStage(bundle);
-  const maxStageIndex = Number(latestStage?.stageIndex || 0);
-  const parsedRequested = parseStageIndexInput(stageIndex);
-  const normalizedIndex = parsedRequested == null
-    ? normalizeRequestedStageIndex(
-        stageIndex == null ? bundle.currentStageIndex : stageIndex,
-        maxStageIndex
-      )
-    : parsedRequested;
-  services.setRequestedStageIndex(safeUsername, normalizedIndex);
-
-  const replayed = await maybeReplayStoredStage({
+  const safeQuestion = sanitizeText(question, 320, "");
+  const begin = deps.beginRequest?.({
     username: safeUsername,
-    bundle,
-    stageIndex: normalizedIndex,
-    question: safeQuestion || bundle.question || "",
-    requestId: safeRequestId,
-    deps: services,
-  });
+    source: requestSource,
+    requestKey: requestId || null,
+  }) || { ok: true, requestKey: requestId || `req_${Date.now()}`, concurrentDetected: false };
+  const requestKey = begin.requestKey || requestId || `req_${Date.now()}`;
 
-  if (!replayed?.ok || !replayed.payload || !replayed.stage) {
+  deps.setLatestRequestKey?.(safeUsername, requestKey);
+  if (sessionHints?.activeStageIndex != null) deps.setSessionStageIndex?.(safeUsername, sessionHints.activeStageIndex);
+
+  if (deps.isCurrentRequest && !deps.isCurrentRequest({ username: safeUsername, requestKey })) {
+    return {
+      ok: false,
+      stale: true,
+      status: "stale",
+      reason: "stale request rejected",
+    };
+  }
+
+  try {
+    if (__deps) {
+      const userContext = await deps.getUserContext?.(safeUsername).catch(() => null);
+      const plannerResult = await deps.planQuestion({
+        question: safeQuestion,
+        username: safeUsername,
+        enrichedIntent,
+        userContext,
+      });
+      let bundleAction = "new";
+      let resolvedBundle = null;
+      const activeBundle = await deps.loadActiveBundleForUser?.(safeUsername);
+      const plannerMode = String(plannerResult?.mode || "").trim().toLowerCase();
+
+      if (activeBundle && plannerMode === "branch_analysis") {
+        bundleAction = "branch";
+        resolvedBundle = await deps.branchBundle?.({
+          activeBundle,
+          username: safeUsername,
+          question: safeQuestion,
+          plannerResult,
+          requestKey,
+          requestSource,
+        });
+      } else if (activeBundle && plannerMode === "continue_analysis") {
+        bundleAction = "continue";
+        resolvedBundle = await deps.continueExistingBundle?.({
+          activeBundle,
+          username: safeUsername,
+          question: safeQuestion,
+          plannerResult,
+          requestKey,
+          requestSource,
+        });
+      }
+
+      if (!resolvedBundle) {
+        resolvedBundle = await deps.startNewBundleFromPlanner?.({
+          username: safeUsername,
+          question: safeQuestion,
+          plannerResult,
+          requestKey,
+          requestSource,
+        });
+        bundleAction = "new";
+      }
+
+      deps.setActiveBundleForUser?.(safeUsername, resolvedBundle?.bundleId || null);
+      deps.setSessionStageIndex?.(safeUsername, sessionHints?.activeStageIndex ?? 0);
+
+      const stagePlan = getStagePlan({
+        ...resolvedBundle,
+        stagesPlan: plannerResult?.stagesPlan || [],
+        plannerOutput: { ...(resolvedBundle?.plannerOutput || {}), candidate_stage_types: plannerResult?.candidateStageTypes || [] },
+      });
+      const generation = await deps.tryExecutorStageGeneration({
+        resolvedBundle,
+        explicitStageIndex: bundleAction === "continue"
+          ? Math.max(0, Number(resolvedBundle?.currentStageIndex || 0)) + 1
+          : 0,
+        requestId,
+        stageSpec: stagePlan[bundleAction === "continue" ? Math.max(0, Number(resolvedBundle?.currentStageIndex || 0)) + 1 : 0] || null,
+        userContext,
+      });
+      let stage = generation?.stage || null;
+      let stageGenerator = generation?.stageGenerator || (bundleAction === "continue" ? "executor_next_stage" : "executor_stage1");
+      let fallbackReason = null;
+      if (!generation?.ok || !stage) {
+        stage = deps.buildLegacyFallbackStage?.({
+          bundle: resolvedBundle,
+          requestId,
+          question: safeQuestion,
+          stageIndex: bundleAction === "continue" ? Math.max(0, Number(resolvedBundle?.currentStageIndex || 0)) + 1 : 0,
+          reason: generation?.reason || "executor_failed",
+        });
+        stageGenerator = "legacy_fallback";
+        fallbackReason = generation?.reason || "executor_failed";
+      }
+      stage = applyStageProgressionPolicy(stage, { stageCount: stagePlan.length || 1 });
+      const persisted = await deps.persistStageResult?.({ bundle: resolvedBundle, stageRecord: stage, requestKey }) || { bundle: resolvedBundle };
+      await markActiveStage({
+        deps,
+        username: safeUsername,
+        bundleId: resolvedBundle.bundleId,
+        stageIndex: stage.stageIndex,
+        requestKey,
+      });
+      return buildStageResult({
+        bundle: persisted.bundle || resolvedBundle,
+        stage,
+        requestId,
+        orchestrator: {
+          bundleAction,
+          stageGenerator,
+          ...(fallbackReason ? { fallbackReason } : {}),
+        },
+      });
+    }
+
+    const userContext = await deps.getUserContext?.(safeUsername).catch(() => null);
+    const plannerResult = await deps.planQuestion({
+      question: safeQuestion,
+      username: safeUsername,
+      enrichedIntent,
+      userContext,
+    });
+
+    let bundleAction = "new";
+    let resolvedBundle = null;
+    const activeBundle = await deps.loadActiveBundleForUser?.(safeUsername);
+    const plannerMode = String(plannerResult?.mode || "").trim().toLowerCase();
+
+    if (activeBundle && plannerMode === "branch_analysis") {
+      bundleAction = "branch";
+      resolvedBundle = await deps.branchBundle?.({
+        activeBundle,
+        username: safeUsername,
+        question: safeQuestion,
+        plannerResult,
+        requestKey,
+        requestSource,
+      });
+    } else if (activeBundle && plannerMode === "continue_analysis") {
+      bundleAction = "continue";
+      resolvedBundle = await deps.continueExistingBundle?.({
+        activeBundle,
+        username: safeUsername,
+        question: safeQuestion,
+        plannerResult,
+        requestKey,
+        requestSource,
+      });
+    }
+
+    if (!resolvedBundle) {
+      resolvedBundle = await deps.startNewBundleFromPlanner?.({
+        username: safeUsername,
+        question: safeQuestion,
+        plannerResult,
+        requestKey,
+        requestSource,
+      });
+      bundleAction = "new";
+    }
+
+    if (!resolvedBundle?.bundleId) {
+      throw new Error("failed to initialize bundle");
+    }
+
+    deps.setActiveBundleForUser?.(safeUsername, resolvedBundle.bundleId);
+    deps.setRequestBundleOwnership?.({ username: safeUsername, requestKey, bundleId: resolvedBundle.bundleId });
+    await deps.setBundleRequestOwnership?.(resolvedBundle.bundleId, requestKey, requestSource);
+    resolvedBundle = await deps.ensureBundleHasNormalizedData?.({
+      bundle: resolvedBundle,
+      username: safeUsername,
+      plannerResult,
+      requestKey,
+    }) || resolvedBundle;
+
+    // Convert Mongoose document to a plain JS object before spreading.
+    // In Mongoose 8, schema paths are stored internally and are not enumerable
+    // own properties, so `{...mongooseDoc}` silently loses fields like `bundleId`.
+    // Calling .toObject() first guarantees every field is a plain own property.
+    const resolvedBundlePojo = (typeof resolvedBundle.toObject === "function")
+      ? resolvedBundle.toObject()
+      : Object.assign({}, resolvedBundle);
+
+    const runtime = await launchBackgroundStageJobs({
+      deps,
+      username: safeUsername,
+      bundle: {
+        ...resolvedBundlePojo,
+        stagesPlan: getStagePlan({ ...resolvedBundlePojo, stagesPlan: plannerResult?.stagesPlan || [] }),
+      },
+      plannerResult,
+      userContext,
+      requestKey,
+      requestId,
+    });
+
+    deps.setRequestedStageIndex?.(safeUsername, 0);
+    const stageZero = await waitForStageIfNeeded({
+      deps,
+      username: safeUsername,
+      requestKey,
+      bundleId: resolvedBundle.bundleId,
+      stageIndex: 0,
+      timeoutMs: voiceDeadlineMs,
+    });
+
+    if (!stageZero.ok) {
+      return buildPendingResponse({
+        bundle: resolvedBundle,
+        requestId: requestId || requestKey,
+        voiceAnswer: DEFAULT_INITIAL_PENDING_VOICE,
+        activeStageIndex: 0,
+        requestedStageIndex: 0,
+        reason: "initial_stage_pending",
+        orchestrator: {
+          bundleAction,
+          requestKey,
+        },
+      });
+    }
+
+    await markActiveStage({
+      deps,
+      username: safeUsername,
+      bundleId: resolvedBundle.bundleId,
+      stageIndex: 0,
+      requestKey,
+    });
+    recordSessionAudit?.({
+      eventType: "question_stage0_ready",
+      username: safeUsername,
+      bundleId: resolvedBundle.bundleId,
+      requestKey,
+      stageCount: runtime.stagesPlan.length,
+    });
+
+    return buildStageResult({
+      bundle: stageZero.bundle || resolvedBundle,
+      stage: stageZero.stage,
+      requestId: requestId || requestKey,
+      orchestrator: {
+        bundleAction,
+        stageGenerator: "executor_stage1",
+        requestKey,
+      },
+    });
+  } catch (error) {
+    orchestratorError("startQuestionWithOrchestrator failed", error);
+    deps.endRequest?.({
+      username: safeUsername,
+      requestKey,
+      status: "failed",
+    });
     return {
       ok: false,
       status: "error",
-      reason: replayed?.reason || "stage_not_found",
-      voiceAnswer: "I could not find that stage yet.",
+      answerReady: false,
+      answer_ready: false,
+      voiceAnswer: "I had trouble gathering your health data. Please try again.",
+      voice_answer: "I had trouble gathering your health data. Please try again.",
+      requestId: requestId || requestKey,
       payload: null,
-      bundleId: bundle.bundleId,
-      stage: null,
-      requestedStageIndex: normalizedIndex,
+      bundleId: null,
+      reason: error?.message || "question_failed",
+      orchestrator: {
+        used: true,
+        stageGenerator: "error",
+      },
     };
   }
-
-  return {
-    ...buildStageResultEnvelope({
-      payload: replayed.payload,
-      stageRecord: replayed.stage,
-      stageSummary: replayed.stageSummary,
-      plannerResult: toPlannerResultFromBundle(replayed.bundle),
-      bundleId: replayed.bundle?.bundleId || bundle.bundleId,
-      bundleAction: { action: "continue", reason: "stage_replay" },
-      continuation: { decision: "continue", reason: "stage_replay" },
-      userContext: null,
-      stageGenerator: replayed.stageGenerator || "replay_stored_stage",
-    }),
-    ok: true,
-    stage: replayed.stage,
-    bundleId: replayed.bundle?.bundleId || bundle.bundleId,
-  };
-}
-
-function resolveNavigationTargetStage({ action, stageIndex = null, bundle = null } = {}) {
-  const normalizedAction = normalizeNavigationAction(action);
-  const latestStage = getLatestStage(bundle);
-  const maxStageIndex = Number(latestStage?.stageIndex || 0);
-  const currentStageIndex = Number.isFinite(Number(bundle?.currentStageIndex))
-    ? Math.max(0, Number(bundle.currentStageIndex))
-    : maxStageIndex;
-  const parsedRequestedIndex = parseStageIndexInput(stageIndex);
-
-  if (normalizedAction === "stage_next") {
-    return {
-      action: normalizedAction,
-      targetStageIndex: currentStageIndex + 1,
-      maxStageIndex,
-      currentStageIndex,
-    };
-  }
-  if (normalizedAction === "stage_back") {
-    return {
-      action: normalizedAction,
-      targetStageIndex: Math.max(0, currentStageIndex - 1),
-      maxStageIndex,
-      currentStageIndex,
-    };
-  }
-  if (normalizedAction === "stage_replay") {
-    return {
-      action: normalizedAction,
-      targetStageIndex: parsedRequestedIndex == null ? currentStageIndex : parsedRequestedIndex,
-      maxStageIndex,
-      currentStageIndex,
-    };
-  }
-  if (normalizedAction === "stage_goto") {
-    return {
-      action: normalizedAction,
-      targetStageIndex: parsedRequestedIndex == null ? currentStageIndex : parsedRequestedIndex,
-      maxStageIndex,
-      currentStageIndex,
-    };
-  }
-  return {
-    action: normalizedAction,
-    targetStageIndex: parsedRequestedIndex == null ? currentStageIndex : parsedRequestedIndex,
-    maxStageIndex,
-    currentStageIndex,
-  };
 }
 
 async function handleNavigationControl({
   username,
   action,
   stageIndex = null,
-  bundleId = null,
-  question = "",
   requestId = null,
-  voiceDeadlineMs = 4200,
-  userContext = null,
   __deps = null,
 } = {}) {
-  const services = resolveOrchestratorDeps(__deps);
+  const deps = mergeDeps(__deps);
   const safeUsername = normalizeUsername(username);
-  const safeQuestion = sanitizeQuestion(question);
-  const requestKey = makeRequestKey(requestId);
-  const safeRequestId = requestId || requestKey;
-  const requestSource = "followup";
-  services.setLatestRequestKey(safeUsername, requestKey);
+  const activeBundleId = deps.getActiveBundleId?.(safeUsername);
+  const bundle = activeBundleId ? await deps.getBundleById?.(activeBundleId) : await deps.loadActiveBundleForUser?.(safeUsername);
 
-  const requestState = typeof services.beginRequest === "function"
-    ? services.beginRequest({
-        username: safeUsername,
-        bundleId: bundleId || null,
-        source: requestSource,
-        requestKey,
-      })
-    : null;
-
-  if (requestState?.concurrentDetected) {
-    orchestratorWarn("concurrent navigation request detected", {
-      username: safeUsername,
-      requestKey,
-      activeRequestCount: requestState.activeRequestCount || null,
-    });
-    if (typeof services.recordSessionAudit === "function") {
-      services.recordSessionAudit({
-        eventType: "concurrent_request_detected",
-        username: safeUsername,
-        bundleId: bundleId || null,
-        requestKey,
-        source: requestSource,
-        reason: "navigation_request_overlap",
-      });
-    }
-  }
-
-  try {
-    if (!services.isMongoReady()) {
-      return {
-        ok: false,
-        status: "error",
-        reason: "mongo_not_ready",
-        voiceAnswer: "I could not load that stage right now.",
-        payload: null,
-      };
-    }
-
-    const sessionBundleId = services.getActiveBundleId(safeUsername);
-    const lookupBundleId = bundleId || sessionBundleId || null;
-    const bundle = lookupBundleId
-      ? await services.getBundleById(lookupBundleId)
-      : await services.loadActiveBundleForUser(safeUsername);
-
-    if (!bundle?.bundleId) {
-      return {
-        ok: false,
-        status: "error",
-        reason: "bundle_not_found",
-        voiceAnswer: "I do not have an active analysis yet. Ask a health question first.",
-        payload: null,
-      };
-    }
-
-    await bindRequestToBundle({
-      services,
-      username: safeUsername,
-      requestKey,
-      bundleId: bundle.bundleId,
-      source: requestSource,
-    });
-    if (typeof services.setActiveBundleForUser === "function") {
-      services.setActiveBundleForUser(safeUsername, bundle.bundleId);
-    } else if (typeof services.setActiveBundleId === "function") {
-      services.setActiveBundleId(safeUsername, bundle.bundleId);
-    }
-    const target = resolveNavigationTargetStage({
-      action,
-      stageIndex,
-      bundle,
-    });
-    const allowGeneration = target.action === "stage_next" || target.action === "stage_goto";
-    orchestratorLog("navigation target resolved", {
-      username: safeUsername,
-      requestKey,
-      bundleId: bundle.bundleId,
-      action: target.action,
-      currentStageIndex: target.currentStageIndex,
-      targetStageIndex: target.targetStageIndex,
-      maxStageIndex: target.maxStageIndex,
-      allowGeneration,
-      previousResponseId: bundle.executorResponseId || null,
-    });
-    services.setRequestedStageIndex(safeUsername, target.targetStageIndex);
-
-    const stageResult = await services.generateOrReplayStage({
-      requestId: safeRequestId,
-      requestKey,
-      requestSource,
-      username: safeUsername,
-      question: safeQuestion || bundle.question || "show more",
-      userContext,
-      plannerResult: toPlannerResultFromBundle(bundle),
-      bundleAction: { action: "continue", reason: "navigation_generation" },
-      continuation: { decision: "continue", reason: "navigation_generation" },
-      bundle,
-      targetStageIndex: target.targetStageIndex,
-      voiceDeadlineMs,
-      preferReplay: true,
-      allowGeneration,
-      deps: services,
-    });
-
-    const requestStillCurrent = isCurrentRequestGuard(
-      services,
-      safeUsername,
-      requestKey,
-      stageResult?.bundle?.bundleId || bundle.bundleId
-    );
-
-    if (stageResult?.ok && stageResult.payload && stageResult.stage) {
-      if (!requestStillCurrent && STRICT_STALE_RESULT_REJECTION) {
-        orchestratorWarn("stale executor navigation result discarded", {
-          username: safeUsername,
-          requestKey,
-          latestRequestKey: services.getSessionState(safeUsername)?.latestRequestKey || null,
-          bundleId: stageResult.bundle?.bundleId || bundle.bundleId,
-        });
-        recordStaleDiscard(services, {
-          username: safeUsername,
-          bundleId: stageResult.bundle?.bundleId || bundle.bundleId,
-          requestKey,
-          source: requestSource,
-          reason: "stale_navigation_executor_result",
-          scope: "navigation",
-        });
-        return staleResultResponse({
-          reason: "stale_navigation_executor_result",
-          bundleId: stageResult.bundle?.bundleId || bundle.bundleId,
-        });
-      }
-      services.applyStageReplayState(safeUsername, {
-        activeStageIndex: stageResult.stage.stageIndex,
-        requestedStageIndex: target.targetStageIndex,
-      });
-      const navStageGen = stageResult.stageGenerator || "executor_navigation";
-      orchestratorLog("path=navigation stageGenerator=" + navStageGen + " bundleId=" + (stageResult.bundle?.bundleId || bundle.bundleId || "null") + " stageIndex=" + (stageResult.stage?.stageIndex ?? "null"), {
-        username: safeUsername,
-        requestKey,
-        bundleId: stageResult.bundle?.bundleId || bundle.bundleId,
-        action: target.action,
-        stageIndex: stageResult.stage.stageIndex,
-        stageGenerator: navStageGen,
-        replayed: stageResult.stageGenerator === "replay_stored_stage",
-      });
-      return {
-        ...buildStageResultEnvelope({
-          payload: stageResult.payload,
-          stageRecord: stageResult.stage,
-          stageSummary: stageResult.stageSummary,
-          plannerResult: toPlannerResultFromBundle(stageResult.bundle || bundle),
-          bundleId: stageResult.bundle?.bundleId || bundle.bundleId,
-          bundleAction: { action: "continue", reason: "navigation_generation" },
-          continuation: { decision: "continue", reason: "navigation_generation" },
-          userContext,
-          stageGenerator: navStageGen,
-        }),
-        ok: true,
-        stage: stageResult.stage,
-        bundleId: stageResult.bundle?.bundleId || bundle.bundleId,
-      };
-    }
-
-    if (stageResult?.stale && STRICT_STALE_RESULT_REJECTION) {
-      recordStaleDiscard(services, {
-        username: safeUsername,
-        bundleId: stageResult?.bundle?.bundleId || bundle.bundleId,
-        requestKey,
-        source: requestSource,
-        reason: stageResult.reason || "stale_navigation_result",
-        scope: "navigation",
-      });
-      return staleResultResponse({
-        reason: stageResult.reason || "stale_navigation_result",
-        bundleId: stageResult?.bundle?.bundleId || bundle.bundleId,
-      });
-    }
-
-    if (isTerminalStageReason(stageResult?.reason)) {
-      const terminalBundle = stageResult?.bundle || bundle;
-      const terminal = buildTerminalStageResult({
-        reason: stageResult?.reason || "stage_sequence_complete",
-        bundle: terminalBundle,
-        requestId: safeRequestId,
-        question: safeQuestion || terminalBundle.question || "",
-        voiceAnswerSource: "gpt",
-      });
-      return {
-        ...terminal,
-        stage: stageResult?.stage || getLatestStage(terminalBundle),
-        orchestrator: {
-          used: true,
-          bundleId: terminalBundle.bundleId,
-          bundleAction: "continue",
-          continuationDecision: "continue",
-          plannerMode: toPlannerResultFromBundle(terminalBundle)?.mode || null,
-          stageGenerator: "stage_limit_reached",
-          fallbackReason: stageResult?.reason || "stage_sequence_complete",
-        },
-      };
-    }
-
-    const shouldUseLegacyFallback = EXECUTOR_ALLOW_NAV_FALLBACK
-      && allowGeneration
-      && !isTerminalStageReason(stageResult?.reason);
-    if (!shouldUseLegacyFallback) {
-      const replayUnavailable = !allowGeneration;
-      orchestratorWarn("navigation stage unavailable without legacy fallback", {
-        username: safeUsername,
-        requestKey,
-        bundleId: bundle.bundleId,
-        action: target.action,
-        reason: stageResult?.reason || "navigation_stage_generation_failed",
-        allowGeneration,
-      });
-      return {
-        ok: false,
-        status: "error",
-        reason: stageResult?.reason || "navigation_stage_generation_failed",
-        voiceAnswer: replayUnavailable
-          ? "I do not have that saved stage yet."
-          : "I could not move to that stage yet.",
-        payload: null,
-        bundleId: bundle.bundleId,
-      };
-    }
-
-    // Preserve safety net: fallback still routes through legacy qnaEngine.
-    const legacyResult = await services.runLegacyStage1({
-      requestId: safeRequestId,
-      username: safeUsername,
-      question: safeQuestion || bundle.question || "show more",
-      userContext,
-      voiceDeadlineMs,
-      allowFetchPlannerLLM: true,
-      allowPresenterLLM: true,
-      enableVisualContinuation: true,
-    });
-    if (!isCurrentRequestGuard(services, safeUsername, requestKey, bundle.bundleId) && STRICT_STALE_RESULT_REJECTION) {
-      recordStaleDiscard(services, {
-        username: safeUsername,
-        bundleId: bundle.bundleId,
-        requestKey,
-        source: requestSource,
-        reason: "stale_navigation_fallback_result",
-        scope: "navigation",
-      });
-      return staleResultResponse({
-        reason: "stale_navigation_fallback_result",
-        bundleId: bundle.bundleId,
-      });
-    }
-    const fallbackStage = services.buildLegacyFallbackStage({
-      legacyResult,
-      payload: legacyResult?.payload,
-      plannerResult: toPlannerResultFromBundle(bundle),
-      stageIndex: Math.max(0, target.targetStageIndex),
-      requestId: safeRequestId,
-      question: safeQuestion || bundle.question || "",
-    });
-    const persistedFallback = await services.persistStageResult({
-      bundle,
-      stageRecord: fallbackStage,
-      executorResponseId: bundle.executorResponseId || null,
-      statusReason: "navigation_legacy_fallback_stage_persisted",
-      requestKey,
-      rejectStaleRequest: true,
-    });
-
-    if (!persistedFallback?.stageRecord || !legacyResult?.payload) {
-      return {
-        ok: false,
-        status: "error",
-        reason: stageResult?.reason || "navigation_stage_generation_failed",
-        voiceAnswer: "I could not load that stage right now.",
-        payload: null,
-        bundleId: bundle.bundleId,
-      };
-    }
-
-    services.applyStageReplayState(safeUsername, {
-      activeStageIndex: persistedFallback.stageRecord.stageIndex,
-      requestedStageIndex: target.targetStageIndex,
-    });
-    orchestratorWarn("path=navigation stageGenerator=legacy_navigation_fallback bundleId=" + (persistedFallback.bundle?.bundleId || bundle.bundleId || "null") + " stageIndex=" + (persistedFallback.stageRecord?.stageIndex ?? "null") + " fallbackReason=" + (stageResult?.reason || "executor_navigation_unavailable"), {
-      username: safeUsername,
-      requestKey,
-      bundleId: persistedFallback.bundle?.bundleId || bundle.bundleId,
-      action: target.action,
-      targetStageIndex: target.targetStageIndex,
-      persistedStageIndex: persistedFallback.stageRecord.stageIndex,
-      fallbackReason: stageResult?.reason || "executor_navigation_unavailable",
-      previousResponseId: bundle.executorResponseId || null,
-    });
-
-    return {
-      ...legacyResult,
-      ok: true,
-      stage: persistedFallback.stageRecord,
-      bundleId: persistedFallback.bundle?.bundleId || bundle.bundleId,
-      orchestrator: {
-        used: true,
-        bundleId: persistedFallback.bundle?.bundleId || bundle.bundleId,
-        bundleAction: "continue",
-        continuationDecision: "continue",
-        plannerMode: toPlannerResultFromBundle(bundle)?.mode || null,
-        stageSummary: persistedFallback.stageSummary || null,
-        stageGenerator: "legacy_navigation_fallback",
-        fallbackReason: stageResult?.reason || "executor_navigation_unavailable",
-      },
-    };
-  } finally {
-    if (typeof services.endRequest === "function") {
-      services.endRequest({
-        username: safeUsername,
-        requestKey,
-        bundleId: bundleId || null,
-        status: "navigation_complete",
-      });
-    }
-  }
-}
-
-async function handleQuestionWithOrchestrator({
-  requestId = null,
-  username,
-  question,
-  sessionHints = null,
-  userContext = null,
-  voiceDeadlineMs = 4200,
-  allowFetchPlannerLLM = true,
-  allowPresenterLLM = true,
-  enableVisualContinuation = true,
-  fetchPlanTimeoutMs,
-  fetchTimeoutMs = null,
-  __deps = null,
-} = {}) {
-  const services = resolveOrchestratorDeps(__deps);
-  const safeUsername = normalizeUsername(username);
-  const safeSessionHints = sanitizeSessionHints(sessionHints);
-  const safeQuestion = sanitizeQuestion(question || safeSessionHints?.lastQuestion || "");
-  const requestKey = makeRequestKey(requestId);
-  const safeRequestId = requestId || requestKey;
-  const requestSource = "alexa";
-  services.setLatestRequestKey(safeUsername, requestKey);
-  applySessionHintsToRequest({
-    services,
-    username: safeUsername,
-    sessionHints: safeSessionHints,
-    requestKey,
-  });
-
-  const requestState = typeof services.beginRequest === "function"
-    ? services.beginRequest({
-        username: safeUsername,
-        source: requestSource,
-        requestKey,
-      })
-    : null;
-
-  if (requestState?.concurrentDetected) {
-    orchestratorWarn("concurrent question request detected", {
-      username: safeUsername,
-      requestKey,
-      activeRequestCount: requestState.activeRequestCount || null,
-    });
-    if (typeof services.recordSessionAudit === "function") {
-      services.recordSessionAudit({
-        eventType: "concurrent_request_detected",
-        username: safeUsername,
-        requestKey,
-        source: requestSource,
-        reason: "question_request_overlap",
-      });
-    }
-  }
-
-  let activeBundle = null;
-  let plannerResult = null;
-  let continuation = null;
-  let bundleAction = null;
-  let resolvedBundle = null;
-  let executorFailureReason = null;
-
-  try {
-    if (!ORCHESTRATOR_PRIMARY_ENABLED) {
-      orchestratorWarn("path=legacy_fallback reason=orchestrator_disabled", { username: safeUsername });
-      const legacyResult = await services.runLegacyStage1({
-        requestId: safeRequestId,
-        username: safeUsername,
-        question: safeQuestion,
-        userContext,
-        voiceDeadlineMs,
-        allowFetchPlannerLLM,
-        allowPresenterLLM,
-        enableVisualContinuation,
-        fetchPlanTimeoutMs,
-        fetchTimeoutMs,
-      });
-      return {
-        ...legacyResult,
-        orchestrator: {
-          used: false,
-          fallbackReason: "orchestrator_disabled",
-        },
-      };
-    }
-
-    if (!services.isMongoReady()) {
-      orchestratorWarn("path=legacy_fallback reason=mongo_not_ready", { username: safeUsername });
-      const legacyResult = await services.runLegacyStage1({
-        requestId: safeRequestId,
-        username: safeUsername,
-        question: safeQuestion,
-        userContext,
-        voiceDeadlineMs,
-        allowFetchPlannerLLM,
-        allowPresenterLLM,
-        enableVisualContinuation,
-        fetchPlanTimeoutMs,
-        fetchTimeoutMs,
-      });
-      return {
-        ...legacyResult,
-        orchestrator: {
-          used: false,
-          fallbackReason: "mongo_not_ready",
-        },
-      };
-    }
-
-    const resolvedUserContext = userContext || await services.getUserContext(safeUsername) || null;
-    activeBundle = await services.loadActiveBundleForUser(safeUsername);
-
-    plannerResult = await services.planQuestion({
-      question: safeQuestion,
-      username: safeUsername,
-      activeBundle,
-      userContext: resolvedUserContext,
-    });
-    orchestratorLog("path=planner_used bundleId=" + (activeBundle?.bundleId || "null") + " plannerMode=" + (plannerResult?.mode || "null"), {
-      username: safeUsername,
-      requestKey,
-      activeBundleId: activeBundle?.bundleId || null,
-      plannerMode: plannerResult?.mode || null,
-      metricsNeeded: plannerResult?.metricsNeeded || [],
-      timeScope: plannerResult?.timeScope || null,
-      analysisGoal: plannerResult?.analysisGoal || null,
-      candidateStageTypes: plannerResult?.candidateStageTypes || [],
-      previousResponseId: activeBundle?.executorResponseId || null,
-    });
-
-    continuation = services.classifyContinuation({
-      question: safeQuestion,
-      activeBundleSummary: buildActiveBundleSummary(activeBundle),
-      plannerResult,
-    });
-
-    bundleAction = resolveBundleAction({
-      activeBundle,
-      plannerResult,
-      continuationDecision: continuation.decision,
-    });
-    orchestratorLog("bundle action resolved", {
-      username: safeUsername,
-      requestKey,
-      activeBundleId: activeBundle?.bundleId || null,
-      bundleAction: bundleAction?.action || null,
-      bundleReason: bundleAction?.reason || null,
-      continuationDecision: continuation?.decision || null,
-      continuationReason: continuation?.reason || null,
-    });
-
-    if (bundleAction.action === "continue") {
-      resolvedBundle = await services.continueExistingBundle({ activeBundle, plannerResult });
-    } else if (bundleAction.action === "branch") {
-      resolvedBundle = await services.branchBundle({
-        activeBundle,
-        username: safeUsername,
-        question: safeQuestion,
-        plannerResult,
-        requestKey,
-        requestSource,
-      });
-    } else {
-      resolvedBundle = await services.startNewBundleFromPlanner({
-        username: safeUsername,
-        question: safeQuestion,
-        plannerResult,
-        activeBundle,
-        reason: bundleAction.reason,
-        requestKey,
-        requestSource,
-      });
-    }
-
-    if (resolvedBundle?.bundleId) {
-      await bindRequestToBundle({
-        services,
-        username: safeUsername,
-        requestKey,
-        bundleId: resolvedBundle.bundleId,
-        source: requestSource,
-      });
-      if (typeof services.setActiveBundleForUser === "function") {
-        services.setActiveBundleForUser(safeUsername, resolvedBundle.bundleId);
-      } else if (typeof services.setActiveBundleId === "function") {
-        services.setActiveBundleId(safeUsername, resolvedBundle.bundleId);
-      }
-      resolvedBundle = await services.ensureBundleHasNormalizedData({
-        bundle: resolvedBundle,
-        username: safeUsername,
-        question: safeQuestion,
-        plannerResult,
-        fetchTimeoutMs: fetchTimeoutMs || BUNDLE_DATA_FETCH_TIMEOUT_MS,
-      });
-      orchestratorLog("bundle ready for executor", {
-        username: safeUsername,
-        requestKey,
-        bundleId: resolvedBundle?.bundleId || null,
-        stageCount: Array.isArray(resolvedBundle?.stages) ? resolvedBundle.stages.length : 0,
-        currentStageIndex: Number(resolvedBundle?.currentStageIndex || 0),
-        normalizedRows: Array.isArray(resolvedBundle?.normalizedTable) ? resolvedBundle.normalizedTable.length : 0,
-        previousResponseId: resolvedBundle?.executorResponseId || null,
-      });
-    }
-
-    if (!isCurrentRequestGuard(services, safeUsername, requestKey, resolvedBundle?.bundleId || null) && STRICT_STALE_RESULT_REJECTION) {
-      recordStaleDiscard(services, {
-        username: safeUsername,
-        bundleId: resolvedBundle?.bundleId || null,
-        requestKey,
-        source: requestSource,
-        reason: "stale_pre_generation",
-        scope: "question",
-      });
-      return staleResultResponse({
-        reason: "stale_pre_generation",
-        bundleId: resolvedBundle?.bundleId || null,
-      });
-    }
-
-    const hasExistingStages = Array.isArray(resolvedBundle?.stages) && resolvedBundle.stages.length > 0;
-    const shouldAdvanceStage = hasExistingStages
-      && bundleAction?.action === "continue"
-      && String(continuation?.decision || "").toLowerCase() === "continue"
-      && services.shouldGenerateNextStage(bundleAction, continuation, resolvedBundle);
-    const targetStageIndex = shouldAdvanceStage ? services.getNextStageIndex(resolvedBundle) : 0;
-    orchestratorLog("executor stage request", {
-      username: safeUsername,
-      requestKey,
-      bundleId: resolvedBundle?.bundleId || null,
-      targetStageIndex,
-      shouldAdvanceStage,
-      stageCount: Array.isArray(resolvedBundle?.stages) ? resolvedBundle.stages.length : 0,
-      previousResponseId: resolvedBundle?.executorResponseId || null,
-    });
-    const stageResult = await services.generateOrReplayStage({
-      requestId: safeRequestId,
-      requestKey,
-      requestSource,
-      username: safeUsername,
-      question: safeQuestion,
-      userContext: resolvedUserContext,
-      plannerResult,
-      bundleAction,
-      continuation,
-      bundle: resolvedBundle,
-      targetStageIndex,
-      voiceDeadlineMs,
-      preferReplay: true,
-      deps: services,
-    });
-
-    if (stageResult?.ok && stageResult?.payload && stageResult?.stage) {
-      if (!isCurrentRequestGuard(services, safeUsername, requestKey, stageResult.bundle?.bundleId || resolvedBundle?.bundleId || null)
-        && STRICT_STALE_RESULT_REJECTION) {
-        orchestratorWarn("stale executor result discarded", {
-          username: safeUsername,
-          requestKey,
-          latestRequestKey: services.getSessionState(safeUsername)?.latestRequestKey || null,
-          bundleId: stageResult.bundle?.bundleId || resolvedBundle?.bundleId || null,
-        });
-        recordStaleDiscard(services, {
-          username: safeUsername,
-          bundleId: stageResult.bundle?.bundleId || resolvedBundle?.bundleId || null,
-          requestKey,
-          source: requestSource,
-          reason: "stale_executor_result",
-          scope: "question",
-        });
-        return staleResultResponse({
-          reason: "stale_executor_result",
-          bundleId: stageResult.bundle?.bundleId || resolvedBundle?.bundleId || null,
-        });
-      }
-
-      services.setSessionStageIndex(safeUsername, stageResult.stage.stageIndex);
-      const execBundleId = stageResult.bundle?.bundleId || resolvedBundle?.bundleId || null;
-      const execPrevId = stageResult.bundle?.executorResponseId || resolvedBundle?.executorResponseId || null;
-      orchestratorLog("path=executor_primary bundleId=" + (execBundleId || "null") + " stageIndex=" + (stageResult.stage.stageIndex ?? "null") + " previous_response_id=" + (execPrevId || "null"), {
-        username: safeUsername,
-        requestKey,
-        bundleId: execBundleId,
-        stageIndex: stageResult.stage.stageIndex,
-        stageGenerator: stageResult.stageGenerator || "executor_primary",
-        moreAvailable: Boolean(stageResult.stage.moreAvailable),
-        previousResponseId: execPrevId,
-      });
-      return buildStageResultEnvelope({
-        payload: stageResult.payload,
-        stageRecord: stageResult.stage,
-        stageSummary: stageResult.stageSummary,
-        plannerResult,
-        bundleId: stageResult.bundle?.bundleId || resolvedBundle?.bundleId || null,
-        bundleAction,
-        continuation,
-        userContext: resolvedUserContext,
-        stageGenerator: stageResult.stageGenerator || "executor_primary",
-      });
-    }
-
-    if (stageResult?.stale && STRICT_STALE_RESULT_REJECTION) {
-      recordStaleDiscard(services, {
-        username: safeUsername,
-        bundleId: stageResult?.bundle?.bundleId || resolvedBundle?.bundleId || null,
-        requestKey,
-        source: requestSource,
-        reason: stageResult.reason || "stale_executor_generation",
-        scope: "question",
-      });
-      return staleResultResponse({
-        reason: stageResult.reason || "stale_executor_generation",
-        bundleId: stageResult?.bundle?.bundleId || resolvedBundle?.bundleId || null,
-      });
-    }
-
-    if (isTerminalStageReason(stageResult?.reason)) {
-      const terminalBundle = stageResult?.bundle || resolvedBundle;
-      const terminal = buildTerminalStageResult({
-        reason: stageResult?.reason || "stage_sequence_complete",
-        bundle: terminalBundle,
-        requestId: safeRequestId,
-        question: safeQuestion,
-        voiceAnswerSource: "gpt",
-      });
-      return {
-        ...terminal,
-        plannerResult,
-        orchestrator: {
-          used: true,
-          bundleId: terminalBundle?.bundleId || null,
-          bundleAction: bundleAction?.action || null,
-          continuationDecision: continuation?.decision || null,
-          plannerMode: plannerResult?.mode || null,
-          stageGenerator: "stage_limit_reached",
-          fallbackReason: stageResult?.reason || "stage_sequence_complete",
-        },
-      };
-    }
-
-    executorFailureReason = stageResult?.reason || "executor_not_available";
-    orchestratorWarn("path=legacy_fallback reason=" + (executorFailureReason || "executor_failed") + " bundleId=" + (resolvedBundle?.bundleId || "null") + " previous_response_id=" + (resolvedBundle?.executorResponseId || "null") + " stageIndex=" + (targetStageIndex ?? "null"), {
-      username: safeUsername,
-      bundleId: resolvedBundle?.bundleId || null,
-      reason: executorFailureReason,
-      status: stageResult?.status || null,
-    });
-
-    if (!EXECUTOR_ALLOW_STAGE1_FALLBACK) {
-      return {
-        ok: false,
-        status: "error",
-        reason: executorFailureReason,
-        voiceAnswer: "I could not complete that request right now.",
-        payload: null,
-        bundleId: resolvedBundle?.bundleId || null,
-      };
-    }
-
-    const legacyResult = await services.runLegacyStage1({
-      requestId: safeRequestId,
-      username: safeUsername,
-      question: safeQuestion,
-      userContext: resolvedUserContext,
-      voiceDeadlineMs,
-      allowFetchPlannerLLM,
-      allowPresenterLLM,
-      enableVisualContinuation,
-      fetchPlanTimeoutMs,
-      fetchTimeoutMs,
-    });
-
-    if (!isCurrentRequestGuard(services, safeUsername, requestKey, resolvedBundle?.bundleId || null) && STRICT_STALE_RESULT_REJECTION) {
-      orchestratorWarn("stale legacy fallback result discarded", {
-        username: safeUsername,
-        requestKey,
-        latestRequestKey: services.getSessionState(safeUsername)?.latestRequestKey || null,
-        bundleId: resolvedBundle?.bundleId || null,
-      });
-      recordStaleDiscard(services, {
-        username: safeUsername,
-        bundleId: resolvedBundle?.bundleId || null,
-        requestKey,
-        source: requestSource,
-        reason: "stale_legacy_fallback_result",
-        scope: "question",
-      });
-      return staleResultResponse({
-        reason: "stale_legacy_fallback_result",
-        bundleId: resolvedBundle?.bundleId || null,
-      });
-    }
-
-    const legacyStageIndex = targetStageIndex;
-    const stageRecord = services.buildLegacyFallbackStage({
-      legacyResult,
-      payload: legacyResult?.payload,
-      plannerResult,
-      stageIndex: legacyStageIndex,
-      requestId: safeRequestId,
-      question: safeQuestion,
-    });
-
-    const persisted = await services.persistStageResult({
-      bundle: resolvedBundle,
-      stageRecord,
-      executorResponseId: resolvedBundle?.executorResponseId || null,
-      statusReason: "legacy_fallback_stage_persisted",
-      requestKey,
-      rejectStaleRequest: true,
-    });
-
-    if (persisted?.stageRecord) {
-      services.setSessionStageIndex(safeUsername, persisted.stageRecord.stageIndex);
-      orchestratorWarn("path=legacy_fallback legacy fallback stage persisted", {
-        username: safeUsername,
-        requestKey,
-        bundleId: resolvedBundle?.bundleId || null,
-        stageIndex: persisted.stageRecord.stageIndex,
-        fallbackReason: executorFailureReason,
-        previousResponseId: resolvedBundle?.executorResponseId || null,
-      });
-    }
-
-    return {
-      ...legacyResult,
-      plannerResult,
-      bundleId: resolvedBundle?.bundleId || null,
-      stage: persisted?.stageRecord || null,
-      orchestrator: {
-        used: true,
-        bundleId: resolvedBundle?.bundleId || null,
-        bundleAction: bundleAction.action,
-        continuationDecision: continuation.decision,
-        plannerMode: plannerResult?.mode || null,
-        stageSummary: persisted?.stageSummary || null,
-        stageGenerator: "legacy_fallback",
-        fallbackReason: executorFailureReason,
-      },
-    };
-  } catch (error) {
-    orchestratorError("handleQuestionWithOrchestrator failed, using legacy fallback", error);
-    try {
-      if (resolvedBundle?.bundleId) {
-        await services.setBundleStatus(
-          resolvedBundle.bundleId,
-          "failed",
-          {},
-          "orchestrator_error",
-          {
-            requestKey,
-            rejectStaleRequest: false,
-          }
-        );
-      }
-    } catch (statusErr) {
-      orchestratorWarn("failed to set bundle status after orchestrator error", {
-        bundleId: resolvedBundle?.bundleId || null,
-        message: statusErr?.message || String(statusErr),
-      });
-    }
-
-    const legacyResult = await services.runLegacyStage1({
-      requestId: safeRequestId,
-      username: safeUsername,
-      question: safeQuestion,
-      userContext,
-      voiceDeadlineMs,
-      allowFetchPlannerLLM,
-      allowPresenterLLM,
-      enableVisualContinuation,
-      fetchPlanTimeoutMs,
-      fetchTimeoutMs,
-    });
-
-    return {
-      ...legacyResult,
-      plannerResult,
-      bundleId: resolvedBundle?.bundleId || null,
-      orchestrator: {
-        used: false,
-        fallbackReason: "orchestrator_error",
-        bundleId: resolvedBundle?.bundleId || null,
-      },
-    };
-  } finally {
-    if (typeof services.endRequest === "function") {
-      services.endRequest({
-        username: safeUsername,
-        requestKey,
-        bundleId: resolvedBundle?.bundleId || null,
-        status: "question_complete",
-      });
-    }
-  }
-}
-
-async function handleFollowupWithOrchestrator({
-  requestId = null,
-  username,
-  question,
-  bundleId = null,
-  sessionHints = null,
-  userContext = null,
-  voiceDeadlineMs = 4200,
-  allowFetchPlannerLLM = true,
-  allowPresenterLLM = true,
-  enableVisualContinuation = true,
-  fetchPlanTimeoutMs,
-  fetchTimeoutMs = null,
-  __deps = null,
-} = {}) {
-  const services = resolveOrchestratorDeps(__deps);
-  const safeUsername = normalizeUsername(username);
-  const safeSessionHints = sanitizeSessionHints(sessionHints);
-  const safeQuestion = sanitizeQuestion(question || safeSessionHints?.lastQuestion || "");
-  const safeBundleId = bundleId ? String(bundleId) : null;
-  const requestKey = makeRequestKey(requestId);
-  applySessionHintsToRequest({
-    services,
-    username: safeUsername,
-    sessionHints: safeSessionHints,
-    requestKey,
-  });
-
-  const activeBundle = safeBundleId
-    ? await services.getBundleById(safeBundleId)
-    : await services.loadActiveBundleForUser(safeUsername);
-
-  // If the active bundle is completed/released and has no more stages, treat
-  // "show more" as a terminal dead-end rather than looping into planner.
-  const bundleIsDone = ["completed", "released"].includes(String(activeBundle?.status || "").toLowerCase());
-  if (bundleIsDone && activeBundle?.bundleId) {
-    const latestStageDone = Array.isArray(activeBundle.stages) && activeBundle.stages.length > 0
-      && activeBundle.stages.every((s) => !s.moreAvailable);
-    const q = String(safeQuestion || "").toLowerCase();
-    const isShowMore = /\b(show more|next|yes|yeah|sure|ok|okay|continue|go on|tell me more)\b/.test(q)
-      || /^(yes|yeah|sure|ok|okay)$/.test(q);
-    if (latestStageDone && isShowMore) {
-      orchestratorLog("followup on completed bundle with no more stages — returning terminal", {
-        username: safeUsername,
-        bundleId: activeBundle.bundleId,
-        bundleStatus: activeBundle.status,
-      });
-      const terminal = buildTerminalStageResult({
-        reason: "no_more_stages",
-        bundle: activeBundle,
-        requestId: requestId || makeRequestKey(requestId),
-        question: safeQuestion,
-        voiceAnswerSource: "gpt",
-      });
-      return {
-        ...terminal,
-        ok: true,
-        orchestrator: {
-          used: true,
-          bundleId: activeBundle.bundleId,
-          stageGenerator: "completed_bundle_terminal",
-          fallbackReason: "bundle_already_completed",
-        },
-      };
-    }
-  }
-
-  const followupIntent = services.analyzeFollowupIntent({
-    question: safeQuestion,
-    activeBundleSummary: buildActiveBundleSummary(activeBundle),
-    plannerResult: toPlannerResultFromBundle(activeBundle),
-  });
-
-  const normalizedFollowupQuestion = followupIntent?.normalizedQuestion || safeQuestion;
-
-  if (followupIntent?.intentType === "control_navigation" && followupIntent?.action) {
-    const controlResult = await handleControlWithOrchestrator({
+  if (!bundle?.bundleId) {
+    return buildPendingResponse({
       requestId,
-      username: safeUsername,
-      action: followupIntent.action,
-      stageIndex: followupIntent.targetStageIndex,
-      bundleId: safeBundleId || activeBundle?.bundleId || null,
-      question: normalizedFollowupQuestion,
-      voiceDeadlineMs,
-      userContext,
-      __deps: services,
+      voiceAnswer: "I don't have an active analysis yet. Ask a health question first.",
+      reason: "missing_active_bundle",
+      orchestrator: {
+        stageGenerator: "missing_bundle",
+      },
     });
-    if (controlResult?.orchestrator) {
-      controlResult.orchestrator.followupDecision = followupIntent.decision || "continue";
-      controlResult.orchestrator.followupReason = followupIntent.reason || null;
-      controlResult.orchestrator.followupAction = followupIntent.action;
-      controlResult.orchestrator.followupIntentType = followupIntent.intentType || "control_navigation";
-      controlResult.orchestrator.followupRequiresGeneration = followupIntent.requiresGeneration === true;
-    }
-    return controlResult;
   }
 
-  const result = await handleQuestionWithOrchestrator({
-    requestId,
-    username: safeUsername,
-    question: normalizedFollowupQuestion,
-    sessionHints: safeSessionHints,
-    userContext,
-    voiceDeadlineMs,
-    allowFetchPlannerLLM,
-    allowPresenterLLM,
-    enableVisualContinuation,
-    fetchPlanTimeoutMs,
-    fetchTimeoutMs,
-    __deps: services,
-  });
-  if (result?.orchestrator) {
-    result.orchestrator.followupDecision = followupIntent?.decision || null;
-    result.orchestrator.followupReason = followupIntent?.reason || null;
-    result.orchestrator.followupAction = followupIntent?.action || null;
-    result.orchestrator.followupIntentType = followupIntent?.intentType || null;
-    result.orchestrator.followupBundleAction = followupIntent?.bundleAction || null;
+  const currentIndex = Math.max(0, Number(bundle.currentStageIndex || 0));
+  const stageCount = getPlannerStageCount(bundle);
+  let targetIndex = currentIndex;
+  let role = null;
+
+  if (action === "stage_goto" && stageIndex != null) targetIndex = Math.max(0, Number(stageIndex) || 0);
+  else if (action === "stage_back") targetIndex = Math.max(0, currentIndex - 1);
+  else if (action === "stage_next" || action === "show_more") targetIndex = currentIndex + 1;
+  else if (action === "compare") role = "comparison";
+  else if (action === "go_deeper") role = "deep_dive";
+
+  if (role) {
+    const plannedTarget = findPlannedStageIndexByRole(bundle, role, currentIndex);
+    if (plannedTarget == null) {
+      return maybeStartFollowupBundle({
+        deps,
+        username: safeUsername,
+        requestId,
+        activeBundle: bundle,
+        action,
+      });
+    }
+    targetIndex = plannedTarget;
   }
-  return result;
+
+  const currentStage = getCurrentStage(bundle) || getLatestStage(bundle);
+  if (targetIndex >= stageCount || (action !== "stage_back" && currentStage && currentStage.moreAvailable === false && targetIndex > currentIndex)) {
+    return buildTerminalResponse({ bundle, requestId });
+  }
+
+  const replay = replayStoredStage({
+    bundle,
+    stageIndex: targetIndex,
+    question: bundle.question || "",
+    requestId,
+  });
+  if (replay?.ok && replay.stage) {
+    await markActiveStage({
+      deps,
+      username: safeUsername,
+      bundleId: bundle.bundleId,
+      stageIndex: replay.stage.stageIndex,
+      requestKey: requestId || null,
+    });
+    const refreshed = await deps.getBundleById?.(bundle.bundleId) || bundle;
+    return buildStageResult({
+      bundle: refreshed,
+      stage: replay.stage,
+      requestId,
+      orchestrator: {
+        stageGenerator: "replay_stored_stage",
+        controlAction: action,
+      },
+    });
+  }
+
+  // ── Runtime map check ──────────────────────────────────────────────────────
+  // Before falling through to a fresh GPT generation, check the in-memory
+  // runtime.readyStages map.  This handles the race where the background job
+  // has finished generating the stage but has not yet persisted it to MongoDB
+  // (or the MongoDB write is in-flight).  getStageIfReady checks both MongoDB
+  // and the runtime map so it covers all "ready" states.
+  const runtimeCheck = await getStageIfReady({
+    deps,
+    username: safeUsername,
+    requestKey: requestId || null,   // falls back to username-based lookup when null
+    bundleId: bundle.bundleId,
+    stageIndex: targetIndex,
+  });
+  if (runtimeCheck.ok && runtimeCheck.stage) {
+    orchestratorLog("handleNavigationControl: stage found in runtime map, skipping regeneration", {
+      username: safeUsername,
+      stageIndex: targetIndex,
+      bundleId: bundle.bundleId,
+    });
+    await markActiveStage({
+      deps,
+      username: safeUsername,
+      bundleId: bundle.bundleId,
+      stageIndex: targetIndex,
+      requestKey: requestId || null,
+    });
+    const refreshed = await deps.getBundleById?.(bundle.bundleId) || runtimeCheck.bundle || bundle;
+    return buildStageResult({
+      bundle: refreshed,
+      stage: runtimeCheck.stage,
+      requestId,
+      orchestrator: {
+        stageGenerator: "runtime_map_stage",
+        controlAction: action,
+      },
+    });
+  }
+  // ── End runtime map check ──────────────────────────────────────────────────
+
+  if (__deps) {
+    const stagePlan = getStagePlan(bundle);
+    const generation = await deps.tryExecutorStageGeneration({
+      resolvedBundle: bundle,
+      explicitStageIndex: targetIndex,
+      requestId,
+      stageSpec: stagePlan[targetIndex] || null,
+      userContext: null,
+    });
+      let stage = generation?.stage || null;
+      let stageGenerator = generation?.stageGenerator || "executor_next_stage";
+      let fallbackReason = null;
+      if (!generation?.ok || !stage) {
+        stage = deps.buildLegacyFallbackStage?.({
+          bundle,
+          requestId,
+          question: bundle.question || "",
+          stageIndex: targetIndex,
+          reason: generation?.reason || "executor_failed",
+        });
+        stageGenerator = "legacy_fallback";
+        fallbackReason = generation?.reason || "executor_failed";
+      }
+      if (stage) {
+        stage = applyStageProgressionPolicy(stage, { stageCount });
+        const persisted = await deps.persistStageResult?.({ bundle, stageRecord: stage, requestKey: requestId || null }) || { bundle };
+      await markActiveStage({
+        deps,
+        username: safeUsername,
+        bundleId: bundle.bundleId,
+        stageIndex: targetIndex,
+        requestKey: requestId || null,
+      });
+        return buildStageResult({
+          bundle: persisted.bundle || bundle,
+          stage,
+          requestId,
+          orchestrator: {
+            stageGenerator,
+            controlAction: action,
+            ...(fallbackReason ? { fallbackReason } : {}),
+          },
+        });
+      }
+  }
+
+  deps.setRequestedStageIndex?.(safeUsername, targetIndex);
+  return buildPendingResponse({
+    bundle,
+    requestId,
+    voiceAnswer: DEFAULT_PENDING_VOICE,
+    activeStageIndex: currentIndex,
+    requestedStageIndex: targetIndex,
+    reason: "requested_stage_pending",
+    orchestrator: {
+      stageGenerator: "pending_stage",
+      controlAction: action,
+    },
+  });
 }
 
 async function handleControlWithOrchestrator({
-  requestId = null,
   username,
   action,
-  stageIndex = null,
-  bundleId = null,
-  question = "",
+  requestId = null,
   sessionHints = null,
-  userContext = null,
-  voiceDeadlineMs = 4200,
   __deps = null,
 } = {}) {
-  const services = resolveOrchestratorDeps(__deps);
+  const deps = mergeDeps(__deps);
   const safeUsername = normalizeUsername(username);
-  const safeAction = normalizeControlAction(action);
-  const safeSessionHints = sanitizeSessionHints(sessionHints);
-  const safeStageIndex = parseStageIndexInput(
-    stageIndex == null ? safeSessionHints?.activeStageIndex : stageIndex
-  );
-  const safeQuestion = resolveControlQuestion({
-    action: safeAction,
-    question,
-    sessionHints: safeSessionHints,
-  });
-  const requestKey = makeRequestKey(requestId);
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  if (sessionHints?.activeStageIndex != null) deps.setSessionStageIndex?.(safeUsername, sessionHints.activeStageIndex);
 
-  applySessionHintsToRequest({
-    services,
-    username: safeUsername,
-    sessionHints: safeSessionHints,
-    requestKey,
-  });
-  orchestratorLog("control action received", {
-    username: safeUsername,
-    requestKey,
-    action: safeAction,
-    stageIndex: safeStageIndex,
-    bundleId: bundleId || null,
-    questionPreview: sanitizeText(safeQuestion, 120, ""),
-  });
-
-  const navigationAction = (() => {
-    if (safeAction === "show_more") return "show_more";
-    if (safeAction === "back") return "back";
-    if (safeAction === "replay") return "replay";
-    if (safeAction === "goto_stage") return "goto_stage";
-    return null;
-  })();
-
-  if (navigationAction) {
-    return handleNavigationControl({
-      requestId,
+  if (normalizedAction === "resume_pending") {
+    const session = deps.getSessionState?.(safeUsername) || {};
+    const bundleId = deps.getActiveBundleId?.(safeUsername) || session.activeBundleId || null;
+    const bundle = bundleId ? await deps.getBundleById?.(bundleId) : await deps.loadActiveBundleForUser?.(safeUsername);
+    const targetIndex = session.requestedStageIndex == null
+      ? Math.max(0, Number(bundle?.currentStageIndex || 0))
+      : Math.max(0, Number(session.requestedStageIndex || 0));
+    const requestKey = requestId || session.activeRequestKey || session.latestRequestKey || null;
+    const ready = await getStageIfReady({
+      deps,
       username: safeUsername,
-      action: navigationAction,
-      stageIndex: safeStageIndex,
-      bundleId: bundleId || null,
-      question: safeQuestion,
-      voiceDeadlineMs,
-      userContext,
-      __deps: services,
+      requestKey,
+      bundleId: bundle?.bundleId || null,
+      stageIndex: targetIndex,
     });
-  }
-
-  if (safeAction === "start_over") {
-    const restarted = await handleQuestionWithOrchestrator({
-      requestId,
-      username: safeUsername,
-      question: safeQuestion || "start over",
-      sessionHints: safeSessionHints,
-      userContext,
-      voiceDeadlineMs,
-      __deps: services,
-    });
-    if (restarted?.orchestrator) restarted.orchestrator.controlAction = "start_over";
-    return {
-      ...restarted,
-      ok: Boolean(restarted?.payload),
-    };
-  }
-
-  if (safeAction === "compare" || safeAction === "explain" || safeAction === "summarize") {
-    const replay = await handleStageReplay({
-      requestId,
-      username: safeUsername,
-      bundleId: bundleId || null,
-      stageIndex: safeStageIndex,
-      question: safeQuestion,
-      __deps: services,
-    });
-
-    if (!replay?.payload) {
-      return {
-        ok: false,
-        status: "error",
-        reason: replay?.reason || "stage_context_not_found",
-        voiceAnswer: replay?.voiceAnswer || "I do not have enough chart context yet.",
-        payload: replay?.payload || null,
-        bundleId: replay?.bundleId || null,
-        stage: replay?.stage || null,
+    if (!ready.ok || !ready.stage) {
+      return buildPendingResponse({
+        bundle,
+        requestId: requestId || requestKey,
+        voiceAnswer: DEFAULT_PENDING_VOICE,
+        activeStageIndex: bundle?.currentStageIndex || 0,
+        requestedStageIndex: targetIndex,
+        reason: "resume_pending_wait",
         orchestrator: {
-          used: true,
-          bundleId: replay?.bundleId || null,
-          stageGenerator: "stage_context_unavailable",
-          fallbackReason: replay?.reason || "stage_context_not_found",
-          controlAction: safeAction,
+          controlAction: normalizedAction,
+          stageGenerator: "pending_stage",
         },
-      };
+      });
     }
-
-    const actionQuestion = buildControlActionQuestion({
-      action: safeAction,
-      stage: replay.stage,
-      fallbackQuestion: safeQuestion,
-    });
-
-    orchestratorLog("control action routed through planner/executor", {
+    await markActiveStage({
+      deps,
       username: safeUsername,
+      bundleId: ready.bundle?.bundleId || bundle?.bundleId,
+      stageIndex: targetIndex,
       requestKey,
-      action: safeAction,
-      bundleId: replay?.bundleId || null,
-      stageIndex: replay?.stage?.stageIndex ?? null,
-      questionPreview: sanitizeText(actionQuestion, 180, ""),
     });
-
-    const stageDriven = await handleQuestionWithOrchestrator({
-      requestId,
-      username: safeUsername,
-      question: actionQuestion,
-      sessionHints: {
-        ...(safeSessionHints || {}),
-        activeStageIndex: replay?.stage?.stageIndex ?? safeStageIndex,
-        stageCount: Number(replay?.payload?.stageCount || safeSessionHints?.stageCount || 1),
-        pendingAction: safeAction,
-        lastQuestion: actionQuestion,
-      },
-      userContext,
-      voiceDeadlineMs,
-      __deps: services,
-    });
-
-    if (stageDriven?.stale) {
-      if (stageDriven?.orchestrator) stageDriven.orchestrator.controlAction = safeAction;
-      return {
-        ...stageDriven,
-        ok: false,
-      };
-    }
-
-    if (stageDriven?.payload) {
-      if (stageDriven?.orchestrator) {
-        stageDriven.orchestrator.controlAction = safeAction;
-        stageDriven.orchestrator.stageReplayUsed = true;
-        stageDriven.orchestrator.referencedStageIndex = replay?.stage?.stageIndex ?? null;
-      }
-      return {
-        ...stageDriven,
-        ok: true,
-      };
-    }
-
-    orchestratorWarn("control action stage generation unavailable, replaying stored stage", {
-      username: safeUsername,
-      requestKey,
-      action: safeAction,
-      bundleId: replay?.bundleId || null,
-      stageIndex: replay?.stage?.stageIndex ?? null,
-      reason: stageDriven?.reason || "control_stage_generation_unavailable",
-    });
-
-    return {
-      ok: true,
-      status: "complete",
-      answerReady: Boolean(replay?.payload?.answer_ready),
-      voiceAnswerSource: replay?.payload?.voice_answer_source || "gpt",
-      voiceAnswer: replay?.payload?.voice_answer || replay?.payload?.spoken_answer || replay?.stage?.spokenText || "",
-      payload: replay?.payload || null,
-      bundleId: replay?.bundleId || null,
-      stage: replay?.stage || null,
+    return buildStageResult({
+      bundle: ready.bundle || bundle,
+      stage: ready.stage,
+      requestId: requestId || requestKey,
       orchestrator: {
-        used: true,
-        bundleId: replay?.bundleId || null,
-        bundleAction: "continue",
-        continuationDecision: "continue",
-        plannerMode: replay?.plannerResult?.mode || null,
-        stageSummary: replay?.orchestrator?.stageSummary || null,
-        stageGenerator: "replay_stored_stage",
-        fallbackReason: stageDriven?.reason || "control_stage_generation_unavailable",
-        controlAction: safeAction,
+        controlAction: normalizedAction,
+        stageGenerator: targetIndex === 0 ? "executor_stage1" : "executor_next_stage",
       },
-    };
+    });
   }
 
+  if (normalizedAction === "show_more" || normalizedAction === "back") {
+    return handleNavigationControl({
+      username: safeUsername,
+      action: normalizedAction === "show_more" ? "stage_next" : "stage_back",
+      requestId,
+      __deps: deps,
+    });
+  }
+
+  if (normalizedAction === "compare" || normalizedAction === "go_deeper") {
+    return handleNavigationControl({
+      username: safeUsername,
+      action: normalizedAction,
+      requestId,
+      __deps: deps,
+    });
+  }
+
+  const activeBundleId = deps.getActiveBundleId?.(safeUsername);
+  const bundle = activeBundleId ? await deps.getBundleById?.(activeBundleId) : await deps.loadActiveBundleForUser?.(safeUsername);
+  if (!bundle?.bundleId) {
+    return buildPendingResponse({
+      requestId,
+      voiceAnswer: "I don't have an active analysis yet. Ask a health question first.",
+      reason: "missing_active_bundle",
+      orchestrator: {
+        controlAction: normalizedAction,
+      },
+    });
+  }
+
+  if (normalizedAction === "start_over") {
+    const replay = replayStoredStage({
+      bundle,
+      stageIndex: 0,
+      question: bundle.question || "",
+      requestId,
+    });
+    if (!replay?.ok || !replay.stage) {
+      deps.setRequestedStageIndex?.(safeUsername, 0);
+      return buildPendingResponse({
+        bundle,
+        requestId,
+        voiceAnswer: DEFAULT_PENDING_VOICE,
+        activeStageIndex: bundle.currentStageIndex || 0,
+        requestedStageIndex: 0,
+        reason: "start_over_pending",
+        orchestrator: {
+          controlAction: normalizedAction,
+        },
+      });
+    }
+    await markActiveStage({
+      deps,
+      username: safeUsername,
+      bundleId: bundle.bundleId,
+      stageIndex: 0,
+      requestKey: requestId || null,
+    });
+    return buildStageResult({
+      bundle,
+      stage: replay.stage,
+      requestId,
+      orchestrator: {
+        controlAction: normalizedAction,
+        stageGenerator: "replay_stored_stage",
+      },
+    });
+  }
+
+  const currentStage = getCurrentStage(bundle) || getLatestStage(bundle);
+  const basePayload = buildStagePayload({
+    bundle,
+    stageRecord: currentStage,
+    question: bundle.question || "",
+    requestId,
+  });
+  const followupAnswer = await deps.answerFollowupFromPayload?.({
+    payload: basePayload,
+    question: normalizedAction === "summarize"
+      ? "Overall, summarize what this chart means."
+      : "Explain what this chart means.",
+  });
+  const payload = {
+    ...basePayload,
+    ...(followupAnswer?.payload || {}),
+    answer_ready: true,
+    voice_answer: followupAnswer?.payload?.voice_answer || followupAnswer?.answer || basePayload.voice_answer,
+    spoken_answer: followupAnswer?.payload?.spoken_answer || followupAnswer?.answer || basePayload.spoken_answer,
+  };
   return {
-    ok: false,
-    status: "error",
-    reason: "unsupported_control_action",
-    voiceAnswer: "I could not process that control request yet.",
-    payload: null,
-    bundleId: bundleId || null,
-    stage: null,
+    ok: true,
+    status: "ready",
+    answerReady: true,
+    answer_ready: true,
+    voiceAnswer: payload.voice_answer,
+    voice_answer: payload.voice_answer,
+    requestId: requestId || payload.requestId || null,
+    stageCount: Number(payload.stageCount || getPlannerStageCount(bundle)),
+    activeStageIndex: Number(payload.activeStageIndex || bundle.currentStageIndex || 0),
+    bundle_complete: Boolean(payload.bundle_complete),
+    payload,
+    stage: currentStage,
+    bundleId: bundle.bundleId,
     orchestrator: {
       used: true,
-      bundleId: bundleId || null,
-      stageGenerator: "unsupported_control_action",
-      fallbackReason: "unsupported_control_action",
-      controlAction: safeAction,
+      controlAction: normalizedAction,
+      stageGenerator: "followup_answer",
     },
   };
 }
 
-/**
- * Backward-compatible shadow-mode entry.
- */
-async function runPlannerShadow({ username, question, activeBundle = null, userContext = null, __deps = null } = {}) {
-  const services = resolveOrchestratorDeps(__deps);
-  const safeUsername = normalizeUsername(username);
-  const safeQuestion = sanitizeQuestion(question);
+async function handleQuestionWithOrchestrator(options = {}) {
+  return startQuestionWithOrchestrator(options);
+}
 
-  if (!SHADOW_MODE_ENABLED) {
-    return { ok: false, skipped: true, reason: "shadow_disabled" };
+async function handleFollowupWithOrchestrator({
+  username,
+  question,
+  requestId = null,
+  __deps = null,
+} = {}) {
+  const normalized = String(question || "").trim().toLowerCase();
+  if (["show more", "next", "more", "continue", "yes"].includes(normalized)) {
+    return handleControlWithOrchestrator({ username, action: "show_more", requestId, __deps });
   }
-  if (!safeUsername || !safeQuestion) {
-    return { ok: false, skipped: true, reason: "missing_input" };
+  if (["go back", "back", "previous"].includes(normalized)) {
+    return handleControlWithOrchestrator({ username, action: "back", requestId, __deps });
   }
-  if (!services.isMongoReady()) {
-    return { ok: false, skipped: true, reason: "mongo_not_ready" };
-  }
-
-  const loadedActiveBundle = activeBundle || await services.loadActiveBundleForUser(safeUsername);
-  const plannerResult = await services.planQuestion({
-    question: safeQuestion,
-    username: safeUsername,
-    activeBundle: loadedActiveBundle,
-    userContext,
+  return startQuestionWithOrchestrator({
+    username,
+    question,
+    requestId,
+    requestSource: "followup",
+    __deps,
   });
-  const continuation = services.classifyContinuation({
-    question: safeQuestion,
-    activeBundleSummary: buildActiveBundleSummary(loadedActiveBundle),
-    plannerResult,
-  });
-  const bundleAction = resolveBundleAction({
-    activeBundle: loadedActiveBundle,
-    plannerResult,
-    continuationDecision: continuation.decision,
-  });
-
-  let resolvedBundle = null;
-  if (bundleAction.action === "continue") {
-    resolvedBundle = await services.continueExistingBundle({
-      activeBundle: loadedActiveBundle,
-      plannerResult,
-    });
-  } else if (bundleAction.action === "branch") {
-    resolvedBundle = await services.branchBundle({
-      activeBundle: loadedActiveBundle,
-      username: safeUsername,
-      question: safeQuestion,
-      plannerResult,
-    });
-  } else {
-    resolvedBundle = await services.startNewBundleFromPlanner({
-      username: safeUsername,
-      question: safeQuestion,
-      plannerResult,
-      activeBundle: loadedActiveBundle,
-      reason: "shadow_new_analysis",
-    });
-  }
-
-  if (resolvedBundle?.bundleId) {
-    if (typeof services.setActiveBundleForUser === "function") {
-      services.setActiveBundleForUser(safeUsername, resolvedBundle.bundleId);
-    } else if (typeof services.setActiveBundleId === "function") {
-      services.setActiveBundleId(safeUsername, resolvedBundle.bundleId);
-    }
-  }
-
-  return {
-    ok: Boolean(resolvedBundle),
-    action: bundleAction.action,
-    bundleId: resolvedBundle?.bundleId || null,
-    previousBundleId: loadedActiveBundle?.bundleId || null,
-    continuationDecision: continuation.decision,
-    plannerResult,
-  };
 }
 
 module.exports = {
   applyStageProgressionPolicy,
-  applySessionHintsToRequest,
-  buildActiveBundleSummary,
-  branchBundle,
-  continueExistingBundle,
-  finalizeBundleIfDone,
-  generateNextMissingStage,
-  generateOrReplayStage,
+  buildCombinedVoiceAnswer,
+  buildNarrationTimings,
+  clearRuntimeState,
+  fetchFitbitDataForBundle,
   handleControlWithOrchestrator,
   handleFollowupWithOrchestrator,
   handleNavigationControl,
   handleQuestionWithOrchestrator,
-  handleStageReplay,
-  maybeReplayStoredStage,
-  persistStageResult,
-  resolveBundleAction,
-  runPlannerShadow,
-  startNewBundleFromPlanner,
-  storePlannerResultInBundle,
+  startQuestionWithOrchestrator,
 };
