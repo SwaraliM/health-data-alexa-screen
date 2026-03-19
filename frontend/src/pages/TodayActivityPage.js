@@ -16,37 +16,123 @@ const TodayActivityPage = () => {
   const [weeklyStepData, setWeeklyStepData] = useState(null);
   const [activitiesList, setActivitiesList] = useState([]);
   const [currentTime, setCurrentTime] = useState(getCurrentTime());
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   const fetchTodayData = async () => {
     try {
+      setError(null);
       const date = getCurrentDate();
-      const response = await fetch(
-        `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit/${username}/activities/summary/${date}`
-      );
-      if (!response.ok) {
-        throw new Error("Network response was not ok");
+      // Use localhost for local development, ngrok URL only for production/external access
+      // Check if we're running locally (development mode)
+      const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const baseUrl = isLocalDev ? 'http://localhost:5001' : (process.env.REACT_APP_FETCH_DATA_URL || 'http://localhost:5001');
+      const url = `${baseUrl}/api/fitbit/${username}/activities/summary/${date}`;
+      console.log("Fetching today's data from:", url);
+      console.log("Using base URL:", baseUrl, "(isLocalDev:", isLocalDev, ")");
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'ngrok-skip-browser-warning': 'true', // Skip ngrok browser warning (if using ngrok)
+        },
+      });
+      
+      // First, get the response as text to check what we actually received
+      const responseText = await response.text();
+      
+      // Check if we got HTML instead of JSON
+      if (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html')) {
+        console.error("Received HTML response instead of JSON:", responseText.substring(0, 500));
+        setError(`Server returned HTML page instead of JSON. This means:
+1. The endpoint doesn't exist (check: ${url})
+2. Backend server might not be running
+3. The route might not be registered correctly
+Status: ${response.status}`);
+        setLoading(false);
+        return;
       }
-      const result = await response.json();
-      console.log(JSON.stringify(result, 2, null));
+      
+      // Try to parse as JSON
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error("Failed to parse response as JSON:", responseText.substring(0, 500));
+        setError(`Server returned invalid JSON. Response: ${responseText.substring(0, 200)}...`);
+        setLoading(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        console.error("Error fetching today's data:", response.status, result);
+        const errorMsg = `Failed to fetch today's data: ${response.status} ${response.statusText}. ${result.message || ''}`;
+        setError(errorMsg);
+        setLoading(false);
+        return;
+      }
+      
+      console.log("Today's data received:", JSON.stringify(result, null, 2));
       setTodayData(result);
+      setLoading(false);
     } catch (error) {
-      throw new Error("error");
+      console.error("Error in fetchTodayData:", error);
+      // If it's a JSON parse error, the response was likely HTML
+      if (error.message.includes("Unexpected token") || error.message.includes("JSON")) {
+        setError(`Server returned invalid response (likely HTML). Check:
+1. Backend server is running on ${process.env.REACT_APP_FETCH_DATA_URL}
+2. The endpoint /api/fitbit/${username}/activities/summary/${getCurrentDate()} exists
+3. Network connection is working
+Error: ${error.message}`);
+      } else {
+        setError(`Network error: ${error.message}. Check if backend server is running.`);
+      }
+      setLoading(false);
     }
   };
 
   const fetchWeeklyStepData = async () => {
     try {
       const date = getCurrentDate();
-      const response = await fetch(
-        `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit//${username}/activities/period/steps/date/${date}/7d`
-      );
-      if (!response.ok) {
-        throw new Error("Network response was not ok");
+      // Use localhost for local development, ngrok URL only for production/external access
+      const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const baseUrl = isLocalDev ? 'http://localhost:5001' : (process.env.REACT_APP_FETCH_DATA_URL || 'http://localhost:5001');
+      const url = `${baseUrl}/api/fitbit/${username}/activities/period/steps/date/${date}/7d`;
+      console.log("Fetching weekly step data from:", url);
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'ngrok-skip-browser-warning': 'true', // Skip ngrok browser warning (if using ngrok)
+        },
+      });
+      
+      // First, get the response as text to check what we actually received
+      const responseText = await response.text();
+      
+      // Check if we got HTML instead of JSON
+      if (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html')) {
+        console.error("Received HTML response for weekly data:", responseText.substring(0, 500));
+        return; // Don't set error for weekly data, just log it
       }
-      const result = await response.json();
+      
+      if (!response.ok) {
+        console.error("Error fetching weekly step data:", response.status, responseText);
+        return; // Don't set error for weekly data, just log it
+      }
+      
+      // Try to parse as JSON
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error("Failed to parse weekly step data as JSON:", responseText.substring(0, 500));
+        return;
+      }
+      console.log("Weekly step data received:", result);
       setWeeklyStepData(result);
     } catch (error) {
-      throw new Error("error");
+      console.error("Error in fetchWeeklyStepData:", error);
+      // Don't set error for weekly data, just log it
     }
   };
 
@@ -164,7 +250,24 @@ const TodayActivityPage = () => {
           </div>
         </div>
       ) : (
-        <div>loading...</div>
+        <div>
+          {loading ? (
+            <div>Loading...</div>
+          ) : error ? (
+            <div style={{ color: 'red', padding: '20px' }}>
+              <h2>Error loading data</h2>
+              <p>{error}</p>
+              <p>Please check:</p>
+              <ul>
+                <li>Backend server is running</li>
+                <li>Fitbit token is valid</li>
+                <li>Network connection is working</li>
+              </ul>
+            </div>
+          ) : (
+            <div>No data available</div>
+          )}
+        </div>
       )}
     </PageLayoutClean>
   );

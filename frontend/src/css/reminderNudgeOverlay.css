@@ -1,0 +1,325 @@
+/* Overlay Backdrop */
+.overlay-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+/* Reminder Card */
+.reminder-card,
+.nudge-card,
+.mood-card {
+  position: relative;
+  background: #ffffff;
+  border-radius: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  padding: 32px;
+  max-width: 500px;
+  width: 100%;
+  animation: slideIn 0.3s ease-out;
+}
+
+/* Close button (×) on all overlay cards */
+.reminder-overlay-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.08);
+  color: #333;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.reminder-overlay-close:hover {
+  background: rgba(0, 0, 0, 0.14);
+  color: #000;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.reminder-header,
+.nudge-header,
+.mood-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.reminder-header-visual {
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.reminder-icon,
+.nudge-icon,
+.mood-icon {
+  font-size: 32px;
+}
+
+.reminder-header h2,
+.nudge-header h2,
+.mood-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: #333;
+}
+
+.reminder-hero-caption {
+  margin: 8px 0 0;
+  font-size: 15px;
+  color: #667085;
+}
+
+.reminder-content,
+.nudge-content,
+.mood-content {
+  margin-bottom: 24px;
+}
+
+.reminder-medication-name {
+  font-size: 20px;
+  font-weight: 600;
+  color: #1890ff;
+  margin: 0 0 8px 0;
+}
+
+.reminder-dosage {
+  font-size: 16px;
+  color: #666;
+  margin: 0 0 12px 0;
+}
+
+.reminder-instructions {
+  font-size: 16px;
+  color: #333;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.nudge-suggestion {
+  font-size: 20px;
+  font-weight: 600;
+  color: #52c41a;
+  margin: 0 0 12px 0;
+}
+
+.nudge-details {
+  font-size: 16px;
+  color: #666;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.mood-content p {
+  font-size: 16px;
+  color: #666;
+  margin: 0;
+}
+
+/* Action Buttons */
+.reminder-actions,
+.nudge-actions,
+.mood-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reminder-button,
+.nudge-button,
+.mood-button {
+  flex: 1;
+  min-width: 120px;
+  padding: 14px 24px;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-height: 48px; /* Large tap target for accessibility */
+}
+
+.reminder-button.taken {
+  background: #52c41a;
+  color: white;
+}
+
+.reminder-button.taken:hover {
+  background: #73d13d;
+  transform: translateY(-2px);
+}
+
+.reminder-button.later {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.reminder-button.later:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.nudge-button.close {
+  background: #1890ff;
+  color: white;
+}
+
+.nudge-button.close:hover {
+  background: #40a9ff;
+  transform: translateY(-2px);
+}
+
+.mood-button {
+  min-width: 100px;
+}
+
+.mood-button.good {
+  background: #52c41a;
+  color: white;
+}
+
+.mood-button.good:hover {
+  background: #73d13d;
+  transform: translateY(-2px);
+}
+
+.mood-button.okay {
+  background: #faad14;
+  color: white;
+}
+
+.mood-button.okay:hover {
+  background: #ffc53d;
+  transform: translateY(-2px);
+}
+
+.mood-button.low {
+  background: #ff4d4f;
+  color: white;
+}
+
+.mood-button.low:hover {
+  background: #ff7875;
+  transform: translateY(-2px);
+}
+
+.mood-button.skip {
+  background: #f0f0f0;
+  color: #666;
+  flex: 1 1 100%;
+  margin-top: 8px;
+}
+
+.mood-button.skip:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.reminder-button.skip {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.reminder-button.skip:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+/* Skip confirmation (medication) */
+.reminder-skip-confirm {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.reminder-skip-confirm p {
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  color: #666;
+}
+
+.reminder-skip-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reminder-button.skip-yes {
+  background: #ff4d4f;
+  color: white;
+}
+
+.reminder-button.skip-yes:hover {
+  background: #ff7875;
+  transform: translateY(-2px);
+}
+
+.reminder-button.skip-cancel {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.reminder-button.skip-cancel:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+.nudge-button.later {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.nudge-button.later:hover {
+  background: #e0e0e0;
+  transform: translateY(-2px);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .reminder-card,
+  .nudge-card,
+  .mood-card {
+    padding: 24px;
+    max-width: 100%;
+  }
+  
+  .reminder-actions,
+  .mood-actions {
+    flex-direction: column;
+  }
+  
+  .reminder-button,
+  .mood-button {
+    width: 100%;
+  }
+}

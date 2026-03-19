@@ -44,16 +44,22 @@ loginRouter.post("/", async (req, res) => {
 loginRouter.post("/save-token", async (req, res) => {
   const { username, accessToken, refreshToken, tokenExpiry } = req.body;
 
+  if (!username || !accessToken || !refreshToken) {
+    return res.status(400).json({ message: "username, accessToken, and refreshToken are required." });
+  }
+
   try {
+    const name = String(username).trim();
+    const nameRegex = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
     const user = await User.findOneAndUpdate(
-      { username }, // using username to find user
+      { username: nameRegex },
       {
         accessToken,
         refreshToken,
-        tokenExpiry,
+        tokenExpiry: tokenExpiry != null ? tokenExpiry : undefined,
         isAuthorized: true,
       },
-      { new: true } // return updated user
+      { new: true }
     );
 
     if (!user) {

@@ -1,9 +1,35 @@
 .single-value-component {
-    background-color: var(--extra-light-blue-transparent-color);
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-  }
+  background: linear-gradient(180deg, #f7f9ff 0%, #ffffff 100%);
+  border-radius: 22px;
+  box-shadow: 0 14px 30px rgba(31, 42, 86, 0.1);
+  border: 1px solid rgba(91, 108, 255, 0.16);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 28px;
+  width: 100% !important;
+  min-height: 220px;
+  min-width: 280px;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+.single-value-component .ant-statistic {
+  width: 100%;
+  text-align: center;
+}
+
+.single-value-component .ant-statistic-title {
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  margin-bottom: 14px;
+  color: #2b3760;
+}
+
+.single-value-component .ant-statistic-content {
+  font-size: 50px !important;
+  font-weight: 900 !important;
+  line-height: 1.05;
+}

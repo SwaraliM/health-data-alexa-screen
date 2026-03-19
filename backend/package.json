@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/*.test.js services/qna/__tests__/*.test.js services/openai/__tests__/*.test.js"
   },
-  "author": "Xiaowen",
+  "author": "Swarali",
   "license": "ISC",
   "description": "",
   "dependencies": {

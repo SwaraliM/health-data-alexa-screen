@@ -1,0 +1,36 @@
+.custom-list {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+
+.custom-list .ant-card {
+  background: linear-gradient(180deg, #f7f9ff 0%, #ffffff 100%);
+  border-radius: 22px;
+  box-shadow: 0 14px 30px rgba(31, 42, 86, 0.1);
+  border: 1px solid rgba(91, 108, 255, 0.16);
+  min-height: 0;
+  min-width: 0;
+}
+
+.custom-list .ant-card-head {
+  padding: 16px 22px;
+  border-bottom: 1px solid rgba(91, 108, 255, 0.08);
+}
+
+.custom-list .ant-card-body {
+  padding: 16px 22px;
+}
+
+.custom-list .ant-list-item {
+  padding: 12px 0 !important;
+  border-bottom: 1px solid rgba(31, 42, 86, 0.08);
+}
+
+.custom-list .ant-list-item:last-child {
+  border-bottom: none;
+}
+
+.custom-list .ant-typography {
+  color: #526083;
+}

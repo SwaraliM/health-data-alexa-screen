@@ -9,20 +9,24 @@ const server = http.createServer(app); // Create http server and bind Express ap
 
 // Import the backend module with the WebSocket server function
 const backend = require('./backend/index');
+const { startReminderScheduler } = require('./backend/services/reminderScheduler');
 
 // Create WebSocket server using the same HTTP server
 backend.createWebSocketServer(server);
+startReminderScheduler();
 
 // Serve Backend APIs
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
+
 app.use('/api', backend.router);
 
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, 'frontend/build')));
 
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'frontend/build', 'index.html'));
+  const indexPath = path.join(__dirname, 'frontend/build', 'index.html');
+  res.sendFile(indexPath);
 });
 
 // Start data-sync server
