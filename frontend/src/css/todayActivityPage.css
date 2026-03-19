@@ -1,78 +1,87 @@
+/* Main Page Layout */
 .a-header {
-  height: 10%;
+  padding: 20px 40px;
   display: flex;
   flex-direction: row;
-  justify-content: space-around;
+  justify-content: space-between;
   align-items: center;
-}
-.a-body {
-  height: 90%;
-  display: flex;
-  flex-direction: row;
+  background-color: transparent;
+  margin-bottom: 20px;
 }
 
+.a-header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #333;
+  margin: 0;
+}
+
+.a-body {
+  /* CSS Grid: Sidebar fixed at 320px, Content takes the rest */
+  display: grid;
+  grid-template-columns: 350px 1fr;
+  gap: 24px;
+  padding: 0 40px 40px 40px;
+  max-width: 1600px;
+  margin: 0 auto;
+  min-height: 80vh;
+  box-sizing: border-box;
+}
+
+/* Sidebar (Activity List) */
 .a-activities-area {
-  height: 100%;
-  width: 30%;
   display: flex;
-  justify-content: center;
-  align-items: center;
+  flex-direction: column;
 }
 
 .a-activities {
-  background-color: var(--dark-blue-transparent-color);
-  height: 95%;
-  width: 95%;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: center;
-}
-
-
-.a-other-area {
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+  border: 1px solid #f0f0f0;
+  padding: 24px;
   height: 100%;
-  width: 70%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+/* Right Side (Charts & Rings) */
+.a-other-area {
   display: flex;
   flex-direction: column;
-  justify-content: space-around;
-  align-items: center;
+  gap: 24px;
+  min-width: 0; /* CRITICAL: Prevents charts from pushing bounds */
 }
 
-.a-single-value-area {
-  background-color: var(--dark-blue-transparent-color);
-  height: 18%;
-  width: 95%;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: row;
-  justify-content: space-around;
-  align-items: center;
-}
-
+/* The 4 Rings Row */
 .a-ring-area {
-  background-color: var(--dark-blue-transparent-color);
-  height: 40%;
-  width: 95%;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
-  display: flex;
-  flex-direction: row;
-  justify-content: space-around;
-  align-items: center;
+  display: grid;
+  /* Auto-fit: Creates as many columns as fit, min 200px each */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
 }
 
+/* The Chart Area */
 .a-chart-area {
-  background-color: var(--dark-blue-transparent-color);
-  height: 50%;
-  width: 95%;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+  border: 1px solid #f0f0f0;
+  padding: 24px;
+  min-height: 400px;
   display: flex;
-  flex-direction: row;
-  justify-content: space-around;
+  justify-content: center;
   align-items: center;
+  width: 100%; /* Ensures it fills the grid cell */
+  box-sizing: border-box;
+}
+
+/* Responsive: Stack columns on smaller screens */
+@media (max-width: 1100px) {
+  .a-body {
+    grid-template-columns: 1fr;
+  }
+  .a-activities-area {
+    height: 500px; /* Cap height when stacked */
+  }
 }

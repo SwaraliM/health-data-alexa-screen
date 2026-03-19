@@ -3,19 +3,37 @@ const WebSocket = require('ws');
 
 const clients = new Map();
 
+function getClientUsernames() {
+  return Array.from(clients.keys());
+}
+
 function createWebSocketServer(server) {
   const wss = new WebSocket.Server({ server });
 
   wss.on('connection', (ws) => {
-    console.log('New client connected');
+    // console.log('[backend websocket] new client connected', {
+    //   registeredClients: getClientUsernames(),
+    // });
 
     ws.on('message', (message) => {
-      const data = JSON.parse(message);
+      let data;
+      try {
+        data = JSON.parse(message);
+      } catch (error) {
+        console.warn('[backend websocket] dropped malformed registration payload', {
+          error: error.message,
+        });
+        return;
+      }
 
       if (data.username) {
-        clients.set(data.username, ws);
-        console.log(`Client connected: ${data.username}`);
-        console.log(`clients size: ${clients.size}`);
+        const userKey = String(data.username).trim().toLowerCase();
+        clients.set(userKey, ws);
+        // console.log('[backend websocket] client registered', {
+        //   username: userKey,
+        //   clientCount: clients.size,
+        //   registeredClients: getClientUsernames(),
+        // });
       }
     });
 
@@ -23,7 +41,11 @@ function createWebSocketServer(server) {
       for (let [username, client] of clients) {
         if (client === ws) {
           clients.delete(username);
-          console.log(`Client disconnected: ${username}`);
+          console.log('[backend websocket] client disconnected', {
+            username,
+            clientCount: clients.size,
+            registeredClients: getClientUsernames(),
+          });
         }
       }
     });

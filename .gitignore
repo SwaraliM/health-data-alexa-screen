@@ -1,1 +1,9 @@
 node_modules/
+.claude/
+lambda/
+
+# Environment and secrets (never commit)
+.env
+*.env
+backend/.env
+backend/services/qna/__tests__
