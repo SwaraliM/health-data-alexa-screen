@@ -143,6 +143,20 @@ function normalizeControlAction(rawAction = "") {
   return normalized;
 }
 
+// Detect navigation commands in question text.
+// Returns a control action string ("show_more", "back") or null.
+function detectNavigationAction(text) {
+  const cleaned = String(text || "").trim().toLowerCase().replace(/[!?.,]+$/g, "").replace(/\s+/g, " ");
+  if (!cleaned) return null;
+  const action = normalizeControlAction(cleaned);
+  // Only treat as navigation if it's short (avoid intercepting real questions
+  // like "next week how did I sleep").
+  if (cleaned.split(" ").length <= 4 && ["show_more", "back"].includes(action)) {
+    return action;
+  }
+  return null;
+}
+
 function buildLambdaResponse(result, { defaultStatus = "pending" } = {}) {
   const payload = result?.payload || null;
   const answerReady = result?.answer_ready === true
@@ -370,16 +384,9 @@ function handleCompatResume(username, userInput, res) {
     return true;
   }
 
-  res.json(buildPendingLambdaResponse({
-    requestId: job.requestId,
-    voiceAnswer: "",
-    status: "partial",
-    sessionHints: {
-      activeStageIndex: Number(job.result?.activeStageIndex || sessionHints.activeStageIndex || 0),
-      stageCount: Number(job.result?.stageCount || sessionHints.stageCount || 1),
-    },
-  }));
-  return true;
+  // Job is still pending — fall through to handleControlWithOrchestrator so it
+  // can check the live bundle state for ready stages and auto-advance.
+  return false;
 }
 
 async function loadActiveBundleForRouter(username) {
@@ -545,6 +552,44 @@ async function handleQuestion(username, userInput, res, sessionHintsOverride = n
       voice_answer: "I didn't catch that. Try asking about your health or fitness data.",
     });
   }
+
+  // ── Navigation guard ───────────────────────────────────────────────────────
+  // Catch navigation commands ("next", "back", etc.) that arrive as questions
+  // (e.g. from Lambda's NextIntent) and route them as control actions.
+  const navAction = enrichedIntent?.is_navigation
+    ? normalizeControlAction(enrichedIntent?.control_action || "show_more")
+    : detectNavigationAction(rawText);
+  if (navAction) {
+    routerLog("handleQuestion", "navigation detected — routing to control", {
+      username,
+      text: rawText,
+      action: navAction,
+    });
+    const controlHandler = getControlHandler();
+    if (typeof controlHandler === "function") {
+      const navResult = await controlHandler({
+        username,
+        action: navAction,
+        requestId: sanitizeText(userInput?.requestId || "", 120, "") || null,
+        sessionHints: sessionHintsOverride || userInput?.sessionHints || null,
+      }).catch(() => null);
+      if (hasReadyPayload(navResult) && navResult?.payload) {
+        emitResultToFrontend(username, navResult, "control");
+        emitStatus(username, "completed", "Chart ready.", {
+          stageCount: Number(navResult.stageCount || navResult.payload?.stageCount || 1),
+          activeStageIndex: Number(navResult.activeStageIndex || navResult.payload?.activeStageIndex || 0),
+        });
+        return res.json(buildLambdaResponse(navResult, { defaultStatus: "complete" }));
+      }
+      return res.json(buildPendingLambdaResponse({
+        result: navResult,
+        voiceAnswer: navResult?.voice_answer || "I'm preparing the next chart. Just a moment.",
+        status: "partial",
+        sessionHints: deriveSessionHints(username, sessionHintsOverride || userInput?.sessionHints || null),
+      }));
+    }
+  }
+  // ── End navigation guard ──────────────────────────────────────────────────
 
   // ── Small-talk guard ────────────────────────────────────────────────────────
   if (enrichedIntent?.intent_type === "general_conversation") {

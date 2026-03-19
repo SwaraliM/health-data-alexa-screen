@@ -704,6 +704,7 @@ function getDefaultDeps() {
     setActiveBundleId: sessionService.setActiveBundleId,
     setRequestedStageIndex: sessionService.setRequestedStageIndex,
     setSessionStageIndex: sessionService.setCurrentStageIndex,
+    setLastDeliveredStageIndex: sessionService.setLastDeliveredStageIndex,
     applyStageReplayState: sessionService.applyStageReplayState,
     getSessionState: sessionService.getActiveSessionState,
     getActiveBundleId: sessionService.getActiveBundleId,
@@ -868,6 +869,9 @@ async function markActiveStage({
     rejectStaleRequest: Boolean(requestKey),
   });
   deps.applyStageReplayState?.(username, { activeStageIndex: stageIndex, requestedStageIndex: null });
+  // Track that this stage was actually delivered so resume_pending auto-advance
+  // can distinguish "delivered stage 0" from "initial state (also 0)".
+  deps.setLastDeliveredStageIndex?.(username, stageIndex);
 }
 
 async function launchBackgroundStageJobs({
@@ -1521,10 +1525,22 @@ async function handleControlWithOrchestrator({
     const session = deps.getSessionState?.(safeUsername) || {};
     const bundleId = deps.getActiveBundleId?.(safeUsername) || session.activeBundleId || null;
     const bundle = bundleId ? await deps.getBundleById?.(bundleId) : await deps.loadActiveBundleForUser?.(safeUsername);
-    const targetIndex = session.requestedStageIndex == null
+    let targetIndex = session.requestedStageIndex == null
       ? Math.max(0, Number(bundle?.currentStageIndex || 0))
       : Math.max(0, Number(session.requestedStageIndex || 0));
     const requestKey = requestId || session.activeRequestKey || session.latestRequestKey || null;
+
+    // Auto-advance past already-delivered stages so repeated resume_pending
+    // calls cycle through the slide deck instead of replaying stage 0.
+    const stageCount = getPlannerStageCount(bundle);
+    const lastDelivered = Number(session.lastDeliveredStageIndex ?? -1);
+    const alreadyDelivered = lastDelivered >= targetIndex && bundle?.stages?.[targetIndex];
+    if (alreadyDelivered && lastDelivered + 1 < stageCount) {
+      targetIndex = lastDelivered + 1;
+    } else if (alreadyDelivered && lastDelivered + 1 >= stageCount) {
+      return buildTerminalResponse({ bundle, requestId: requestId || requestKey });
+    }
+
     const ready = await getStageIfReady({
       deps,
       username: safeUsername,

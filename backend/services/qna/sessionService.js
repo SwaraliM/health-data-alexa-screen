@@ -38,6 +38,7 @@ function ensureSession(username) {
       completedRequests: [],
       latestRequestByBundle: {},
       lastSource: null,
+      lastDeliveredStageIndex: -1,
       updatedAt: Date.now(),
     });
   }
@@ -72,6 +73,7 @@ function getActiveSessionState(username) {
       ...(session.latestRequestByBundle || {}),
     },
     lastSource: session.lastSource || null,
+    lastDeliveredStageIndex: session.lastDeliveredStageIndex ?? -1,
     updatedAt: session.updatedAt,
   };
 }
@@ -337,6 +339,14 @@ function endRequest({ username, requestKey, status = "completed", bundleId = nul
   return session;
 }
 
+function setLastDeliveredStageIndex(username, stageIndex) {
+  const session = ensureSession(username);
+  if (!session) return null;
+  session.lastDeliveredStageIndex = Number(stageIndex ?? -1);
+  touchSession(username);
+  return session;
+}
+
 function clearSessionState(username) {
   const userKey = normalizeUsername(username);
   if (!userKey) return false;
@@ -356,6 +366,7 @@ module.exports = {
   setActiveBundleId,
   setActiveBundleForUser,
   setCurrentStageIndex,
+  setLastDeliveredStageIndex,
   setLatestRequestKey,
   setRequestBundleOwnership,
   setRequestedStageIndex,
