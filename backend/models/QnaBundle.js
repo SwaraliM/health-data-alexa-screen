@@ -49,6 +49,12 @@ const qnaBundleSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Short GPT-generated display label shown on the QnA screen (e.g. "Sleep Quality Analysis").
+    displayLabel: {
+      type: String,
+      default: "",
+    },
+
     // Optional lineage link when bundle is branched from another bundle.
     parentBundleId: {
       type: String,

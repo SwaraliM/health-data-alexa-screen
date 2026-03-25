@@ -265,7 +265,7 @@ function buildTerminalResponse({ bundle = null, requestId = null } = {}) {
       screenText: stage.screenText || "That was the last visual in this analysis.",
       moreAvailable: false,
     },
-    question: bundle?.question || "",
+    question: bundle?.displayLabel || bundle?.question || "",
     requestId,
   });
   payload.answer_ready = true;
@@ -303,7 +303,7 @@ function buildStageResult({
   const payload = buildStagePayload({
     bundle,
     stageRecord: stage,
-    question: bundle?.question || "",
+    question: bundle?.displayLabel || bundle?.question || "",
     requestId,
     voiceAnswerSource,
   });
@@ -719,6 +719,7 @@ function getDefaultDeps() {
     startNewBundleFromPlanner: async ({
       username,
       question,
+      displayLabel = "",
       plannerResult,
       requestKey,
       requestSource = "alexa",
@@ -726,6 +727,7 @@ function getDefaultDeps() {
       const bundle = await createBundle({
         username,
         question,
+        displayLabel,
         plannerOutput: toStoredPlannerResult(plannerResult),
         metricsRequested: plannerResult.metricsNeeded || [],
         status: "active",
@@ -740,6 +742,7 @@ function getDefaultDeps() {
       activeBundle,
       username,
       question,
+      displayLabel = "",
       plannerResult,
       requestKey,
       requestSource = "followup",
@@ -748,6 +751,7 @@ function getDefaultDeps() {
         sourceBundle: activeBundle,
         username,
         question,
+        displayLabel,
         plannerOutput: toStoredPlannerResult(plannerResult),
         metricsRequested: plannerResult.metricsNeeded || [],
         requestKey,
@@ -1055,6 +1059,7 @@ async function startQuestionWithOrchestrator({
   const deps = mergeDeps(__deps);
   const safeUsername = normalizeUsername(username);
   const safeQuestion = sanitizeText(question, 320, "");
+  const safeDisplayLabel = sanitizeText(enrichedIntent?.display_label || "", 40, "");
   const begin = deps.beginRequest?.({
     username: safeUsername,
     source: requestSource,
@@ -1094,6 +1099,7 @@ async function startQuestionWithOrchestrator({
           activeBundle,
           username: safeUsername,
           question: safeQuestion,
+          displayLabel: safeDisplayLabel,
           plannerResult,
           requestKey,
           requestSource,
@@ -1114,6 +1120,7 @@ async function startQuestionWithOrchestrator({
         resolvedBundle = await deps.startNewBundleFromPlanner?.({
           username: safeUsername,
           question: safeQuestion,
+          displayLabel: safeDisplayLabel,
           plannerResult,
           requestKey,
           requestSource,
@@ -1386,7 +1393,7 @@ async function handleNavigationControl({
   const replay = replayStoredStage({
     bundle,
     stageIndex: targetIndex,
-    question: bundle.question || "",
+    question: bundle.displayLabel || bundle.question || "",
     requestId,
   });
   if (replay?.ok && replay.stage) {
@@ -1464,7 +1471,7 @@ async function handleNavigationControl({
         stage = deps.buildLegacyFallbackStage?.({
           bundle,
           requestId,
-          question: bundle.question || "",
+          question: bundle.displayLabel || bundle.question || "",
           stageIndex: targetIndex,
           reason: generation?.reason || "executor_failed",
         });
@@ -1615,7 +1622,7 @@ async function handleControlWithOrchestrator({
     const replay = replayStoredStage({
       bundle,
       stageIndex: 0,
-      question: bundle.question || "",
+      question: bundle.displayLabel || bundle.question || "",
       requestId,
     });
     if (!replay?.ok || !replay.stage) {
@@ -1654,7 +1661,7 @@ async function handleControlWithOrchestrator({
   const basePayload = buildStagePayload({
     bundle,
     stageRecord: currentStage,
-    question: bundle.question || "",
+    question: bundle.displayLabel || bundle.question || "",
     requestId,
   });
   const followupAnswer = await deps.answerFollowupFromPayload?.({

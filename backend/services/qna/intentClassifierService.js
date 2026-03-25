@@ -55,6 +55,7 @@ function buildFallbackIntent(userText = "") {
     rich_analysis_goal: sanitizeText(userText, 300, ""),
     time_range: "last_7_days",
     is_navigation: false,
+    display_label: "",
     _source: "fallback",
   };
 }
@@ -113,6 +114,7 @@ function normalizeClassifierOutput(raw) {
     : "new_health_question";
 
   const normalizedQuestion = sanitizeText(raw.normalized_question, 300, "");
+  const displayLabel = sanitizeText(raw.display_label, 40, "");
 
   const rawInterest = raw.user_interest && typeof raw.user_interest === "object"
     ? raw.user_interest
@@ -167,6 +169,7 @@ function normalizeClassifierOutput(raw) {
   return {
     intent_type: intentType,
     normalized_question: normalizedQuestion,
+    display_label: displayLabel,
     user_interest: userInterest,
     control_action: controlAction,
     conversational_context: conversationalContext,
