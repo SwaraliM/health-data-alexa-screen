@@ -260,6 +260,7 @@ function clearCompatState(username = null) {
 function startQuestionJob({
   username,
   question,
+  enrichedIntent = null,
   requestId = null,
   voiceDeadlineMs = VOICE_DEADLINE_MS,
   sessionHints = null,
@@ -295,6 +296,7 @@ function startQuestionJob({
       const rawResult = await questionHandler({
         username: userKey,
         question: safeQuestion,
+        enrichedIntent,
         requestId: safeRequestId,
         requestSource,
         voiceDeadlineMs,
@@ -634,7 +636,8 @@ async function handleQuestion(username, userInput, res, sessionHintsOverride = n
     });
   }
 
-  emitStageNavigation(username, { loading: true, question: rawText });
+  const displayLabel = sanitizeText(enrichedIntent?.display_label || "", 40, "");
+  emitStageNavigation(username, { loading: true, question: displayLabel || question });
   emitStatus(username, "loading", "Gathering your health data...");
 
   const sessionHints = sessionHintsOverride || userInput?.sessionHints || null;
@@ -642,6 +645,7 @@ async function handleQuestion(username, userInput, res, sessionHintsOverride = n
   const job = startQuestionJob({
     username,
     question,
+    enrichedIntent,
     requestId: sanitizeText(userInput?.requestId || "", 120, "") || null,
     voiceDeadlineMs: Number(userInput?.voiceDeadlineMs || 0) || VOICE_DEADLINE_MS,
     sessionHints,
@@ -881,7 +885,7 @@ alexaRouter._test = {
     const stage = getStageByIndex(bundle, bundle.currentStageIndex) || replayStoredStage({
       bundle,
       stageIndex: bundle.currentStageIndex,
-      question: bundle.question || "",
+      question: bundle.displayLabel || bundle.question || "",
     })?.stage;
     return stage || null;
   },

@@ -116,6 +116,7 @@ function logBundleTransition({ fromStatus = null, toStatus = null, bundleId = nu
 async function createBundle({
   username,
   question,
+  displayLabel = "",
   plannerOutput,
   metricsRequested,
   parentBundleId = null,
@@ -141,6 +142,7 @@ async function createBundle({
     username: normalizedUsername,
     status: nextStatus,
     question: String(question || "").trim(),
+    displayLabel: String(displayLabel || "").trim(),
     plannerOutput: sanitizePlannerOutput(plannerOutput ?? {}),
     metricsRequested: normalizeMetrics(metricsRequested),
     parentBundleId: parentBundleId ? String(parentBundleId) : null,
@@ -503,6 +505,7 @@ async function createBranchBundle({
   sourceBundle,
   username,
   question,
+  displayLabel = "",
   plannerOutput,
   metricsRequested,
   requestKey = null,
@@ -515,6 +518,7 @@ async function createBranchBundle({
   const branchDoc = await createBundle({
     username: username || sourceBundle.username,
     question,
+    displayLabel,
     plannerOutput: {
       ...(sanitizePlannerOutput(plannerOutput) || {}),
       branch: {

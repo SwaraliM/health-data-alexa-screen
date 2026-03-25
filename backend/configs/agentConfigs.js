@@ -596,6 +596,7 @@ const INTENT_CLASSIFIER_TEXT_FORMAT = {
     required: [
       "intent_type",
       "normalized_question",
+      "display_label",
       "user_interest",
       "control_action",
       "conversational_context",
@@ -620,6 +621,11 @@ const INTENT_CLASSIFIER_TEXT_FORMAT = {
         ],
       },
       normalized_question: { type: "string", maxLength: 300 },
+      display_label: {
+        type: "string",
+        maxLength: 40,
+        description: "A short 2–4 word noun phrase for display on screen (e.g. 'Sleep Quality Analysis', 'Daily Steps Report'). Empty string for navigation/control intents.",
+      },
       explicit_metrics: {
         type: "array",
         items: { type: "string" },
@@ -804,6 +810,17 @@ CLASSIFICATION LOGIC:
      - "Was I active?" → "What were my step counts recently?"
    → Keep medical/technical terms simple
 
+5. Generate display_label:
+   → A short 2–4 word noun phrase describing the topic for screen display
+   → Title-case noun phrase, NOT a sentence or question
+   → Examples:
+     - sleep question → "Sleep Quality Analysis"
+     - steps/activity → "Daily Steps Report"
+     - heart rate → "Heart Rate Trend"
+     - general health → "Weekly Health Summary"
+     - calories → "Calorie Burn Report"
+   → Empty string ("") for navigation_control and general_conversation intents
+
 5. Set confidence:
    → 0.9-1.0: Very clear intent
    → 0.7-0.9: Strong inference
@@ -853,13 +870,13 @@ is_navigation: Set to true ONLY for pure control phrases with no new health ques
 UPDATED EXAMPLES:
 
 User: "How have I been doing this week?"
-Output: {"intent_type":"new_health_question","normalized_question":"How has my overall health been this week?","user_interest":{"primary_metric":"","temporal_focus":"this_week","comparison_type":"none","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":[]},"confidence":0.9,"fallback_needed":false,"explicit_metrics":[],"inferred_metrics":["steps","calories","sleep_minutes","sleep_deep","sleep_rem","resting_hr","hrv"],"rich_analysis_goal":"Understand the user's overall health this week by comparing sleep quality, activity levels, caloric burn, and heart rate trends","time_range":"this_week","is_navigation":false}
+Output: {"intent_type":"new_health_question","normalized_question":"How has my overall health been this week?","display_label":"Weekly Health Summary","user_interest":{"primary_metric":"","temporal_focus":"this_week","comparison_type":"none","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":[]},"confidence":0.9,"fallback_needed":false,"explicit_metrics":[],"inferred_metrics":["steps","calories","sleep_minutes","sleep_deep","sleep_rem","resting_hr","hrv"],"rich_analysis_goal":"Understand the user's overall health this week by comparing sleep quality, activity levels, caloric burn, and heart rate trends","time_range":"this_week","is_navigation":false}
 
 User: "Yes"
-Output: {"intent_type":"navigation_control","normalized_question":"","user_interest":{"primary_metric":"","temporal_focus":"right_now","comparison_type":"none","concern_level":"curious"},"control_action":"show_more","conversational_context":{"references_previous_content":true,"implicit_continuation":false,"conversational_cues":["yes"]},"confidence":1.0,"fallback_needed":false,"explicit_metrics":[],"inferred_metrics":[],"rich_analysis_goal":"","time_range":"","is_navigation":true}
+Output: {"intent_type":"navigation_control","normalized_question":"","display_label":"","user_interest":{"primary_metric":"","temporal_focus":"right_now","comparison_type":"none","concern_level":"curious"},"control_action":"show_more","conversational_context":{"references_previous_content":true,"implicit_continuation":false,"conversational_cues":["yes"]},"confidence":1.0,"fallback_needed":false,"explicit_metrics":[],"inferred_metrics":[],"rich_analysis_goal":"","time_range":"","is_navigation":true}
 
 User: "How was my sleep last night?"
-Output: {"intent_type":"new_health_question","normalized_question":"How was my sleep quality last night?","user_interest":{"primary_metric":"sleep","temporal_focus":"last_night","comparison_type":"none","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":["sleep","last night"]},"confidence":0.95,"fallback_needed":false,"explicit_metrics":["sleep"],"inferred_metrics":["sleep_minutes","sleep_deep","sleep_rem","sleep_light","sleep_awake","sleep_efficiency","breathing_rate","spo2"],"rich_analysis_goal":"Determine whether last night's sleep was restorative by examining total duration, stage composition (deep, REM, light), efficiency, and overnight breathing patterns","time_range":"last_night","is_navigation":false}
+Output: {"intent_type":"new_health_question","normalized_question":"How was my sleep quality last night?","display_label":"Sleep Quality Analysis","user_interest":{"primary_metric":"sleep","temporal_focus":"last_night","comparison_type":"none","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":["sleep","last night"]},"confidence":0.95,"fallback_needed":false,"explicit_metrics":["sleep"],"inferred_metrics":["sleep_minutes","sleep_deep","sleep_rem","sleep_light","sleep_awake","sleep_efficiency","breathing_rate","spo2"],"rich_analysis_goal":"Determine whether last night's sleep was restorative by examining total duration, stage composition (deep, REM, light), efficiency, and overnight breathing patterns","time_range":"last_night","is_navigation":false}
 
 HARD RULES:
 - Return ONLY strict JSON matching the schema
@@ -867,6 +884,7 @@ HARD RULES:
 - When in doubt, prefer curious over concerned for concern_level
 - Set fallback_needed: true only if truly ambiguous (less than 50% confidence)
 - Keep normalized_question under 300 characters and in plain English
+- display_label MUST be a short title-case noun phrase (2–4 words) for health questions; empty string for navigation/control
 - is_navigation MUST be true for pure control/nav phrases and false for all health questions`.trim();
 
 const ENHANCED_PLANNER_SYSTEM_PROMPT = `You are a PLANNER for a Fitbit-backed health assistant used by older adults through Alexa + smart screen.
