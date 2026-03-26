@@ -1,13 +1,15 @@
 /**
  * backend/services/qna/plannerAgent.js
  *
- * Planner agent — decides exactly N charts (1–4) upfront.
- * Always returns a stagesPlan array (never null).
+ * V3-only planner — always returns sub_analyses[] + stages_plan[].
+ * Uses runPlannerRequestV2 for query decomposition.
  */
+
+"use strict";
 
 const { AGENT_CONFIGS } = require("../../configs/agentConfigs");
 const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
-const { runPlannerRequest } = require("../openai/plannerClient");
+const { runPlannerRequestV2 } = require("../openai/plannerClient");
 
 const PLANNER_AGENT_DEBUG = process.env.QNA_PLANNER_AGENT_DEBUG !== "false";
 
@@ -35,9 +37,10 @@ function normalizeStageTypes(stageTypes = []) {
 
 function fallbackPlannerResult({ question, enrichedIntent }) {
   const metrics = resolveRequestedMetrics(question);
+  const timeScope = sanitizeText(enrichedIntent?.time_range, 40, "last_7_days") || "last_7_days";
   return {
     metricsNeeded: metrics,
-    timeScope: sanitizeText(enrichedIntent?.time_range, 40, "last_7_days") || "last_7_days",
+    timeScope,
     analysisGoal: sanitizeText(enrichedIntent?.rich_analysis_goal || question, 140, "Summarize recent health trends"),
     candidateStageTypes: ["overview", "trend", "takeaway"],
     stagesPlan: [
@@ -45,6 +48,13 @@ function fallbackPlannerResult({ question, enrichedIntent }) {
       { stageIndex: 1, stageType: "trend", stageRole: "deep_dive", focusMetrics: metrics.slice(0, 4), chartType: "line", title: "", goal: "" },
       { stageIndex: 2, stageType: "takeaway", stageRole: "summary", focusMetrics: metrics.slice(0, 4), chartType: "list_summary", title: "", goal: "" },
     ],
+    subAnalyses: [{
+      id: "sa_primary",
+      label: sanitizeText(enrichedIntent?.rich_analysis_goal || question, 140, ""),
+      metrics_needed: metrics,
+      time_scope: timeScope,
+      analysis_type: "primary",
+    }],
     rawPlannerOutput: null,
     plannerVersion: AGENT_CONFIGS.planner.version,
     plannerMeta: {
@@ -57,12 +67,12 @@ function fallbackPlannerResult({ question, enrichedIntent }) {
 }
 
 /**
- * Plan a fresh question. Always returns stagesPlan with 1–4 stages.
+ * Plan a fresh question. Always returns stagesPlan + subAnalyses.
  *
  * @param {object} opts
- * @param {string} opts.question - Raw user question
+ * @param {string} opts.question
  * @param {string} opts.username
- * @param {object} [opts.enrichedIntent] - From intentClassifierService: { inferred_metrics, rich_analysis_goal, time_range, explicit_metrics }
+ * @param {object} [opts.enrichedIntent]
  * @param {object} [opts.userContext]
  * @param {string[]} [opts.forcedMetrics]
  */
@@ -78,35 +88,41 @@ async function planQuestion({ question, username, enrichedIntent = null, userCon
   });
 
   try {
-    const plan = await runPlannerRequest({
+    const plan = await runPlannerRequestV2({
       question: safeQuestion,
       enrichedIntent,
       userContext,
       forcedMetrics: Array.isArray(forcedMetrics) && forcedMetrics.length ? forcedMetrics : null,
     });
 
-    const normalizedMetrics = Array.isArray(plan.metrics_needed)
-      ? plan.metrics_needed
+    const normalizedMetrics = Array.isArray(plan.metrics_needed || plan.metricsNeeded)
+      ? (plan.metrics_needed || plan.metricsNeeded)
       : resolveRequestedMetrics(plan.metrics_needed);
 
-    // stagesPlan is guaranteed non-null from runPlannerRequest
-    const stagesPlan = Array.isArray(plan.stages_plan) && plan.stages_plan.length
-      ? plan.stages_plan
+    const stagesPlan = Array.isArray(plan.stages_plan || plan.stagesPlan) && (plan.stages_plan || plan.stagesPlan).length
+      ? (plan.stages_plan || plan.stagesPlan)
       : fallbackPlannerResult({ question: safeQuestion, enrichedIntent }).stagesPlan;
 
-    return {
+    const result = {
       metricsNeeded: normalizedMetrics,
-      timeScope: sanitizeText(plan.time_scope, 40, "last_7_days"),
-      analysisGoal: sanitizeText(plan.analysis_goal, 160, "Summarize recent health trends"),
-      candidateStageTypes: normalizeStageTypes(plan.candidate_stage_types),
+      timeScope: sanitizeText(plan.time_scope || plan.timeScope, 40, "last_7_days"),
+      analysisGoal: sanitizeText(plan.analysis_goal || plan.analysisGoal, 160, "Summarize recent health trends"),
+      candidateStageTypes: normalizeStageTypes(plan.candidate_stage_types || plan.candidateStageTypes),
       stagesPlan,
       rawPlannerOutput: plan.rawPlannerOutput || null,
-      plannerVersion: AGENT_CONFIGS.planner.version,
+      plannerVersion: plan.plannerMeta?.plannerVersion || AGENT_CONFIGS.planner.version,
       plannerMeta: {
         ...(plan.plannerMeta || {}),
         timestamp: new Date().toISOString(),
       },
     };
+
+    // Propagate sub_analyses if present
+    if (Array.isArray(plan.sub_analyses || plan.subAnalyses) && (plan.sub_analyses || plan.subAnalyses).length) {
+      result.subAnalyses = plan.sub_analyses || plan.subAnalyses;
+    }
+
+    return result;
   } catch (error) {
     plannerAgentLog("planner agent failed, fallback applied", {
       message: error?.message || String(error),

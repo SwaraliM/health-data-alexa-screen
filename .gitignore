@@ -1,6 +1,7 @@
 node_modules/
 .claude/
-lambda/
+.idea/
+# lambda/
 
 # Environment and secrets (never commit)
 .env

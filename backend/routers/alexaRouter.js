@@ -1,20 +1,23 @@
+/**
+ * backend/routers/alexaRouter.js
+ *
+ * Thin router — parses requests, dispatches to orchestrator, returns responses.
+ * NO state management. NO polling logic. Single timeout gate.
+ *
+ * Lambda sends: raw JSON string body + query params (followUp, tryAgain)
+ * Lambda expects: { GPTresponse: string, smallTalk: string }
+ */
+
 const express = require("express");
 const alexaRouter = express.Router();
 require("dotenv").config();
 
 const { getClients } = require("../websocket");
 const { generateSpeech } = require("../services/ttsService");
-const { classifyIntent } = require("../services/qna/intentClassifierService");
 const orchestrator = require("../services/qna/qnaOrchestrator");
-const { replayStoredStage, getStageByIndex } = require("../services/qna/stageService");
-const { getBundleById, loadActiveBundleForUser } = require("../services/qna/bundleService");
-const sessionService = require("../services/qna/sessionService");
+const { buildLambdaResponse } = require("../services/qna/responseBuilder");
 
 const ROUTER_DEBUG = process.env.QNA_ROUTER_DEBUG !== "false";
-const VOICE_DEADLINE_MS = Math.max(3000, Number(process.env.ALEXA_VOICE_DEADLINE_MS || 4200));
-const qnaJobs = new Map();
-const resumableJobsByUser = new Map();
-const latestQuestionJobByUser = new Map();
 
 function routerLog(scope, message, data = null) {
   if (!ROUTER_DEBUG) return;
@@ -33,22 +36,12 @@ function keyForUser(username = "") {
   return String(username || "amy").trim().toLowerCase();
 }
 
-function sanitizeText(value, max = 320, fallback = "") {
+function sanitizeText(value, max = 800, fallback = "") {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text ? text.slice(0, max) : fallback;
 }
 
-function deriveSessionHints(username, explicitHints = null) {
-  const session = sessionService.getActiveSessionState(username) || {};
-  return {
-    activeStageIndex: Number(
-      explicitHints?.activeStageIndex != null
-        ? explicitHints.activeStageIndex
-        : session.currentStageIndex || 0
-    ),
-    stageCount: Number(explicitHints?.stageCount || 1),
-  };
-}
+// ── WebSocket helpers ────────────────────────────────────────────────────────
 
 function emitToScreen(username, message) {
   const userKey = keyForUser(username);
@@ -85,721 +78,199 @@ function emitStageSet(username, payload, stageIndex) {
   });
 }
 
-function getQuestionHandler() {
-  if (typeof orchestrator.startQuestionWithOrchestrator === "function") {
-    return orchestrator.startQuestionWithOrchestrator;
+function emitResultToFrontend(username, result) {
+  if (!result?.payload) return;
+  const stageIndex = Number(result?.activeStageIndex || result?.payload?.activeStageIndex || 0);
+  if (stageIndex === 0) {
+    emitStageNavigation(username, result.payload);
+  } else {
+    emitStageSet(username, result.payload, stageIndex);
   }
-  if (typeof orchestrator.handleQuestionWithOrchestrator === "function") {
-    return orchestrator.handleQuestionWithOrchestrator;
-  }
-  return null;
 }
 
-function getControlHandler() {
-  if (typeof orchestrator.handleControlWithOrchestrator === "function") {
-    return orchestrator.handleControlWithOrchestrator;
-  }
-  return null;
-}
-
-function getRuntimeClearHandler() {
-  return typeof orchestrator.clearRuntimeState === "function"
-    ? orchestrator.clearRuntimeState
-    : null;
-}
+// ── Navigation detection ─────────────────────────────────────────────────────
 
 function normalizeControlAction(rawAction = "") {
-  const normalized = String(rawAction || "")
+  // Strip trailing " null" / " undefined" that Lambda appends when slot is empty
+  const cleaned = String(rawAction || "")
     .trim()
     .toLowerCase()
     .replace(/[!?.,]+$/g, "")
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, " ")
+    .replace(/\s+(null|undefined)$/, "");
 
-  if (!normalized) return "";
-  if (["stage_next", "next", "show more", "more", "continue", "go on", "yes", "okay", "ok", "sure"].includes(normalized)) {
+  if (!cleaned) return "";
+  if (["stage_next", "next", "next chart", "next please", "show more", "more", "continue", "go on", "yes", "okay", "ok", "sure", "resume"].includes(cleaned)) {
     return "show_more";
   }
-  if (["stage_back", "go back", "back", "previous"].includes(normalized)) {
+  if (["stage_back", "go back", "back", "previous"].includes(cleaned)) {
     return "back";
   }
-  if (["compare", "compare that", "compare this"].includes(normalized)) {
-    return "compare";
-  }
-  if (["go deeper", "go deeper into this", "tell me more"].includes(normalized)) {
-    return "go_deeper";
-  }
-  if (["explain", "explain that", "explain this", "what does this mean", "voice description"].includes(normalized)) {
-    return "explain";
-  }
-  if (["summarize", "summarize this"].includes(normalized)) {
-    return "summarize";
-  }
-  if (["start over", "restart", "start_over"].includes(normalized)) {
+  if (["start over", "restart", "start_over"].includes(cleaned)) {
     return "start_over";
   }
-  if (["resume_pending", "poll_pending"].includes(normalized)) {
-    return normalized;
+  if (["compare", "compare that", "compare this"].includes(cleaned)) {
+    return "compare";
   }
-  return normalized;
+  if (["go deeper", "go deeper into this", "tell me more"].includes(cleaned)) {
+    return "go_deeper";
+  }
+  if (["explain", "explain that", "explain this", "what does this mean"].includes(cleaned)) {
+    return "explain";
+  }
+  return "";
 }
 
-// Detect navigation commands in question text.
-// Returns a control action string ("show_more", "back") or null.
 function detectNavigationAction(text) {
   const cleaned = String(text || "").trim().toLowerCase().replace(/[!?.,]+$/g, "").replace(/\s+/g, " ");
   if (!cleaned) return null;
+  // Only treat short phrases as navigation (avoid intercepting real questions)
+  if (cleaned.split(" ").length > 4) return null;
   const action = normalizeControlAction(cleaned);
-  // Only treat as navigation if it's short (avoid intercepting real questions
-  // like "next week how did I sleep").
-  if (cleaned.split(" ").length <= 4 && ["show_more", "back"].includes(action)) {
-    return action;
-  }
+  if (["show_more", "back", "start_over", "go_deeper", "explain"].includes(action)) return action;
   return null;
 }
 
-function buildLambdaResponse(result, { defaultStatus = "pending" } = {}) {
-  const payload = result?.payload || null;
-  const answerReady = result?.answer_ready === true
-    || result?.answerReady === true
-    || payload?.answer_ready === true;
-  const rawStatus = String(result?.status || "").trim().toLowerCase();
-  let status = defaultStatus;
-
-  if (answerReady) status = "complete";
-  else if (rawStatus === "error") status = "partial";
-  else if (rawStatus === "partial") status = "partial";
-  else if (rawStatus === "pending") status = defaultStatus;
-  else if (rawStatus) status = rawStatus;
-
-  return {
-    ok: result?.ok !== false && answerReady,
-    status,
-    answer_ready: answerReady,
-    voice_answer: result?.voice_answer || result?.voiceAnswer || payload?.voice_answer || "",
-    voice_answer_source: result?.voice_answer_source || payload?.voice_answer_source || null,
-    requestId: result?.requestId || payload?.requestId || null,
-    stageCount: Number(result?.stageCount || payload?.stageCount || 1),
-    activeStageIndex: Number(result?.activeStageIndex || payload?.activeStageIndex || 0),
-    bundle_complete: result?.bundle_complete === true || payload?.bundle_complete === true,
-    payload,
-  };
-}
-
-function buildPendingLambdaResponse({
-  result = null,
-  requestId = null,
-  voiceAnswer = "",
-  status = "partial",
-  sessionHints = null,
-} = {}) {
-  const hints = sessionHints || { activeStageIndex: 0, stageCount: 1 };
-  return {
-    ok: false,
-    status,
-    answer_ready: false,
-    voice_answer: result?.voice_answer || result?.voiceAnswer || voiceAnswer,
-    voice_answer_source: result?.voice_answer_source || result?.payload?.voice_answer_source || null,
-    requestId: result?.requestId || requestId || null,
-    stageCount: Number(result?.stageCount || result?.payload?.stageCount || hints.stageCount || 1),
-    activeStageIndex: Number(result?.activeStageIndex || result?.payload?.activeStageIndex || hints.activeStageIndex || 0),
-    bundle_complete: false,
-    payload: null,
-  };
-}
-
-function hasReadyPayload(result) {
-  return result?.answer_ready === true
-    || result?.answerReady === true
-    || result?.payload?.answer_ready === true;
-}
-
-function emitResultToFrontend(username, result, mode = "question") {
-  if (!result?.payload) return;
-  const stageIndex = Number(result?.activeStageIndex || result?.payload?.activeStageIndex || 0);
-  if (mode === "question" || (mode === "resume" && stageIndex === 0)) {
-    emitStageNavigation(username, result.payload);
-    return;
-  }
-  emitStageSet(username, result.payload, stageIndex);
-}
-
-function setResumableJob(username, record) {
-  const userKey = keyForUser(username);
-  if (!record) {
-    resumableJobsByUser.delete(userKey);
-    return null;
-  }
-  resumableJobsByUser.set(userKey, { ...record });
-  return resumableJobsByUser.get(userKey);
-}
-
-function getResumableJob(username) {
-  return resumableJobsByUser.get(keyForUser(username)) || null;
-}
-
-function clearCompatState(username = null) {
-  if (username) {
-    const userKey = keyForUser(username);
-    resumableJobsByUser.delete(userKey);
-    latestQuestionJobByUser.delete(userKey);
-    sessionService.clearSessionState(userKey);
-    for (const [requestId, job] of qnaJobs.entries()) {
-      if (job?.username === userKey) qnaJobs.delete(requestId);
-    }
-    return;
-  }
-
-  for (const userKey of latestQuestionJobByUser.keys()) {
-    sessionService.clearSessionState(userKey);
-  }
-  qnaJobs.clear();
-  resumableJobsByUser.clear();
-  latestQuestionJobByUser.clear();
-}
-
-function startQuestionJob({
-  username,
-  question,
-  enrichedIntent = null,
-  requestId = null,
-  voiceDeadlineMs = VOICE_DEADLINE_MS,
-  sessionHints = null,
-  requestSource = "alexa",
-} = {}) {
-  const userKey = keyForUser(username);
-  const safeQuestion = sanitizeText(question, 320, "");
-  const safeRequestId = sanitizeText(requestId || "", 120, "") || `req_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  const questionHandler = getQuestionHandler();
-
-  const job = {
-    requestId: safeRequestId,
-    username: userKey,
-    question: safeQuestion,
-    status: "pending",
-    result: null,
-    visualPayload: null,
-    error: null,
-  };
-  qnaJobs.set(safeRequestId, job);
-  latestQuestionJobByUser.set(userKey, safeRequestId);
-  setResumableJob(userKey, {
-    requestId: safeRequestId,
-    status: "pending",
-    delivered: false,
-  });
-
-  Promise.resolve()
-    .then(async () => {
-      if (typeof questionHandler !== "function") {
-        throw new Error("question handler unavailable");
-      }
-      const rawResult = await questionHandler({
-        username: userKey,
-        question: safeQuestion,
-        enrichedIntent,
-        requestId: safeRequestId,
-        requestSource,
-        voiceDeadlineMs,
-        sessionHints,
-      });
-      if (latestQuestionJobByUser.get(userKey) !== safeRequestId) return;
-
-      const lambdaResult = buildLambdaResponse(rawResult, {
-        defaultStatus: rawResult?.status === "pending" ? "pending" : "partial",
-      });
-      job.status = lambdaResult.answer_ready ? "ready" : lambdaResult.status;
-      job.result = lambdaResult;
-      job.visualPayload = rawResult?.payload || lambdaResult.payload || null;
-      job.error = rawResult?.ok === false && !lambdaResult.answer_ready ? rawResult?.reason || null : null;
-      setResumableJob(userKey, {
-        requestId: safeRequestId,
-        status: job.status,
-        delivered: false,
-      });
-    })
-    .catch((error) => {
-      if (latestQuestionJobByUser.get(userKey) !== safeRequestId) return;
-      job.status = "error";
-      job.error = error?.message || "question_failed";
-      job.result = buildPendingLambdaResponse({
-        requestId: safeRequestId,
-        voiceAnswer: "I couldn't retrieve your health data. Please try asking again.",
-        status: "partial",
-        sessionHints: deriveSessionHints(userKey, sessionHints),
-      });
-      setResumableJob(userKey, {
-        requestId: safeRequestId,
-        status: "error",
-        delivered: false,
-      });
-    });
-
-  return job;
-}
-
-function handleCompatResume(username, userInput, res) {
-  const userKey = keyForUser(username);
-  const action = normalizeControlAction(userInput?.action || "");
-  if (!["resume_pending", "poll_pending"].includes(action)) return false;
-
-  const explicitRequestId = sanitizeText(userInput?.requestId || "", 120, "") || null;
-  const resumable = getResumableJob(userKey);
-  const sessionHints = deriveSessionHints(userKey, userInput?.sessionHints || null);
-
-  if (!resumable) {
-    // No job tracked — fall through to handleControlWithOrchestrator so that
-    // resume_pending checks the in-memory runtime stage state properly.
-    return false;
-  }
-
-  if (explicitRequestId && resumable.requestId && explicitRequestId !== resumable.requestId) {
-    res.json(buildPendingLambdaResponse({
-      requestId: explicitRequestId,
-      voiceAnswer: "There's no pending answer right now.",
-      status: "partial",
-      sessionHints,
-    }));
-    return true;
-  }
-
-  const job = qnaJobs.get(resumable.requestId);
-  if (!job) {
-    setResumableJob(userKey, null);
-    res.json(buildPendingLambdaResponse({
-      requestId: resumable.requestId,
-      voiceAnswer: "There's no pending answer right now.",
-      status: "partial",
-      sessionHints,
-    }));
-    return true;
-  }
-
-  if (job.status === "ready" && job.result) {
-    setResumableJob(userKey, null);
-    res.json(buildLambdaResponse(job.result, { defaultStatus: "complete" }));
-    return true;
-  }
-
-  if (job.status === "error" && job.result) {
-    setResumableJob(userKey, null);
-    res.json(buildLambdaResponse(job.result, { defaultStatus: "partial" }));
-    return true;
-  }
-
-  // Job is still pending — fall through to handleControlWithOrchestrator so it
-  // can check the live bundle state for ready stages and auto-advance.
-  return false;
-}
-
-async function loadActiveBundleForRouter(username) {
-  const activeBundleId = sessionService.getActiveBundleId(username);
-  if (activeBundleId) {
-    const bundle = await getBundleById(activeBundleId);
-    if (bundle) return bundle;
-  }
-  return loadActiveBundleForUser(username);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Lambda compat handler
-//
-// The Alexa Lambda sends a raw JSON-encoded string as the body (not an object)
-// and appends followUp + tryAgain as query params:
-//   POST /api/alexa?followUp=false&tryAgain=false   body: "\"show my steps\""
-//   POST /api/alexa?followUp=true&tryAgain=true      body: "\"trying again\""
-//
-// This handler translates that into the router's internal job system and always
-// responds with { GPTresponse, smallTalk } — the format the Lambda polls for.
-// ─────────────────────────────────────────────────────────────────────────────
-async function handleLambdaCompatRequest(req, res) {
-  const rawText = sanitizeText(String(req.body || ""), 320, "");
-  const isPolling = req.query?.tryAgain === "true";
-  const username = "amy";
-
-  function lambdaReply(gptResponse, smallTalk = "") {
-    return res.json({ GPTresponse: gptResponse, smallTalk });
-  }
-
-  // ── POLL: Lambda is checking whether the background job has finished ────────
-  if (isPolling) {
-    routerLog("lambda-compat", "poll request", { username, rawText });
-
-    const resumable = getResumableJob(username);
-    if (!resumable) {
-      return lambdaReply("Still working on that");
-    }
-
-    // Keep polling for up to 5 seconds — utilizes the full time Alexa allows
-    // for the TryAgain/Resume turn so we avoid an extra round-trip when possible.
-    const REQUEST_START_MS = Date.now();
-    const POLL_BUDGET_MS = 5000;
-    const deadline = REQUEST_START_MS + POLL_BUDGET_MS;
-
-    while (Date.now() < deadline) {
-      const job = qnaJobs.get(resumable.requestId);
-
-      if (!job) {
-        setResumableJob(username, null);
-        return lambdaReply("Still working on that");
-      }
-
-      if (job.status === "ready" && job.result) {
-        setResumableJob(username, null);
-        if (job.result?.payload) {
-          emitResultToFrontend(username, job.result, "question");
-          emitStatus(username, "completed", "Your health analysis is ready.", {
-            stageCount: Number(job.result.stageCount || job.result.payload?.stageCount || 1),
-          });
-        }
-        const voice = sanitizeText(
-          job.result.voice_answer || "Your health analysis is ready. Take a look at the chart on the screen.",
-          320,
-          "Here are your results."
-        );
-        return lambdaReply(voice);
-      }
-
-      if (job.status === "error") {
-        setResumableJob(username, null);
-        return lambdaReply("I couldn't retrieve your health data. Please try asking again.");
-      }
-
-      await new Promise((r) => setTimeout(r, 200));
-    }
-
-    return lambdaReply("Still working on that");
-  }
-
-  // ── QUESTION: new question from Lambda ──────────────────────────────────────
-  // Lambda prepends "start " (with space) on the very first question of a session — strip it.
-  const questionText = rawText.startsWith("start ")
-    ? sanitizeText(rawText.slice(6), 320, "")
-    : rawText;
-
-  if (!questionText || questionText.length < 2) {
-    return lambdaReply("I didn't catch that. Try asking about your health or fitness data.");
-  }
-
-  if (typeof getQuestionHandler() !== "function") {
-    return lambdaReply("The health analysis service is temporarily unavailable. Please try again shortly.");
-  }
-
-  routerLog("lambda-compat", "new question", { username, question: questionText });
-
-  // Navigate screen to /qna with a loading state right away
-  emitStageNavigation(username, { loading: true, question: questionText });
-  emitStatus(username, "loading", "Gathering your health data...");
-
-  // Kick off the question job in the background and poll for the full 6-second
-  // budget — this way Alexa gets the answer in one round-trip whenever possible.
-  const REQUEST_START_MS = Date.now();
-  const TOTAL_BUDGET_MS = 6000;
-
-  const job = startQuestionJob({
-    username,
-    question: questionText,
-    voiceDeadlineMs: VOICE_DEADLINE_MS,
-    sessionHints: null,
-    requestSource: "alexa",
-  });
-
-  const deadline = REQUEST_START_MS + TOTAL_BUDGET_MS;
-  while (Date.now() < deadline) {
-    if (job.status === "ready" && job.result) {
-      setResumableJob(username, null);
-      if (job.result?.payload) {
-        emitResultToFrontend(username, job.result, "question");
-        emitStatus(username, "completed", "Your health analysis is ready.", {
-          stageCount: Number(job.result.stageCount || job.result.payload?.stageCount || 1),
-        });
-      }
-      const voice = sanitizeText(
-        job.result.voice_answer || "Your health analysis is ready. Take a look at the chart on your screen.",
-        320,
-        "Here are your results."
-      );
-      return lambdaReply(voice);
-    }
-
-    if (job.status === "error") {
-      return lambdaReply("I had some trouble retrieving your health data. Please try again.");
-    }
-
-    await new Promise((r) => setTimeout(r, 200));
-  }
-
-  // Budget elapsed — job continues running in background.
-  // Lambda will poll again with tryAgain=true on the next Alexa turn.
-  routerLog("lambda-compat", "6s budget elapsed — returning still-working", {
-    username,
-    requestId: job.requestId,
-  });
-  return lambdaReply("Still working on that");
-}
-
-async function handleQuestion(username, userInput, res, sessionHintsOverride = null) {
-  // Track wall-clock time from the very start so the job polling deadline
-  // automatically shrinks to fit however long classifyIntent takes.
-  const REQUEST_START_MS = Date.now();
-  const TOTAL_BUDGET_MS = 6000;
-
-  const rawText = sanitizeText(userInput?.text || userInput?.question || "", 320, "");
-  const enrichedIntent = await classifyIntent(rawText, {}).catch(() => null);
-  const question = sanitizeText(enrichedIntent?.normalized_question || rawText, 320, "");
-
-  if (!question) {
-    return res.status(400).json({
-      ok: false,
-      answer_ready: false,
-      voice_answer: "I didn't catch that. Try asking about your health or fitness data.",
-    });
-  }
-
-  // ── Navigation guard ───────────────────────────────────────────────────────
-  // Catch navigation commands ("next", "back", etc.) that arrive as questions
-  // (e.g. from Lambda's NextIntent) and route them as control actions.
-  const navAction = enrichedIntent?.is_navigation
-    ? normalizeControlAction(enrichedIntent?.control_action || "show_more")
-    : detectNavigationAction(rawText);
-  if (navAction) {
-    routerLog("handleQuestion", "navigation detected — routing to control", {
-      username,
-      text: rawText,
-      action: navAction,
-    });
-    const controlHandler = getControlHandler();
-    if (typeof controlHandler === "function") {
-      const navResult = await controlHandler({
-        username,
-        action: navAction,
-        requestId: sanitizeText(userInput?.requestId || "", 120, "") || null,
-        sessionHints: sessionHintsOverride || userInput?.sessionHints || null,
-      }).catch(() => null);
-      if (hasReadyPayload(navResult) && navResult?.payload) {
-        emitResultToFrontend(username, navResult, "control");
-        emitStatus(username, "completed", "Chart ready.", {
-          stageCount: Number(navResult.stageCount || navResult.payload?.stageCount || 1),
-          activeStageIndex: Number(navResult.activeStageIndex || navResult.payload?.activeStageIndex || 0),
-        });
-        return res.json(buildLambdaResponse(navResult, { defaultStatus: "complete" }));
-      }
-      return res.json(buildPendingLambdaResponse({
-        result: navResult,
-        voiceAnswer: navResult?.voice_answer || "I'm preparing the next chart. Just a moment.",
-        status: "partial",
-        sessionHints: deriveSessionHints(username, sessionHintsOverride || userInput?.sessionHints || null),
-      }));
-    }
-  }
-  // ── End navigation guard ──────────────────────────────────────────────────
-
-  // ── Small-talk guard ────────────────────────────────────────────────────────
-  if (enrichedIntent?.intent_type === "general_conversation") {
-    routerLog("handleQuestion", "small talk detected — routing to resume_pending", {
-      username,
-      text: rawText,
-      confidence: enrichedIntent?.confidence,
-    });
-    const controlHandler = getControlHandler();
-    if (typeof controlHandler === "function") {
-      const resumeResult = await controlHandler({
-        username,
-        action: "resume_pending",
-        requestId: sanitizeText(userInput?.requestId || "", 120, "") || null,
-        sessionHints: sessionHintsOverride || userInput?.sessionHints || null,
-      }).catch(() => null);
-      if (hasReadyPayload(resumeResult)) {
-        emitResultToFrontend(username, resumeResult, "resume");
-        return res.json(buildLambdaResponse(resumeResult, { defaultStatus: "complete" }));
-      }
-      return res.json(buildPendingLambdaResponse({
-        result: resumeResult,
-        voiceAnswer: resumeResult?.voice_answer
-          || "Your analysis is still being prepared. Say next when you'd like to continue.",
-        status: "partial",
-        sessionHints: deriveSessionHints(username, sessionHintsOverride || userInput?.sessionHints || null),
-      }));
-    }
-    return res.json(buildPendingLambdaResponse({
-      voiceAnswer: "I'm working on your data. Go ahead and ask me a health question whenever you're ready.",
-      status: "partial",
-      sessionHints: deriveSessionHints(username, sessionHintsOverride || userInput?.sessionHints || null),
-    }));
-  }
-  // ── End small-talk guard ────────────────────────────────────────────────────
-
-  if (typeof getQuestionHandler() !== "function") {
-    return res.status(500).json({
-      ok: false,
-      answer_ready: false,
-      voice_answer: "The health analysis service is temporarily unavailable. Please try again shortly.",
-    });
-  }
-
-  const displayLabel = sanitizeText(enrichedIntent?.display_label || "", 40, "");
-  emitStageNavigation(username, { loading: true, question: displayLabel || question });
-  emitStatus(username, "loading", "Gathering your health data...");
-
-  const sessionHints = sessionHintsOverride || userInput?.sessionHints || null;
-
-  const job = startQuestionJob({
-    username,
-    question,
-    enrichedIntent,
-    requestId: sanitizeText(userInput?.requestId || "", 120, "") || null,
-    voiceDeadlineMs: Number(userInput?.voiceDeadlineMs || 0) || VOICE_DEADLINE_MS,
-    sessionHints,
-    requestSource: "alexa",
-  });
-
-  const deadline = REQUEST_START_MS + TOTAL_BUDGET_MS;
-  while (Date.now() < deadline) {
-    if (job.status === "ready" && job.result) {
-      setResumableJob(username, null);
-      if (job.result?.payload) {
-        emitResultToFrontend(username, job.result, "question");
-        emitStatus(username, "completed", "Your health analysis is ready.", {
-          stageCount: Number(job.result.stageCount || job.result.payload?.stageCount || 1),
-        });
-      }
-      return res.json(buildLambdaResponse(job.result, { defaultStatus: "complete" }));
-    }
-    if (job.status === "error") {
-      return res.json(buildPendingLambdaResponse({
-        result: job.result,
-        voiceAnswer: "I couldn't retrieve your health data. Please try asking again.",
-        status: "partial",
-        sessionHints: deriveSessionHints(username, sessionHints),
-      }));
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-
-  routerLog("handleQuestion", "voice deadline reached — returning pending", { username, requestId: job.requestId });
-  return res.json(buildPendingLambdaResponse({
-    requestId: job.requestId,
-    voiceAnswer: "I'm still pulling your data together. Give me just a moment more.",
-    status: "pending",
-    sessionHints: deriveSessionHints(username, sessionHints),
-  }));
-}
-
-async function handleControl(username, userInput, res, sessionHintsOverride = null) {
-  if (handleCompatResume(username, userInput, res)) return;
-
-  const action = normalizeControlAction(userInput?.action || "");
-  const sessionHints = sessionHintsOverride || userInput?.sessionHints || null;
-  const controlHandler = getControlHandler();
-
-  if (!action) {
-    return res.json(buildPendingLambdaResponse({
-      voiceAnswer: "I couldn't load that section. Please try again.",
-      status: "partial",
-      sessionHints: deriveSessionHints(username, sessionHints),
-    }));
-  }
-
-  if (typeof controlHandler !== "function") {
-    return res.json(buildPendingLambdaResponse({
-      voiceAnswer: "I couldn't load that section. Please try again.",
-      status: "partial",
-      sessionHints: deriveSessionHints(username, sessionHints),
-    }));
-  }
-
-  if (!sessionService.getActiveBundleId(username)
-    && !userInput?.requestId
-    && !sessionHints?.activeStageIndex
-    && !sessionHints?.stageCount
-    && ["show_more", "back", "compare", "go_deeper", "explain", "summarize", "start_over"].includes(action)) {
-    return res.json(buildPendingLambdaResponse({
-      voiceAnswer: "I don't have an active health analysis yet. Try asking a health question first.",
-      status: "partial",
-      sessionHints: deriveSessionHints(username, sessionHints),
-    }));
-  }
-
-  const result = await controlHandler({
-    username,
-    action,
-    requestId: sanitizeText(userInput?.requestId || "", 120, "") || null,
-    sessionHints,
-  });
-
-  if (hasReadyPayload(result) && result?.payload) {
-    emitResultToFrontend(username, result, action === "resume_pending" ? "resume" : "control");
-    emitStatus(username, "completed", "Chart ready.", {
-      stageCount: Number(result.stageCount || result.payload?.stageCount || 1),
-      activeStageIndex: Number(result.activeStageIndex || result.payload?.activeStageIndex || 0),
-    });
-    return res.json(buildLambdaResponse(result, { defaultStatus: "complete" }));
-  }
-
-  const fallbackVoice = result?.voice_answer
-    || result?.voiceAnswer
-    || (["show_more", "back", "compare", "go_deeper"].includes(action)
-      ? "I'm still preparing the next chart. Just a moment."
-      : "I couldn't move to that section yet.");
-  emitStatus(username, "loading", "Preparing the next chart...");
-  return res.json(buildPendingLambdaResponse({
-    result,
-    voiceAnswer: fallbackVoice,
-    status: "partial",
-    sessionHints: deriveSessionHints(username, sessionHints),
-  }));
-}
+// ── Main route: Lambda compat handler ────────────────────────────────────────
 
 alexaRouter.post("/", async (req, res) => {
-  // ── Lambda compat: detect raw-string body sent by the Alexa Lambda ──────────
-  // The Lambda posts a JSON-encoded string (e.g. "\"show my steps\"") rather
-  // than a structured object, so req.body will be a JS string after JSON parsing.
+  // Lambda sends raw JSON string; structured callers send an object
   if (typeof req.body === "string") {
     try {
-      return await handleLambdaCompatRequest(req, res);
+      return await handleLambdaRequest(req, res);
     } catch (error) {
-      routerError("lambda-compat", "request failed", error);
-      emitStatus("amy", "error", "Something went wrong. Please try again.");
-      return res.status(500).json({ GPTresponse: "I had some trouble with that. Please try again.", smallTalk: "" });
+      routerError("lambda", "request failed", error);
+      return res.status(500).json({ GPTresponse: "I had some trouble. Please try again.", smallTalk: "" });
     }
   }
-  // ── Structured object path (browser / non-Lambda callers) ───────────────────
 
+  // Structured object path (browser / non-Lambda callers)
   const username = keyForUser(req.body?.username || req.body?.userInput?.username || "");
   const userInput = req.body?.userInput || {};
   const type = String(userInput?.type || "question").trim().toLowerCase();
 
-  routerLog("alexa", "incoming request", {
-    username,
-    type,
-    action: userInput?.action || null,
-  });
-
   try {
     if (type === "control") {
-      return await handleControl(username, userInput, res);
-    }
-
-    if (type === "utterance") {
-      const utterance = sanitizeText(userInput?.text || "", 320, "");
-      const enrichedIntent = await classifyIntent(utterance, {}).catch(() => null);
-      if (enrichedIntent?.is_navigation) {
-        const mappedAction = normalizeControlAction(enrichedIntent?.control_action || "show_more");
-        return await handleControl(username, { ...userInput, action: mappedAction, type: "control" }, res);
+      const action = normalizeControlAction(userInput?.action || "");
+      if (!action) {
+        return res.json({ ok: false, answer_ready: false, voice_answer: "I didn't catch that." });
       }
-      return await handleQuestion(username, { ...userInput, text: utterance }, res);
+      const result = await orchestrator.handleNavigation({ username, action, requestId: null });
+      if (result?.payload) emitResultToFrontend(username, result);
+      return res.json(result);
     }
 
-    return await handleQuestion(username, userInput, res);
-  } catch (error) {
-    routerError("alexa", "request failed", error);
-    emitStatus(username, "error", "Something went wrong. Please try again.");
-    return res.status(500).json({
-      ok: false,
-      answer_ready: false,
-      voice_answer: "I had trouble with your health data. Please try again.",
+    // Question or utterance — run through the pipeline
+    const questionText = sanitizeText(userInput?.text || userInput?.question || "", 320, "");
+    const navAction = detectNavigationAction(questionText);
+    if (navAction) {
+      const result = await orchestrator.handleNavigation({ username, action: navAction });
+      if (result?.payload) emitResultToFrontend(username, result);
+      return res.json(result);
+    }
+
+    emitStageNavigation(username, { loading: true, question: questionText });
+    emitStatus(username, "loading", "Gathering your health data...");
+
+    const result = await orchestrator.handleQuestion({
+      username,
+      question: questionText,
+      requestSource: "browser",
     });
+
+    if (result?.answer_ready && result?.payload) {
+      emitResultToFrontend(username, result);
+      emitStatus(username, "completed", "Your health analysis is ready.", {
+        stageCount: Number(result.stageCount || 1),
+      });
+    }
+    return res.json(result);
+  } catch (error) {
+    routerError("structured", "request failed", error);
+    return res.status(500).json({ ok: false, answer_ready: false, voice_answer: "Something went wrong." });
   }
 });
+
+// ── Lambda request handler ───────────────────────────────────────────────────
+
+async function handleLambdaRequest(req, res) {
+  let rawText = sanitizeText(String(req.body || ""), 320, "");
+
+  // Strip "start " prefix the Lambda prepends on first turn
+  if (rawText.startsWith("start ")) rawText = rawText.slice(6).trim();
+  // Strip "smallTalk question asked:... user query: " context wrapper
+  const userQueryMatch = rawText.match(/user query:\s*([\s\S]*)$/);
+  if (userQueryMatch) rawText = userQueryMatch[1].trim();
+
+  const isPolling = req.query?.tryAgain === "true";
+  const username = "amy";
+
+  function lambdaReply(gptResponse) {
+    return res.json({ GPTresponse: gptResponse, smallTalk: "" });
+  }
+
+  // ── POLL: Lambda checking if background pipeline has finished ────────────
+  if (isPolling) {
+    routerLog("lambda", "poll request", { username });
+    try {
+      const result = await orchestrator.resumePending(username);
+      if (result?.answer_ready && result?.payload) {
+        emitResultToFrontend(username, result);
+        emitStatus(username, "completed", "Your health analysis is ready.", {
+          stageCount: Number(result.stageCount || 1),
+        });
+        return lambdaReply(result.voice_answer || "Your health analysis is ready.");
+      }
+      return lambdaReply("Still working on that");
+    } catch (error) {
+      routerError("lambda", "poll failed", error);
+      return lambdaReply("Still working on that");
+    }
+  }
+
+  // ── QUESTION: new health question or natural-language navigation ─────────
+  if (!rawText || rawText.length < 2) {
+    return lambdaReply("I didn't catch that. Try asking about your health or fitness data.");
+  }
+
+  routerLog("lambda", "new question", { username, question: rawText });
+
+  // Navigate screen to /qna with loading state
+  emitStageNavigation(username, { loading: true, question: rawText });
+  emitStatus(username, "loading", "Gathering your health data...");
+
+  // Start pipeline — also push to screen whenever it finishes (even after Lambda timeout)
+  const pipelinePromise = orchestrator.handleQuestion({
+    username,
+    question: rawText,
+    requestSource: "alexa",
+  }).catch((error) => {
+    routerError("lambda", "pipeline failed", error);
+    return null;
+  });
+
+  // Background: emit to screen the instant pipeline completes, independent of Lambda
+  pipelinePromise.then((result) => {
+    if (result?.answer_ready && result?.payload) {
+      emitResultToFrontend(username, result);
+      emitStatus(username, "completed", "Your health analysis is ready.", {
+        stageCount: Number(result.stageCount || 1),
+      });
+    }
+  });
+
+  // Wait up to 5s for pipeline (leaves Lambda time for 1+ polls if needed)
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+  const result = await Promise.race([pipelinePromise, timeout]);
+
+  if (result?.answer_ready) {
+    return lambdaReply(result.voice_answer || "Your health analysis is ready.");
+  }
+  // Pipeline still running — Lambda will poll with tryAgain=true
+  return lambdaReply("Still working on that");
+}
+
+// ── Browser query (fire-and-forget, WebSocket delivery) ──────────────────────
 
 alexaRouter.post("/browser-query", async (req, res) => {
   const username = keyForUser(req.body?.username || "amy");
@@ -813,30 +284,27 @@ alexaRouter.post("/browser-query", async (req, res) => {
   emitStatus(username, "loading", "Building your charts...");
 
   try {
-    const questionHandler = getQuestionHandler();
-    if (typeof questionHandler !== "function") throw new Error("question handler unavailable");
-    const result = await questionHandler({
+    const result = await orchestrator.handleQuestion({
       username,
       question,
-      requestId: `bq_${Date.now()}`,
       requestSource: "browser",
-      voiceDeadlineMs: 12000,
     });
 
-    if ((result?.answer_ready === true || result?.answerReady === true) && result?.payload) {
-      emitResultToFrontend(username, result, "question");
+    if (result?.answer_ready && result?.payload) {
+      emitResultToFrontend(username, result);
       emitStatus(username, "completed", "Your health analysis is ready.", {
-        stageCount: Number(result.stageCount || result.payload?.stageCount || 1),
+        stageCount: Number(result.stageCount || 1),
       });
-      return;
+    } else {
+      emitStatus(username, "loading", "The first chart is still preparing...");
     }
-
-    emitStatus(username, "loading", "The first chart is still preparing...");
   } catch (error) {
-    routerError("browser-query", "browser query failed", error);
+    routerError("browser-query", "failed", error);
     emitStatus(username, "error", "I couldn't build that chart. Try rephrasing your question.");
   }
 });
+
+// ── TTS ──────────────────────────────────────────────────────────────────────
 
 alexaRouter.post("/tts", async (req, res) => {
   try {
@@ -852,43 +320,14 @@ alexaRouter.post("/tts", async (req, res) => {
   }
 });
 
+// ── Session clear ────────────────────────────────────────────────────────────
+
 alexaRouter.get("/back", (req, res) => {
   const username = keyForUser(req.query?.username || "amy");
-  const clearRuntimeState = getRuntimeClearHandler();
-  if (clearRuntimeState) clearRuntimeState(username);
-  clearCompatState(username);
+  orchestrator.clearRuntimeState(username);
   emitToScreen(username, { action: "qnaEnd", reason: "user_done" });
   routerLog("session", "session cleared", { username });
   return res.status(200).json({ ok: true });
 });
-
-alexaRouter._test = {
-  qnaJobs,
-  resetState() {
-    const clearRuntimeState = getRuntimeClearHandler();
-    if (clearRuntimeState) clearRuntimeState();
-    clearCompatState();
-    sessionService.clearSessionState("amy");
-  },
-  setResumableJob,
-  getResumableJob,
-  startQuestionJob,
-  async handleQuestion(username, userInput, res, sessionHints) {
-    return handleQuestion(username, userInput, res, sessionHints);
-  },
-  async handleControl(username, userInput, res, sessionHints) {
-    return handleControl(username, userInput, res, sessionHints);
-  },
-  async getCurrentStagePayload(username) {
-    const bundle = await loadActiveBundleForRouter(username);
-    if (!bundle) return null;
-    const stage = getStageByIndex(bundle, bundle.currentStageIndex) || replayStoredStage({
-      bundle,
-      stageIndex: bundle.currentStageIndex,
-      question: bundle.displayLabel || bundle.question || "",
-    })?.stage;
-    return stage || null;
-  },
-};
 
 module.exports = alexaRouter;

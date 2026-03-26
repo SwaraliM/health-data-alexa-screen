@@ -198,6 +198,75 @@ function buildExecutorInput({
   };
 }
 
+/**
+ * Build the user message input for the V3 evidence-strategy executor path.
+ *
+ * Key difference from V2: GPT receives pre-computed evidence (not raw rows or templates)
+ * and a list of viable_strategies (not template_candidates). GPT picks a strategy_id.
+ */
+function buildExecutorInputV3({
+  bundleSummary = null,
+  stageHistory = [],
+  question = "",
+  userContext = null,
+  stageIndex = 0,
+  evidenceBundle = null,
+  viableStrategies = [],
+  stageSpec = null,
+} = {}) {
+  const compactHistory = (Array.isArray(stageHistory) ? stageHistory : [])
+    .slice(-4)
+    .map((stage) => ({
+      stageIndex: Number(stage?.stageIndex || 0),
+      title: sanitizeText(stage?.title, 120, ""),
+      spokenText: sanitizeText(stage?.spokenText, 200, ""),
+      moreAvailable: Boolean(stage?.moreAvailable),
+    }));
+
+  const compactBundleSummary = bundleSummary ? {
+    bundleId: bundleSummary.bundleId || null,
+    username: bundleSummary.username || null,
+    question: sanitizeText(bundleSummary.question, 360, ""),
+    planner: bundleSummary.planner || null,
+    metricsRequested: Array.isArray(bundleSummary.metricsRequested)
+      ? bundleSummary.metricsRequested.slice(0, 8) : [],
+    currentStageIndex: bundleSummary.currentStageIndex || 0,
+    stageCount: bundleSummary.stageCount || 0,
+  } : null;
+
+  return {
+    question: sanitizeText(question, 360, ""),
+    requested_stage_index: Math.max(0, Number(stageIndex) || 0),
+    bundle_summary: compactBundleSummary,
+    stage_history: compactHistory,
+    user_context: userContext || null,
+    evidence: evidenceBundle || null,
+    viable_strategies: Array.isArray(viableStrategies) ? viableStrategies.map((s) => ({
+      strategy_id: s.strategy_id,
+      chart_type: s.chart_type,
+      description: s.description,
+    })) : [],
+    stage_specification: stageSpec ? {
+      visualization_intent: stageSpec.visualization_intent || stageSpec.stageType || "",
+      focusMetrics: stageSpec.focusMetrics || [],
+      chartType: stageSpec.chartType,
+      title: stageSpec.title,
+      goal: stageSpec.goal,
+    } : null,
+    instructions: {
+      pick_strategy: "Choose selected_strategy_id from the viable_strategies list.",
+      use_evidence: "Use the pre-computed evidence (means, trends, anomalies, correlations, deltas) to inform your narration. Do NOT do arithmetic — the evidence already has the numbers.",
+      fill_text_only: "You only write text fields. The backend builds chart data from your selected strategy.",
+      voice_formula: [
+        "spoken_text sentence 1: Orientation — describe what the chart shows.",
+        "spoken_text sentence 2: Highlight — what stands out from the evidence.",
+        "spoken_text sentence 3: Meaning — what this tells the user about their health.",
+      ],
+      style: "Warm, plain-language, older-adult-friendly. No jargon. No long number lists.",
+    },
+  };
+}
+
 function extractResponseId(response = {}) {
   return response?.responseId
     || response?.id
@@ -318,41 +387,61 @@ async function runExecutorRequest({
   voiceDeadlineMs = null,
   toolContext = null,
   templateCandidates = null,  // V2: pre-built chart templates from chartTemplateBuilder
+  viableStrategies = null,    // V3: strategies from chartStrategyService
+  evidenceBundle = null,      // V3: pre-computed evidence from evidenceComputer
   __deps = null,
 } = {}) {
   const deps = __deps && typeof __deps === "object" ? __deps : {};
 
-  // Select config: V2 when templates are present and feature flag is on, else V1
-  const hasTemplates = USE_TEMPLATE_FILL_EXECUTOR
+  // Select path: V3 (evidence+strategy) > V2 (template-fill) > V1 (legacy)
+  const hasStrategies = Array.isArray(viableStrategies) && viableStrategies.length > 0;
+  const hasTemplates = !hasStrategies
+    && USE_TEMPLATE_FILL_EXECUTOR
     && Array.isArray(templateCandidates)
     && templateCandidates.length > 0;
-  const config = deps.config || (hasTemplates ? AGENT_CONFIGS.executorV2 : AGENT_CONFIGS.executor);
+
+  const config = deps.config || (
+    hasStrategies ? AGENT_CONFIGS.executorV3
+    : hasTemplates ? AGENT_CONFIGS.executorV2
+    : AGENT_CONFIGS.executor
+  );
   const createResponseFn = deps.createResponse || createResponse;
   const getExecutorToolsFn = deps.getExecutorTools || getExecutorTools;
   const runToolLoopFn = deps.runToolLoop || runToolLoop;
 
   const timeoutMs = resolveTimeoutMs(config.timeoutMs, voiceDeadlineMs);
-  // V2 has no tools; V1 retains its tool loop
-  const tools = hasTemplates ? [] : getExecutorToolsFn(config.toolPolicy || null);
+  // V2/V3 have no tools; V1 retains its tool loop
+  const tools = (hasTemplates || hasStrategies) ? [] : getExecutorToolsFn(config.toolPolicy || null);
   const hasTools = Array.isArray(tools) && tools.length > 0;
 
-  const input = hasTemplates
-    ? buildExecutorInputV2({
+  const input = hasStrategies
+    ? buildExecutorInputV3({
         bundleSummary,
         stageHistory,
         question,
         userContext,
         stageIndex,
-        templateCandidates,
+        evidenceBundle,
+        viableStrategies,
         stageSpec: stageSpec || null,
       })
-    : buildExecutorInput({
-        bundleSummary,
-        stageHistory,
-        question,
-        userContext,
-        stageIndex,
-      });
+    : hasTemplates
+      ? buildExecutorInputV2({
+          bundleSummary,
+          stageHistory,
+          question,
+          userContext,
+          stageIndex,
+          templateCandidates,
+          stageSpec: stageSpec || null,
+        })
+      : buildExecutorInput({
+          bundleSummary,
+          stageHistory,
+          question,
+          userContext,
+          stageIndex,
+        });
 
   const baseRequest = {
     model: config.model,
@@ -376,8 +465,9 @@ async function runExecutorRequest({
     model: config.model,
     stageIndex,
     timeoutMs,
-    path: hasTemplates ? "v2_template_fill" : "v1_legacy",
+    path: hasStrategies ? "v3_evidence_strategy" : hasTemplates ? "v2_template_fill" : "v1_legacy",
     templateCandidateCount: hasTemplates ? templateCandidates.length : 0,
+    strategyCount: hasStrategies ? viableStrategies.length : 0,
     hasPreviousResponseId: Boolean(previousResponseId),
     previousResponseId: previousResponseId || null,
     bundleId: bundleSummary?.bundleId || null,
@@ -458,6 +548,7 @@ async function runExecutorRequest({
 module.exports = {
   buildExecutorInput,
   buildExecutorInputV2,
+  buildExecutorInputV3,
   normalizeExecutorResponse,
   resolveTimeoutMs,
   runExecutorRequest,

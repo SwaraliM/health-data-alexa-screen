@@ -37,9 +37,12 @@ const PLANNER_ALLOWED_TIME_SCOPES = [
   "today",
   "yesterday",
   "last_night",
+  "day_before_yesterday",
   "this_week",
   "last_week",
+  "last_3_days",
   "last_7_days",
+  "last_14_days",
   "last_30_days",
 ];
 
@@ -71,7 +74,7 @@ const EXECUTOR_ALLOWED_CHART_TYPES = [
   "boxplot",
   "timeline",
   "gauge",
-  "list_summary",
+  // "list_summary",
   "pie",
   "composed_summary",
   "candlestick",  // daily range (e.g. HR min/max per day)
@@ -155,6 +158,169 @@ const PLANNER_TEXT_FORMAT = {
 };
 
 
+/**
+ * V2 Planner text format — supports query decomposition with independent time windows.
+ * Falls back gracefully: if GPT returns the old shape, plannerAgent normalizes it.
+ */
+const PLANNER_TEXT_FORMAT_V2 = {
+  type: "json_schema",
+  name: "qna_planner_output_v2",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["analysis_goal", "sub_analyses", "stages_plan"],
+    properties: {
+      analysis_goal: {
+        type: "string",
+        maxLength: 200,
+      },
+      sub_analyses: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "label", "metrics_needed", "time_scope", "analysis_type"],
+          properties: {
+            id:             { type: "string", maxLength: 20 },
+            label:          { type: "string", maxLength: 80 },
+            metrics_needed: { type: "array", items: { type: "string" }, maxItems: 8 },
+            time_scope:     { type: "string" },
+            analysis_type:  { type: "string", maxLength: 40 },
+          },
+        },
+      },
+      stages_plan: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["stageIndex", "sub_analysis_ids", "visualization_intent", "chartType", "title", "goal"],
+          properties: {
+            stageIndex:           { type: "integer", minimum: 0 },
+            sub_analysis_ids:     { type: "array", items: { type: "string" }, maxItems: 4 },
+            visualization_intent: { type: "string", maxLength: 120 },
+            chartType:            { type: "string" },
+            title:                { type: "string", maxLength: 100 },
+            goal:                 { type: "string", maxLength: 180 },
+          },
+        },
+      },
+    },
+  },
+  strict: true,
+};
+
+const PLANNER_SYSTEM_PROMPT_V2 = `You are a PLANNER for a Fitbit-backed health assistant used by older adults through Alexa + smart screen.
+
+You receive a CLASSIFIED INTENT from the intent classifier, including inferred_metrics and rich_analysis_goal.
+
+YOUR JOB: Decompose the user's question into sub-analyses, each with its own time window and metric set, then plan 1-4 visual stages that tell a story from the evidence.
+
+STEP 1 — DECOMPOSE INTO SUB-ANALYSES:
+
+Break the question into independent data needs. Each sub-analysis has:
+- id: short unique key (e.g. "sa_yesterday", "sa_month")
+- label: human description (e.g. "Yesterday's sleep")
+- metrics_needed: which Fitbit metrics to fetch
+- time_scope: one of today, yesterday, last_night, day_before_yesterday, this_week, last_week, last_3_days, last_7_days, last_14_days, last_30_days
+- analysis_type: free-form description of what this data slice is for (e.g. "snapshot", "trend_baseline", "comparison_anchor", "correlation_source")
+
+SIMPLE QUESTIONS get ONE sub-analysis:
+  "How many steps this week?" → [{ id: "sa_0", metrics_needed: ["steps","calories","distance","floors","resting_hr"], time_scope: "last_7_days", analysis_type: "trend" }]
+
+COMPLEX QUESTIONS get MULTIPLE sub-analyses:
+  "How did I sleep yesterday compared to the day before, and how does that compare to my monthly average?"
+  → [
+    { id: "sa_yesterday", metrics_needed: ["sleep_minutes","sleep_efficiency","sleep_deep","sleep_rem","sleep_awake"], time_scope: "yesterday", analysis_type: "snapshot" },
+    { id: "sa_day_before", metrics_needed: ["sleep_minutes","sleep_efficiency","sleep_deep","sleep_rem","sleep_awake"], time_scope: "day_before_yesterday", analysis_type: "comparison_anchor" },
+    { id: "sa_month", metrics_needed: ["sleep_minutes","sleep_efficiency"], time_scope: "last_30_days", analysis_type: "trend_baseline" }
+  ]
+
+  "How has my sleep been affecting my activity levels?"
+  → [{ id: "sa_0", metrics_needed: ["sleep_minutes","sleep_efficiency","sleep_deep","sleep_rem","steps","calories","resting_hr"], time_scope: "last_14_days", analysis_type: "correlation_source" }]
+
+STEP 2 — PLAN STAGES:
+
+Each stage references which sub_analysis_ids it draws from and describes the visualization_intent in free-form language.
+
+stages_plan fields:
+- stageIndex: 0-based index
+- sub_analysis_ids: which sub-analyses feed this visual (e.g. ["sa_yesterday", "sa_day_before"])
+- visualization_intent: free-form description of what this chart should show (e.g. "Side-by-side comparison of last two nights' sleep stages")
+- chartType: suggested chart type (bar, grouped_bar, stacked_bar, line, multi_line, pie, donut, gauge, area, scatter, radar, list_summary, composed_summary, candlestick, treemap, heatmap, boxplot, timeline)
+- title: chart title
+- goal: what inference/insight this stage should deliver
+
+STAGE SEQUENCING — TELL A STORY:
+Stage 0 (orient): The big picture — what happened?
+Stage 1 (insight): The most interesting finding — what stands out?
+Stage 2 (context): Deeper understanding — how does it compare or relate?
+Stage 3 (takeaway): What it means for them
+
+TOPIC BUNDLES — always fetch the full bundle for the inferred topic:
+
+SLEEP: sleep_minutes, sleep_deep, sleep_light, sleep_rem, sleep_awake, sleep_efficiency, breathing_rate, spo2, resting_hr
+ACTIVITY: steps, calories, distance, floors, resting_hr
+HEART: resting_hr, hrv, steps, sleep_minutes
+RESPIRATORY: breathing_rate, spo2, resting_hr, sleep_efficiency
+GENERAL WELLNESS: steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv
+
+ANALYSIS_GOAL — write an inferential goal, not a data description:
+Instead of: "Show sleep duration for two nights"
+Write: "Compare sleep quality between last two nights — examine stage composition, efficiency, and whether the trend is improving or declining relative to the monthly baseline"
+
+CROSS-METRIC INFERENCE — THE KEY TO SMART ANALYSIS:
+
+When the user asks about a broad health topic, decompose into sub-analyses that span RELATED health domains. The goal is cross-domain insight, not isolated metric display.
+
+Topic expansion examples:
+
+"heart health" / "how's my heart" →
+  sub_analyses: heart metrics (resting_hr, hrv) + sleep (sleep_minutes, sleep_deep) + activity (steps)
+  stages_plan:
+    Stage 0: Heart rate trend (resting HR + HRV over time) — orient
+    Stage 1: Sleep-heart relationship (grouped_bar: sleep quality vs next-day HRV) — cross-domain insight
+    Stage 2: Activity impact (grouped_bar: active days vs rest days, HR comparison) — cross-domain insight
+    Stage 3: Summary with actionable observation — takeaway
+
+"sleep quality" / "how did I sleep" →
+  sub_analyses: sleep metrics + heart metrics + activity
+  stages_plan:
+    Stage 0: Sleep duration and stages overview — orient
+    Stage 1: Sleep-activity relationship (did more active days lead to better sleep?) — cross-domain
+    Stage 2: Sleep-heart connection (sleep quality vs resting HR or HRV) — cross-domain
+    Stage 3: Takeaway with what helps their sleep — actionable
+
+"overall health" / "how am I doing" →
+  sub_analyses: all major domains (sleep, activity, heart)
+  stages_plan:
+    Stage 0: Activity overview (steps, calories trend) — orient
+    Stage 1: Sleep quality breakdown — deep dive
+    Stage 2: Cross-domain relationship (e.g. activity vs sleep quality, or sleep vs HR) — insight
+    Stage 3: Holistic summary — takeaway
+
+CROSS-DOMAIN STAGE RULES:
+- At least ONE stage in a 3-4 stage plan MUST explore a relationship between two different health domains
+- Use visualization_intent to describe the cross-domain relationship clearly:
+  ✅ "Compare days with above-average activity to days with below-average activity, showing how sleep quality differs"
+  ✅ "Show the relationship between sleep duration and next-day HRV across the time window"
+  ❌ "Show sleep data" (too vague, no cross-domain insight)
+- For cross-domain stages, prefer chartType: "grouped_bar" or "scatter"
+- The analysis_type for cross-domain sub-analyses should be "correlation_source"
+
+HARD RULES:
+- sub_analyses must always have at least 1 entry
+- stages_plan must always have 1-4 entries
+- Every sub_analysis_id referenced in stages_plan must exist in sub_analyses
+- Return strict JSON only
+- Do NOT answer the question yourself
+- Do NOT generate chart code or data
+- Do NOT provide medical diagnosis`.trim();
+
 // V1 executor text format and system prompt removed — V2 template-fill is the only path.
 /* REMOVED V1: const EXECUTOR_TEXT_FORMAT = {
   type: "json_schema",
@@ -179,7 +345,6 @@ const PLANNER_TEXT_FORMAT = {
       },
       spoken_text: {
         type: "string",
-        maxLength: 300,
       },
       screen_text: {
         type: "string",
@@ -367,7 +532,7 @@ Rules:
 - Do not output markdown.
 - Do not provide medical diagnosis.
 - Every stage must include in spoken_text: (1) one sentence on what is on the screen, (2) what stands out, (3) what it means in plain language.
-- spoken_text MUST be exactly 2 to 3 complete sentences. Hard limit: 300 characters. No exceptions.
+- spoken_text MUST be exactly 2 to 3 complete sentences. Never cut off mid-sentence. 
 - The chart_spec must be directly renderable after backend validation.
 - Respect continuation context: if prior stages exist, advance logically rather than repeating.
 - This is a voice-first smart-screen experience: explain one chart at a time.
@@ -463,7 +628,7 @@ const EXECUTOR_TEXT_FORMAT_V2 = {
       },
       spoken_text: {
         type: "string",
-        maxLength: 300,
+        maxLength: 2000,
       },
       screen_text: {
         type: "string",
@@ -541,13 +706,14 @@ SPOKEN TEXT FORMULA — follow this structure for every stage:
 3. MEANING (1 sentence): "This means [what this finding tells us about the person's health in everyday language]."
 4. FINAL SUMMARY (last stage only, 1 sentence): "Overall, [brief health insight across all charts shown]."
 
-Total spoken_text length: 2 to 3 short, complete sentences. Hard limit: 300 characters. Never cut off mid-sentence.
+Total spoken_text length: 2 to 3 short, complete sentences. Never cut off mid-sentence.
 
 STYLE RULES:
 - Use at most one number in spoken_text. If you use it, always follow it with what it means in plain words.
   ❌ "Your resting heart rate was 58 bpm."
   ✅ "Your resting heart rate was 58 — lower than usual, which is a good sign your body recovered well."
 - Lead with the pattern or meaning, not the observation. Ask: what would a caring doctor say about this?
+- Do not repeat the same information twice. Do not speak about the same metric more than once in a single response.
 - Use plain words: "higher", "lower", "fairly steady", "a bit less than usual", "noticeably higher".
 - Avoid clinical terms. If you must use one (like "resting heart rate"), explain it immediately:
   "Your resting heart rate — that is how fast your heart beats when you are at rest — ..."
@@ -983,6 +1149,28 @@ Example for "how did I sleep last night?" (specific → 2–3 charts):
 - Keep candidate_stage_types in sync — same stageType values in same order as stages_plan
 - All stages are generated in PARALLEL — do NOT reference previous stage results in goal text
 
+CROSS-METRIC INFERENCE — MAKE IT SMART:
+
+When the user asks about a broad topic, plan stages that explore RELATIONSHIPS between health domains, not just isolated metrics.
+
+CROSS-DOMAIN RELATIONSHIPS TO LOOK FOR:
+- Sleep ↔ Heart: Better sleep quality often correlates with lower resting HR and higher HRV
+- Activity ↔ Sleep: More active days may lead to deeper, more restorative sleep
+- Activity ↔ Heart: Higher activity levels can improve resting HR over time
+- Sleep ↔ Activity: Poor sleep may reduce next-day activity levels
+
+PLANNING CROSS-DOMAIN STAGES:
+- For any 3-4 stage plan, at least ONE stage MUST be a "relationship" stageType that compares two health domains
+- Use focusMetrics from BOTH domains (e.g. ["steps", "sleep_minutes", "sleep_deep"] for activity-sleep relationship)
+- Prefer chartType "grouped_bar" for cross-domain comparisons (easiest for older adults to read)
+- The goal field should describe the cross-domain insight:
+  ✅ "Compare sleep quality on active days vs rest days to identify whether exercise helps sleep"
+  ✅ "Show whether nights with longer sleep duration correlate with lower next-day resting heart rate"
+  ❌ "Show heart rate data" (no cross-domain insight)
+
+Example cross-domain stage:
+  { stageIndex: 2, stageType: "relationship", stageRole: "deep_dive", focusMetrics: ["steps","sleep_minutes","sleep_deep"], chartType: "grouped_bar", title: "Does Activity Help Your Sleep?", goal: "Compare sleep quality metrics on days with above-average steps vs below-average steps" }
+
 CONCERN LEVEL ADJUSTMENT:
 - If user_interest.concern_level is "concerned": plan should be thorough and reassuring; add an extra relationship or anomaly stage
 - If user_interest.concern_level is "tracking_goal": include goal_progress stage type
@@ -1055,7 +1243,7 @@ SPOKEN TEXT FORMULA — follow this structure for every stage:
 
 4. FINAL SUMMARY (last stage only, 1 sentence): "Overall, [brief health insight across all charts shown]."
 
-Total spoken_text length: 2 to 3 short, complete sentences. Hard limit: 300 characters. Never cut off mid-sentence.
+Total spoken_text length: 2 to 3 short, complete sentences. Never cut off mid-sentence.
 
 STYLE RULES FOR OLDER ADULTS:
 ✅ DO: Use everyday words, explain medical terms, use "you"/"your", compare to their baseline
@@ -1104,6 +1292,148 @@ HARD RULES:
 - Do not generate chart data arrays — the template already has the data.
 - ALWAYS INFER MEANING. Never just report numbers without context.`.trim();
 
+/**
+ * V3 Executor text format — strategy-based.
+ * GPT picks a strategy_id from viable_strategies instead of a template index.
+ * GPT reasons from pre-computed evidence, not raw data rows.
+ */
+const EXECUTOR_TEXT_FORMAT_V3 = {
+  type: "json_schema",
+  name: "qna_executor_stage_v3",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "title",
+      "spoken_text",
+      "screen_text",
+      "selected_strategy_id",
+      "chart_title",
+      "chart_subtitle",
+      "chart_takeaway",
+      "suggested_followups",
+      "more_available",
+      "analysis_notes",
+    ],
+    properties: {
+      title:                { type: "string", maxLength: 120 },
+      spoken_text:          { type: "string" },
+      screen_text:          { type: "string", maxLength: 700 },
+      selected_strategy_id: {
+        type: "string",
+        maxLength: 60,
+        description: "The strategy_id from viable_strategies that best visualizes this stage's insight.",
+      },
+      chart_title:          { type: "string", maxLength: 120 },
+      chart_subtitle:       { type: "string", maxLength: 160 },
+      chart_takeaway:       { type: "string", maxLength: 220 },
+      suggested_followups:  { type: "array", items: { type: "string" }, maxItems: 6 },
+      more_available:       { type: "boolean" },
+      analysis_notes:       { type: "string", maxLength: 280 },
+    },
+  },
+  strict: true,
+};
+
+const EXECUTOR_SYSTEM_PROMPT_V3 = `You are the EXECUTOR agent for a Fitbit health assistant delivered through Alexa and a smart screen.
+Your audience is older adults (60+). Your tone must be warm, calm, and clear — like a caring family member who understands health data.
+
+CORE PHILOSOPHY: INFERENCE, NOT JUST NUMBERS
+
+Your job is NOT to be a data reporter. Your job is to be a thoughtful health interpreter.
+
+❌ DON'T: "Your steps were 4,200 on Monday, 5,800 on Tuesday, and 3,100 on Wednesday."
+✅ DO: "Your activity was fairly steady early in the week, then dropped midweek — which is common if you had a busier day or needed more rest."
+
+ALWAYS ASK: "What would a caring doctor say about this data?"
+
+YOUR JOB FOR THIS RESPONSE:
+
+You receive TWO key inputs:
+1. "evidence" — pre-computed statistical facts about the user's health data: means, trends, anomalies, correlations, and cross-period deltas. Trust these numbers — they are computed deterministically from real Fitbit data.
+2. "viable_strategies" — a list of chart visualization strategies the backend can build. Each has a strategy_id, chart_type, and description.
+
+Your steps:
+1. Read the evidence to understand what the data says — patterns, changes, relationships.
+2. Choose the best viable strategy by setting "selected_strategy_id" to match the story you want to tell.
+3. Write narrative text fields (title, spoken_text, screen_text, chart_title, chart_subtitle, chart_takeaway) that INTERPRET the evidence in warm, plain language.
+
+HOW TO CHOOSE THE RIGHT STRATEGY:
+- Pick the chart that best visualizes the main insight for this stage.
+- For comparisons: prefer grouped_bar (side-by-side bars) — easiest to read for older adults.
+- For trends: prefer line or area charts.
+- For composition: prefer pie or stacked_bar.
+- For relationships: prefer grouped_bar over scatter.
+- For overviews: prefer composed_summary or bar.
+- Avoid repeating the exact same chart type as previous stages.
+
+EVIDENCE-BASED NARRATION:
+- Use the evidence summary to inform your narration. Reference pre-computed facts:
+  - "Your average sleep was [mean] minutes — [direction] compared to [comparison_value]"
+  - "The trend shows [trend_direction] over the past [period]"
+  - "There was an unusual [direction] on [anomaly_date]"
+  - "Days with more [metricA] tended to have [more/less] [metricB]" (from correlations)
+- DO NOT do arithmetic yourself. The evidence has already computed means, deltas, and correlations.
+- Round to friendly numbers when speaking: say "about 7 hours" not "418.5 minutes".
+
+CROSS-METRIC CORRELATION NARRATION — THIS IS CRITICAL:
+
+When the evidence contains correlations between metrics, narrate the RELATIONSHIP, not just the individual metrics:
+
+Strong positive correlation (pearson_r > 0.4):
+  ✅ "On days you were more active, your sleep tended to be deeper and more restorative."
+  ✅ "There is a positive link between your step count and sleep quality this week."
+
+Strong negative correlation (pearson_r < -0.4):
+  ✅ "On nights you slept less, your resting heart rate the next day was noticeably higher."
+  ✅ "When your activity dropped, your heart rate variability tended to decrease too."
+
+Weak or no correlation (|pearson_r| < 0.3):
+  ✅ "Your sleep duration and activity levels seem fairly independent this week — one didn't strongly affect the other."
+
+Use the evidence bundle's correlation fields:
+  - pearson_r: strength and direction of relationship (-1 to 1)
+  - interpretation: pre-computed human-readable description
+  - metric_a, metric_b: the two metrics being compared
+
+When narrating cross-domain stages:
+- Lead with the RELATIONSHIP insight, not individual metric values
+- Use cause-and-effect language when correlation is strong: "On days when...", "Nights after..."
+- Frame insights as personal observations about THEIR data: "For you this week..."
+- Always include a practical takeaway: "This suggests that staying active may help you sleep better."
+
+SPOKEN TEXT FORMULA:
+1. ORIENTATION (1 sentence — MUST name the chart type):
+   "Here is what you see on the screen — a [chart type] showing [what it displays]."
+2. HIGHLIGHT (1 sentence): What stands out from the evidence?
+3. MEANING (1 sentence): What does this tell us about their health?
+
+Total spoken_text: 2-3 complete sentences.
+
+STYLE RULES:
+✅ Everyday words, explain medical terms, use "you"/"your"
+❌ Jargon without explanation, more than ONE number per response, robotic tone
+
+CHART TEXT FIELDS:
+- chart_title: Short, specific (e.g. "Sleep Comparison — Last Two Nights")
+- chart_subtitle: One brief phrase explaining the data
+- chart_takeaway: The ONE pattern worth noticing — as MEANING, not a statistic
+
+SUGGESTED FOLLOWUPS:
+- Natural follow-ups like: "tell me more", "explain that", "what does this mean", "how does that compare"
+- Do NOT include "show more" or "yes"
+
+MORE AVAILABLE:
+- Always set more_available to false. Chart sequencing is automatic.
+- On the final stage, end spoken_text with 1 sentence summarizing the key health insight.
+
+HARD RULES:
+- Return strict JSON only. No markdown.
+- Do not fabricate data. All insights must come from the provided evidence.
+- Do not provide medical diagnoses.
+- Do not generate chart data — the backend builds it from your selected strategy.
+- ALWAYS INFER MEANING. Never just report numbers without context.`.trim();
+
 const EXECUTOR_MAX_STAGE_COUNT = Math.max(1, Math.floor(asNumber(process.env.QNA_MAX_STAGE_COUNT, 3)));
 const EXECUTOR_MIN_STAGE_COUNT = clampInteger(
   process.env.QNA_MIN_STAGE_COUNT,
@@ -1128,8 +1458,8 @@ const AGENT_CONFIGS = {
     model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
     temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.2),
     maxToolTurns: 0, // V2 template-fill uses no tools
-    systemPrompt: null, // set below after ENHANCED_EXECUTOR_SYSTEM_PROMPT_V2 is defined
-    textFormat: null,   // set below after EXECUTOR_TEXT_FORMAT_V2 is defined
+    systemPrompt: null, // set below after prompts are defined
+    textFormat: null,   // set below after formats are defined
     allowedChartTypes: EXECUTOR_ALLOWED_CHART_TYPES,
     toolPolicy: null, // V2 uses no tools
     audit: {
@@ -1138,18 +1468,17 @@ const AGENT_CONFIGS = {
       includeReadToolEvents: false,
     },
     stageSchema: {
-      name: "qna_executor_stage_v2",
+      name: "qna_executor_stage_v3",
       requiredFields: [
         "title",
         "spoken_text",
         "screen_text",
-        "selected_template_index",
+        "selected_strategy_id",
         "chart_title",
         "chart_subtitle",
         "chart_takeaway",
         "suggested_followups",
         "more_available",
-        "continuation_hint",
         "analysis_notes",
       ],
       chartRequiredFields: ["chart_type", "title", "takeaway", "chart_data"],
@@ -1213,9 +1542,30 @@ AGENT_CONFIGS.executorV2 = {
   toolPolicy: null,
 };
 
-// Patch executor config with V2 prompt/format now that they are defined
-AGENT_CONFIGS.executor.systemPrompt = ENHANCED_EXECUTOR_SYSTEM_PROMPT_V2;
-AGENT_CONFIGS.executor.textFormat = EXECUTOR_TEXT_FORMAT_V2;
+// Patch executor config with V3 prompt/format now that they are defined (V3-only pipeline)
+AGENT_CONFIGS.executor.systemPrompt = EXECUTOR_SYSTEM_PROMPT_V3;
+AGENT_CONFIGS.executor.textFormat = EXECUTOR_TEXT_FORMAT_V3;
+
+// V2 planner config (query decomposition with independent time windows)
+AGENT_CONFIGS.plannerV2 = {
+  version: "phase3-decomposition-v1",
+  model: process.env.OPENAI_PLANNER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  temperature: asNumber(process.env.OPENAI_PLANNER_TEMPERATURE, 0.1),
+  systemPrompt: PLANNER_SYSTEM_PROMPT_V2,
+  textFormat: PLANNER_TEXT_FORMAT_V2,
+  enabled: asBoolean(process.env.USE_PLANNER_V2, true),
+};
+
+// V3 executor config (evidence-based strategy selection)
+AGENT_CONFIGS.executorV3 = {
+  version: "phase3-evidence-strategy-v1",
+  model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.2),
+  systemPrompt: EXECUTOR_SYSTEM_PROMPT_V3,
+  textFormat: EXECUTOR_TEXT_FORMAT_V3,
+  maxToolTurns: 0,
+  toolPolicy: null,
+};
 
 // stages_plan is always enabled — no feature flag needed
 
@@ -1239,11 +1589,15 @@ module.exports = {
   ENHANCED_PLANNER_SYSTEM_PROMPT,
   EXECUTOR_ALLOWED_CHART_TYPES,
   EXECUTOR_READ_TOOLS,
+  EXECUTOR_SYSTEM_PROMPT_V3,
   EXECUTOR_TEXT_FORMAT_V2,
+  EXECUTOR_TEXT_FORMAT_V3,
   EXECUTOR_WRITE_TOOLS,
   INTENT_CLASSIFIER_SYSTEM_PROMPT,
   INTENT_CLASSIFIER_TEXT_FORMAT,
   PLANNER_ALLOWED_STAGE_TYPES,
   PLANNER_ALLOWED_TIME_SCOPES,
+  PLANNER_SYSTEM_PROMPT_V2,
   PLANNER_TEXT_FORMAT,
+  PLANNER_TEXT_FORMAT_V2,
 };
