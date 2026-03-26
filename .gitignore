@@ -9,4 +9,5 @@ lambda/
 backend/.env
 backend/services/qna/__tests__
 index_original.js
+index.js
 
