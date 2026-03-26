@@ -1,7 +1,13 @@
 node_modules/
 .claude/
 .idea/
+lambda/
 
 # Environment and secrets (never commit)
-
+.env
+*.env
+backend/.env
+backend/services/qna/__tests__
+index_original.js
+lambdaindex.js
 
