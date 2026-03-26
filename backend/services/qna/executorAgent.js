@@ -1,13 +1,16 @@
 /**
  * backend/services/qna/executorAgent.js
  *
- * Parallel executor — generates all N chart stages simultaneously via Promise.all.
- * V2 template-fill path only (no legacy V1).
+ * V3-only executor — generates all N chart stages in parallel via Promise.all.
+ * Uses evidence-based strategy selection (chartStrategyService).
+ * GPT picks a strategy + fills text; chart data is built deterministically.
  */
+
+"use strict";
 
 const { runExecutorRequest } = require("../openai/executorClient");
 const { normalizeExecutorStageOutput } = require("./stageService");
-const { buildTemplatesForStage } = require("../charts/chartTemplateBuilder");
+const { generateViableStrategies, buildChartFromStrategy } = require("../charts/chartStrategyService");
 
 const EXECUTOR_AGENT_DEBUG = process.env.QNA_EXECUTOR_AGENT_DEBUG !== "false";
 
@@ -35,20 +38,14 @@ function buildCompactStageHistory(stages = []) {
     }));
 }
 
-function compactNormalizedTable(bundle = null, maxRows = 180) {
-  const rows = Array.isArray(bundle?.normalizedTable) ? bundle.normalizedTable : [];
-  return rows.slice(-Math.max(20, Number(maxRows) || 180));
-}
-
-function buildBundleSummary(bundle = null) {
+/**
+ * Build a compact bundle summary for the executor, using evidence instead of raw rows.
+ */
+function buildBundleSummary(bundle = null, evidenceBundle = null) {
   const source = bundle && typeof bundle === "object" ? bundle : {};
   const plannerOutput = source.plannerOutput && typeof source.plannerOutput === "object"
     ? source.plannerOutput
     : {};
-
-  const normalizedRows = compactNormalizedTable(source, 180);
-  const firstRow = normalizedRows[0] || {};
-  const metricColumns = Object.keys(firstRow).filter((key) => key !== "timestamp");
 
   return {
     bundleId: source.bundleId || null,
@@ -66,12 +63,7 @@ function buildBundleSummary(bundle = null) {
           : [],
     },
     metricsRequested: Array.isArray(source.metricsRequested) ? source.metricsRequested.slice(0, 8) : [],
-    normalizedTableColumns: metricColumns,
-    normalizedTableRowCount: normalizedRows.length,
-    normalizedTableRows: normalizedRows,
-    rawCacheKeys: source.rawFitbitCache && typeof source.rawFitbitCache === "object"
-      ? Object.keys(source.rawFitbitCache).slice(0, 12)
-      : [],
+    evidenceSummary: evidenceBundle || null,
     currentStageIndex: Number(source.currentStageIndex || 0),
     stageCount: Array.isArray(source.stages) ? source.stages.length : 0,
     updatedAt: source.updatedAt || null,
@@ -79,46 +71,61 @@ function buildBundleSummary(bundle = null) {
 }
 
 /**
- * Merge a V2 GPT response (text fills + selected_template_index) with the
- * pre-built template candidate to produce a stageOutput compatible with
+ * Merge a GPT response (text fills + selected_strategy_id) with the
+ * strategy-built chart data to produce a stageOutput compatible with
  * normalizeExecutorStageOutput.
  */
-function mergeV2ResponseWithTemplate(v2Output, templateCandidates) {
-  if (!v2Output || !Array.isArray(templateCandidates) || !templateCandidates.length) {
-    return v2Output;
+function mergeStrategyResponse(gptOutput, viableStrategies, multiWindowData, evidenceBundle) {
+  if (!gptOutput || !Array.isArray(viableStrategies) || !viableStrategies.length) {
+    return gptOutput;
   }
-  const rawIndex = Number(v2Output.selected_template_index);
-  const safeIndex = Number.isFinite(rawIndex)
-    ? Math.max(0, Math.min(templateCandidates.length - 1, rawIndex))
-    : 0;
-  const selectedTemplate = templateCandidates[safeIndex] || templateCandidates[0];
 
-  agentLog("v2 template selected", {
-    selectedIndex: safeIndex,
-    chart_type: selectedTemplate?.chart_type || "unknown",
+  const selectedId = String(gptOutput.selected_strategy_id || "").trim();
+  const matched = viableStrategies.find((s) => s.strategy_id === selectedId);
+  const strategy = matched || viableStrategies[0];
+
+  agentLog("strategy selected", {
+    selectedId: selectedId || "(none)",
+    resolvedId: strategy?.strategy_id,
+    chart_type: strategy?.chart_type || "unknown",
   });
 
+  // Build chart data deterministically from the selected strategy
+  let chartData = null;
+  try {
+    chartData = buildChartFromStrategy(
+      strategy.strategy_id,
+      multiWindowData || {},
+      evidenceBundle || {},
+      viableStrategies,
+    );
+  } catch (err) {
+    agentLog("buildChartFromStrategy failed, using fallback", {
+      error: String(err?.message || err),
+    });
+  }
+
   return {
-    title:               v2Output.title || "",
-    spoken_text:         v2Output.spoken_text || "",
-    screen_text:         v2Output.screen_text || "",
-    suggested_followups: v2Output.suggested_followups || [],
-    // Stage reveal progression is decided by the planner/coordinator, not by executor prose.
-    more_available:      v2Output.more_available,
+    title:               gptOutput.title || "",
+    spoken_text:         gptOutput.spoken_text || "",
+    screen_text:         gptOutput.screen_text || "",
+    suggested_followups: gptOutput.suggested_followups || [],
+    more_available:      gptOutput.more_available,
     continuation_hint:   "",
-    analysis_notes:      v2Output.analysis_notes || "",
+    analysis_notes:      gptOutput.analysis_notes || "",
     chart_spec: {
-      chart_type: selectedTemplate.chart_type,
-      title:      v2Output.chart_title || selectedTemplate.description || "",
-      subtitle:   v2Output.chart_subtitle || "",
-      takeaway:   v2Output.chart_takeaway || "",
-      chart_data: selectedTemplate.chart_data,
+      chart_type: chartData?.chart_type || strategy.chart_type || "bar",
+      title:      gptOutput.chart_title || strategy.description || "",
+      subtitle:   gptOutput.chart_subtitle || "",
+      takeaway:   gptOutput.chart_takeaway || "",
+      chart_data: chartData?.chart_data || null,
     },
   };
 }
 
 /**
- * Generate a single stage (internal worker for Promise.all).
+ * Generate a single stage.
+ * V3 path only: evidence-based strategy selection.
  */
 async function generateStageFromExecutor({
   bundle,
@@ -127,6 +134,8 @@ async function generateStageFromExecutor({
   userContext = null,
   stageSpec = null,
   requestId = null,
+  multiWindowData = null,
+  evidenceBundle = null,
 } = {}) {
   if (!bundle || typeof bundle !== "object") {
     return { ok: false, error: "generateStageFromExecutor requires bundle", stage: null };
@@ -135,44 +144,48 @@ async function generateStageFromExecutor({
   const safeStageIndex = Math.max(0, Number(stageIndex) || 0);
   const safeQuestion = sanitizeText(question, 360, "");
 
-  // Build V2 template candidates
-  let templateCandidates = null;
+  // Generate viable chart strategies from data + evidence
+  let viableStrategies = null;
   try {
-    templateCandidates = buildTemplatesForStage({
-      normalizedTable: bundle.normalizedTable,
-      plannerOutput: bundle.plannerOutput,
-      stageIndex: safeStageIndex,
-      previousStageTypes: Array.isArray(bundle.stages)
-        ? bundle.stages.map((s) => s?.metadata?.stageType).filter(Boolean)
-        : [],
-      rawFitbitCache: bundle.rawFitbitCache || null,
-      stageSpec: stageSpec || null,
+    const previousChartTypes = Array.isArray(bundle.stages)
+      ? bundle.stages.map((s) => s?.chartSpec?.chart_type || s?.metadata?.executor?.selectedChartType).filter(Boolean)
+      : [];
+    viableStrategies = generateViableStrategies({
+      stageSpec: stageSpec || {},
+      multiWindowData: multiWindowData || {},
+      evidenceBundle: evidenceBundle || {},
+      previousChartTypes,
     });
-    if (Array.isArray(templateCandidates) && !templateCandidates.length) templateCandidates = null;
-  } catch (templateErr) {
-    agentLog("template build failed for stage", {
+    if (Array.isArray(viableStrategies) && !viableStrategies.length) viableStrategies = null;
+  } catch (err) {
+    agentLog("strategy generation failed", {
       stageIndex: safeStageIndex,
-      error: String(templateErr?.message || templateErr),
+      error: String(err?.message || err),
     });
-    templateCandidates = null;
+    viableStrategies = null;
+  }
+
+  if (!viableStrategies) {
+    return { ok: false, error: "No viable chart strategies generated", stage: null };
   }
 
   agentLog("generating stage", {
     bundleId: bundle.bundleId || null,
     stageIndex: safeStageIndex,
-    hasTemplates: Boolean(templateCandidates),
-    templateCount: templateCandidates?.length || 0,
+    strategyCount: viableStrategies.length,
   });
 
   const executorInput = {
-    bundleSummary: buildBundleSummary(bundle),
+    bundleSummary: buildBundleSummary(bundle, evidenceBundle),
     stageHistory: buildCompactStageHistory(bundle?.stages),
     question: safeQuestion,
-    previousResponseId: null, // parallel — no chaining
+    previousResponseId: null,
     userContext: userContext || null,
     stageIndex: safeStageIndex,
     stageSpec: stageSpec || null,
-    templateCandidates: templateCandidates || null,
+    templateCandidates: null,
+    viableStrategies,
+    evidenceBundle,
     toolContext: null,
   };
 
@@ -186,9 +199,10 @@ async function generateStageFromExecutor({
     };
   }
 
-  const resolvedStageOutput = templateCandidates
-    ? mergeV2ResponseWithTemplate(response.stageOutput, templateCandidates)
-    : response.stageOutput;
+  // Merge GPT text fills with deterministic chart data
+  const resolvedStageOutput = mergeStrategyResponse(
+    response.stageOutput, viableStrategies, multiWindowData, evidenceBundle,
+  );
 
   const stage = normalizeExecutorStageOutput({
     executorOutput: resolvedStageOutput,
@@ -205,9 +219,10 @@ async function generateStageFromExecutor({
       responseId: response.responseId || null,
       responseStatus: response.status || "completed",
       stageIndex: safeStageIndex,
-      path: "v2_template_fill",
-      templateCount: templateCandidates ? templateCandidates.length : 0,
+      path: "v3_evidence_strategy",
+      strategyCount: viableStrategies.length,
       selectedChartType: resolvedStageOutput?.chart_spec?.chart_type || null,
+      selectedStrategyId: response.stageOutput?.selected_strategy_id || null,
     },
   };
 
@@ -220,16 +235,16 @@ async function generateStageFromExecutor({
 
 /**
  * Generate all N stages in parallel using Promise.all.
- *
- * @param {object} opts
- * @param {object} opts.bundle - QnaBundle document with normalizedTable, plannerOutput, etc.
- * @param {string} opts.question - User question
- * @param {Array}  opts.stagesPlan - Planner output: array of { stageIndex, stageType, focusMetrics, chartType, title, goal }
- * @param {object} [opts.userContext]
- * @param {string} [opts.requestId]
- * @returns {Promise<{ ok: boolean, stages: object[], errors: string[] }>}
  */
-async function generateAllStages({ bundle, question, stagesPlan, userContext = null, requestId = null } = {}) {
+async function generateAllStages({
+  bundle,
+  question,
+  stagesPlan,
+  userContext = null,
+  requestId = null,
+  multiWindowData = null,
+  evidenceBundle = null,
+} = {}) {
   if (!Array.isArray(stagesPlan) || !stagesPlan.length) {
     return { ok: false, stages: [], errors: ["stagesPlan is empty"] };
   }
@@ -248,6 +263,8 @@ async function generateAllStages({ bundle, question, stagesPlan, userContext = n
       userContext,
       stageSpec,
       requestId,
+      multiWindowData,
+      evidenceBundle,
     });
   });
 
@@ -258,6 +275,8 @@ async function generateAllStages({ bundle, question, stagesPlan, userContext = n
 
   results.forEach((result, i) => {
     if (result?.ok && result?.stage) {
+      // Set moreAvailable based on position in the plan
+      result.stage.moreAvailable = i < stagesPlan.length - 1;
       stages.push(result.stage);
     } else {
       errors.push(result?.error || `Stage ${i} failed`);
@@ -284,5 +303,5 @@ module.exports = {
   buildBundleSummary,
   generateStageFromExecutor,
   generateAllStages,
-  mergeV2ResponseWithTemplate,
+  mergeStrategyResponse,
 };

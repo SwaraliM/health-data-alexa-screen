@@ -1,11 +1,12 @@
 /**
  * backend/services/qna/stageService.js
  *
- * Stage helpers for phased QnA migration.
- * - Legacy qnaEngine outputs can be wrapped safely.
- * - Executor stage outputs are normalized into the same bundle format.
- * - Router payload compatibility is preserved without frontend rewrites.
+ * Stage normalization and payload building.
+ * Simplified — no staging/progression concept. Charts are pre-generated
+ * and indexed into by the orchestrator.
  */
+
+"use strict";
 
 const {
   buildFallbackChartSpec,
@@ -18,16 +19,9 @@ function sanitizeText(value, max = 420, fallback = "") {
   return text ? text.slice(0, max) : fallback;
 }
 
-function safeJsonParseObject(value) {
-  if (value == null) return null;
-  if (typeof value === "object" && !Array.isArray(value)) return value;
-  if (typeof value !== "string") return null;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch (_) {
-    return null;
-  }
+function sanitizeTextNoTruncate(value, fallback = "") {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text ? text : fallback;
 }
 
 function uniqueList(values = [], max = 6) {
@@ -40,59 +34,11 @@ function uniqueList(values = [], max = 6) {
   return list.slice(0, max);
 }
 
-const DEFAULT_VOICE_COMMAND_FOLLOWUPS = [
-  "show more",
-  "yes",
-  "go back",
-  "explain that",
-  "compare that",
-  "what does this mean",
-  "start over",
-];
-
 function ensureSentence(text = "") {
-  const safe = sanitizeText(text, 320, "");
+  const safe = sanitizeTextNoTruncate(text, "");
   if (!safe) return "";
   if (/[.!?]$/.test(safe)) return safe;
   return `${safe}.`;
-}
-
-function normalizeFollowupPhrase(value = "") {
-  const raw = sanitizeText(value, 120, "").toLowerCase();
-  if (!raw) return "";
-  if (/^(next|show more|more|tell me more|go on|continue|yes|yeah|sure|ok|okay)$/.test(raw)) return "show more";
-  if (/^(go back|back|previous|previous stage|last stage)$/.test(raw)) return "go back";
-  if (/^(explain|explain that|explain this)$/.test(raw)) return "explain that";
-  if (/^(compare|compare that|compare this)$/.test(raw)) return "compare that";
-  if (/^(what does this mean|what does that mean)$/.test(raw)) return "what does this mean";
-  if (/^(what stands out|why is that|what am i looking at)$/.test(raw)) return raw;
-  if (/^(summarize|summarize this|quick recap)$/.test(raw)) return "summarize this";
-  if (/^(start over|restart|reset)$/.test(raw)) return "start over";
-  return raw;
-}
-
-function buildVoiceFirstFollowups(values = [], moreAvailable = false) {
-  const normalized = uniqueList(
-    (Array.isArray(values) ? values : []).map((item) => normalizeFollowupPhrase(item)).filter(Boolean),
-    6
-  );
-  if (!normalized.length) {
-    const defaults = moreAvailable
-      ? DEFAULT_VOICE_COMMAND_FOLLOWUPS
-      : DEFAULT_VOICE_COMMAND_FOLLOWUPS.filter((phrase) => phrase !== "show more");
-    return uniqueList(defaults, 6);
-  }
-  const merged = [];
-  if (moreAvailable) {
-    merged.push("show more");
-    if (!normalized.includes("yes")) merged.push("yes");
-  }
-  if (!normalized.includes("go back")) merged.push("go back");
-  if (!normalized.includes("explain that")) merged.push("explain that");
-  if (!normalized.includes("what does this mean")) merged.push("what does this mean");
-  merged.push(...normalized);
-  if (!moreAvailable) merged.push("start over");
-  return uniqueList(merged, 6);
 }
 
 function getChartVisualSentence(chartSpec = null) {
@@ -107,42 +53,33 @@ function getChartVisualSentence(chartSpec = null) {
   return "The chart shows your trend clearly in one view.";
 }
 
-function ensureNarratedScreenText({
-  screenText = "",
-  spokenText = "",
-  chartSpec = null,
-} = {}) {
-  const candidate = sanitizeText(
+function ensureNarratedScreenText({ screenText = "", spokenText = "", chartSpec = null } = {}) {
+  const candidate = sanitizeTextNoTruncate(
     screenText || chartSpec?.takeaway || spokenText,
-    700,
     "This chart highlights your latest health trend."
   );
   return ensureSentence(candidate);
 }
 
-function ensureNarratedSpokenText({
-  spokenText = "",
-  screenText = "",
-  chartSpec = null,
-  title = "Health insight",
-} = {}) {
-  let narrated = sanitizeText(spokenText, 640, "");
-  const orientationSentence = ensureSentence(
-    sanitizeText(`Here is what you see on the screen: ${title}.`, 220, "Here is what you see on the screen.")
-  );
+function ensureNarratedSpokenText({ spokenText = "", screenText = "", chartSpec = null, title = "Health insight" } = {}) {
+  let narrated = sanitizeTextNoTruncate(spokenText, "");
+
+  // If the executor provided substantive spoken text (40+ chars), trust it.
+  if (narrated && narrated.length >= 40) return narrated;
+
+  const orientationSentence = ensureSentence(`Here is what you see on the screen: ${title}.`);
   const visualSentence = ensureSentence(getChartVisualSentence(chartSpec));
-  const meaningSeed = sanitizeText(
+  const meaningSeed = sanitizeTextNoTruncate(
     screenText || chartSpec?.takeaway || "this trend gives a clear direction for your next step",
-    220,
     "this trend gives a clear direction for your next step"
   );
-  const meaningSentence = ensureSentence(`What stands out is ${meaningSeed}`);
   const overallSentence = ensureSentence(`Overall, ${meaningSeed}`);
 
   if (!narrated) {
-    return sanitizeText(`${orientationSentence} ${visualSentence} ${overallSentence}`, 640, orientationSentence);
+    return `${orientationSentence} ${visualSentence} ${overallSentence}`;
   }
 
+  // Short/incomplete spoken text — enrich with fallback sentences
   if (!/\b(on the screen|you see|this chart)\b/i.test(narrated)) {
     narrated = `${orientationSentence} ${narrated}`;
   }
@@ -150,44 +87,86 @@ function ensureNarratedSpokenText({
     narrated = `${narrated} ${visualSentence}`;
   }
   if (!/\b(what stands out|this means|overall|in short)\b/i.test(narrated)) {
-    narrated = `${narrated} ${meaningSentence}`;
+    narrated = `${narrated} ${ensureSentence(`What stands out is ${meaningSeed}`)}`;
   }
 
-  return sanitizeText(narrated, 640, `${orientationSentence} ${visualSentence} ${overallSentence}`);
+  return narrated;
 }
 
-function extractSuggestedFollowups(payload = {}) {
-  const nextViewLabels = Array.isArray(payload?.next_views)
-    ? payload.next_views.map((view) => view?.label).filter(Boolean)
-    : [];
-  const legacySuggested = Array.isArray(payload?.suggestedDrillDowns)
-    ? payload.suggestedDrillDowns
-    : Array.isArray(payload?.suggested_follow_up)
-      ? payload.suggested_follow_up
-      : [];
-  return uniqueList([...nextViewLabels, ...legacySuggested], 6);
+function normalizeFollowupPhrase(value = "") {
+  const raw = sanitizeText(value, 120, "").toLowerCase();
+  if (!raw) return "";
+  if (/^(next|show more|more|tell me more|go on|continue|yes|yeah|sure|ok|okay)$/.test(raw)) return "show more";
+  if (/^(go back|back|previous)$/.test(raw)) return "go back";
+  if (/^(explain|explain that|explain this)$/.test(raw)) return "explain that";
+  if (/^(compare|compare that|compare this)$/.test(raw)) return "compare that";
+  if (/^(what does this mean|what does that mean)$/.test(raw)) return "what does this mean";
+  if (/^(start over|restart|reset)$/.test(raw)) return "start over";
+  return raw;
 }
 
-function extractScreenText(payload = {}, fallback = "") {
-  return sanitizeText(
-    payload?.summary?.shortText
-      || payload?.takeaway
-      || payload?.primary_visual?.takeaway
-      || fallback,
-    500,
-    fallback
+/**
+ * Combine all stages' spoken text into one flowing narrative for auto-advance.
+ * Alexa speaks this as a single response; the frontend auto-cycles charts.
+ *
+ * Each chart gets:
+ *   1. A position + transition sentence ("Let's start with your first chart...")
+ *   2. The full executor-generated spoken text (already 2-3 sentences from ensureNarratedSpokenText)
+ *   3. A brief visual anchor sentence tying the spoken narrative to what's on screen
+ */
+function buildCombinedVoiceAnswer(stages = []) {
+  const sorted = (Array.isArray(stages) ? stages : [])
+    .slice()
+    .sort((a, b) => Number(a?.stageIndex || 0) - Number(b?.stageIndex || 0));
+  if (!sorted.length) return "";
+
+  const total = sorted.length;
+
+  // Each chart gets a contextual intro and a visual anchor, wrapping the full spoken text
+  const INTROS = [
+    (title, total) => `Let's start with your first chart. This one is about ${title}.`,
+    (title, total) => `Now, here is your second chart. This looks at ${title}.`,
+    (title, total) => `And for the last part of the analysis, this chart covers ${title}.`,
+    (title, total) => `Next up, chart ${4} of ${total}. This explores ${title}.`,
+    (title, total) => `Moving on to chart ${5} of ${total}, which focuses on ${title}.`,
+    (title, total) => `And one more: chart ${6} of ${total}, looking at ${title}.`,
+  ];
+
+  const BRIDGES = [
+    "Take a look at the screen to see the full picture.",
+    "You can see the details on the screen right now.",
+    "The chart on the screen shows this clearly.",
+  ];
+
+  const parts = sorted.map((stage, idx) => {
+    const spoken = sanitizeTextNoTruncate(stage?.spokenText, "");
+    if (!spoken) return "";
+
+    const title = sanitizeText(stage?.title, 80, "your health data").toLowerCase();
+    const introFn = idx < INTROS.length ? INTROS[idx] : INTROS[INTROS.length - 1];
+    const intro = introFn(title, total);
+    const bridge = BRIDGES[idx % BRIDGES.length];
+
+    return `${intro} ${spoken} ${bridge}`;
+  }).filter(Boolean);
+
+  if (!parts.length) return "";
+  return parts.join(" ") + " That covers everything I found. Feel free to ask me another question anytime.";
+}
+
+function buildVoiceFirstFollowups(values = [], moreAvailable = false) {
+  const normalized = uniqueList(
+    (Array.isArray(values) ? values : []).map(normalizeFollowupPhrase).filter(Boolean),
+    6
   );
-}
-
-function extractTitle(payload = {}, plannerResult = null) {
-  return sanitizeText(
-    payload?.report_title
-      || payload?.primary_visual?.title
-      || plannerResult?.analysisGoal
-      || "Health insight",
-    120,
-    "Health insight"
-  );
+  const merged = [];
+  if (moreAvailable) {
+    merged.push("show more");
+  }
+  merged.push("go back", "explain that");
+  merged.push(...normalized);
+  if (!moreAvailable) merged.push("start over");
+  return uniqueList(merged, 6);
 }
 
 function createStageRecord({
@@ -198,7 +177,7 @@ function createStageRecord({
   chartSpec = null,
   suggestedFollowups = [],
   moreAvailable = false,
-  source = "legacy_qnaengine",
+  source = "executor_agent",
   requestId = null,
   question = "",
   metadata = null,
@@ -207,63 +186,18 @@ function createStageRecord({
   return {
     stageIndex: Math.max(0, Number(stageIndex) || 0),
     title: sanitizeText(title, 120, "Health insight"),
-    spokenText: sanitizeText(spokenText, 640, ""),
-    screenText: sanitizeText(screenText, 700, ""),
+    spokenText: sanitizeTextNoTruncate(spokenText, ""),
+    screenText: sanitizeTextNoTruncate(screenText, ""),
     chartSpec: chartSpec || null,
     suggestedFollowups: buildVoiceFirstFollowups(suggestedFollowups, moreAvailable),
     moreAvailable: Boolean(moreAvailable),
-    source: sanitizeText(source, 40, "legacy_qnaengine"),
+    source: sanitizeText(source, 40, "executor_agent"),
     requestId: requestId ? String(requestId) : null,
     question: sanitizeText(question, 280, ""),
     createdAt: now,
     updatedAt: now,
     metadata: metadata && typeof metadata === "object" ? metadata : {},
   };
-}
-
-function repairOptionString(raw) {
-  if (!raw || typeof raw !== "string") return null;
-
-  // Attempt 1: direct parse
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-  } catch (_) {}
-
-  // Attempt 2: strip markdown fences GPT sometimes wraps around it
-  const fenceStripped = raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
-  try {
-    const parsed = JSON.parse(fenceStripped);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-  } catch (_) {}
-
-  // Attempt 3: extract outermost { } block (handles leading/trailing garbage)
-  const braceMatch = fenceStripped.match(/(\{[\s\S]*\})/);
-  if (braceMatch) {
-    try {
-      const parsed = JSON.parse(braceMatch[1]);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    } catch (_) {}
-  }
-
-  // Attempt 4: truncation repair — find last valid closing brace
-  // Handles GPT output that was cut off mid-string
-  for (let i = fenceStripped.length - 1; i > 0; i--) {
-    if (fenceStripped[i] === "}") {
-      try {
-        const parsed = JSON.parse(fenceStripped.slice(0, i + 1));
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          console.warn("[StageService] repairOptionString: recovered truncated option JSON");
-          return parsed;
-        }
-      } catch (_) {}
-    }
-  }
-
-  return null;
 }
 
 function normalizeChartSpec(chartSpec, title = "Health insight", spokenText = "", screenText = "") {
@@ -274,38 +208,25 @@ function normalizeChartSpec(chartSpec, title = "Health insight", spokenText = ""
     );
   }
 
-  // New path: chart_data present → hydrate from preset library
+  // chart_data present → hydrate from preset library
   if (chartSpec.chart_data && typeof chartSpec.chart_data === "object") {
     return hydrateChartSpec(chartSpec, sanitizeText(title, 80, "Health insight"));
   }
 
-  // Legacy path: option already an object (old bundles in Mongo)
+  // Legacy: option already an object
   if (chartSpec.option && typeof chartSpec.option === "object") {
     return validateChartSpec(chartSpec, sanitizeText(title, 80, "Health insight"));
   }
 
-  // Legacy path: option is a string (very old bundles) — attempt repair
-  if (typeof chartSpec.option === "string") {
-    const repaired = repairOptionString(chartSpec.option);
-    if (repaired) {
-      return validateChartSpec(
-        { ...chartSpec, option: repaired },
-        sanitizeText(title, 80, "Health insight")
-      );
-    }
-  }
-
-  // Nothing worked — text fallback, stay in executor path
-  console.warn("[StageService] normalizeChartSpec: no recoverable option → text fallback", {
-    chartType: chartSpec.chart_type,
-    title,
-  });
   return buildFallbackChartSpec(
     sanitizeText(title, 80, "Health insight"),
     sanitizeText(chartSpec.takeaway || screenText || spokenText, 180, "Here is your health insight.")
   );
 }
 
+/**
+ * Normalize executor GPT output into a stage record.
+ */
 function normalizeExecutorStageOutput({
   executorOutput = null,
   stageIndex = 0,
@@ -334,9 +255,7 @@ function normalizeExecutorStageOutput({
     title,
   });
   const rawMoreAvailable = raw.more_available ?? raw.moreAvailable;
-  const moreAvailable = rawMoreAvailable == null
-    ? Boolean((Array.isArray(raw.suggested_followups) ? raw.suggested_followups : raw.suggestedFollowups)?.length)
-    : Boolean(rawMoreAvailable);
+  const moreAvailable = rawMoreAvailable == null ? false : Boolean(rawMoreAvailable);
   const suggestedFollowups = buildVoiceFirstFollowups(
     Array.isArray(raw.suggested_followups) ? raw.suggested_followups : raw.suggestedFollowups,
     moreAvailable
@@ -364,120 +283,24 @@ function normalizeExecutorStageOutput({
   });
 }
 
-function buildStageFromLegacyPayload({
-  legacyResult = null,
-  payload = null,
-  plannerResult = null,
-  stageIndex = 0,
-  requestId = null,
-  question = "",
-  source = "legacy_qnaengine_stage1",
-} = {}) {
-  const resolvedPayload = payload || legacyResult?.payload || {};
-  const title = extractTitle(resolvedPayload, plannerResult);
-  const chartSpec = resolvedPayload?.chart_spec || resolvedPayload?.primary_visual || null;
-  const moreAvailable = Boolean(
-    resolvedPayload?.next_views?.length
-    || resolvedPayload?.hasNextStage
-    || resolvedPayload?.more_available
-  );
-  const screenText = ensureNarratedScreenText({
-    screenText: extractScreenText(resolvedPayload, ""),
-    spokenText: resolvedPayload?.voice_answer || resolvedPayload?.spoken_answer || legacyResult?.voiceAnswer || "",
-    chartSpec,
-  });
-  const spokenText = ensureNarratedSpokenText({
-    spokenText: resolvedPayload?.voice_answer || resolvedPayload?.spoken_answer || legacyResult?.voiceAnswer || "",
-    screenText,
-    chartSpec,
-    title,
-  });
-  const suggestedFollowups = buildVoiceFirstFollowups(
-    extractSuggestedFollowups(resolvedPayload),
-    moreAvailable
-  );
-
-  return createStageRecord({
-    stageIndex,
-    title,
-    spokenText,
-    screenText,
-    chartSpec,
-    suggestedFollowups,
-    moreAvailable,
-    source,
-    requestId,
-    question,
-    metadata: {
-      voiceFirst: true,
-      narratedVisualUnit: true,
-      plannerMode: plannerResult?.mode || null,
-      plannerTimeScope: plannerResult?.timeScope || null,
-      candidateStageTypes: Array.isArray(plannerResult?.candidateStageTypes)
-        ? plannerResult.candidateStageTypes
-        : [],
-    },
-  });
-}
-
-function buildLegacyFallbackStage({
-  legacyResult = null,
-  payload = null,
-  plannerResult = null,
-  stageIndex = 0,
-  requestId = null,
-  question = "",
-} = {}) {
-  return buildStageFromLegacyPayload({
-    legacyResult,
-    payload,
-    plannerResult,
-    stageIndex,
-    requestId,
-    question,
-    source: "legacy_qnaengine_fallback",
-  });
-}
-
-function appendStageToBundleFormat(bundleStages = [], stageRecord = null) {
-  const existing = Array.isArray(bundleStages) ? bundleStages.slice() : [];
-  if (!stageRecord || typeof stageRecord !== "object") return existing;
-  const nextIndex = stageRecord.stageIndex == null
-    ? existing.length
-    : Math.max(0, Number(stageRecord.stageIndex) || 0);
-  const next = { ...stageRecord, stageIndex: nextIndex };
-  const replaceIndex = existing.findIndex((stage) => Number(stage?.stageIndex) === nextIndex);
-  if (replaceIndex >= 0) existing[replaceIndex] = next;
-  else existing.push(next);
-
-  existing.sort((a, b) => Number(a?.stageIndex || 0) - Number(b?.stageIndex || 0));
-  return existing;
+function getStageByIndex(bundle = null, stageIndex = null) {
+  if (!bundle || typeof bundle !== "object") return null;
+  const stages = Array.isArray(bundle.stages) ? bundle.stages : [];
+  if (!stages.length) return null;
+  const normalizedStageIndex = Math.max(0, Number(stageIndex) || 0);
+  return stages.find((stage) => Number(stage?.stageIndex) === normalizedStageIndex) || null;
 }
 
 function getCurrentStage(bundle = null) {
   if (!bundle || typeof bundle !== "object") return null;
   const stages = Array.isArray(bundle.stages) ? bundle.stages : [];
   if (!stages.length) return null;
-
   const currentIndex = Number.isFinite(Number(bundle.currentStageIndex))
     ? Math.max(0, Number(bundle.currentStageIndex))
     : stages.length - 1;
   return stages.find((stage) => Number(stage?.stageIndex) === currentIndex)
     || stages[stages.length - 1]
     || null;
-}
-
-function getStageByIndex(bundle = null, stageIndex = null) {
-  if (!bundle || typeof bundle !== "object") return null;
-  const stages = Array.isArray(bundle.stages) ? bundle.stages : [];
-  if (!stages.length) return null;
-
-  const normalizedStageIndex = Math.max(0, Number(stageIndex) || 0);
-  return stages.find((stage) => Number(stage?.stageIndex) === normalizedStageIndex) || null;
-}
-
-function hasStoredStage(bundle = null, stageIndex = null) {
-  return Boolean(getStageByIndex(bundle, stageIndex));
 }
 
 function getLatestStage(bundle = null) {
@@ -490,97 +313,16 @@ function getLatestStage(bundle = null) {
     .slice(-1)[0] || null;
 }
 
-function normalizeRequestedStageIndex(input = null, maxStageIndex = 0) {
-  const upperBound = Math.max(0, Number(maxStageIndex) || 0);
-  if (typeof input === "number" && Number.isFinite(input)) {
-    return Math.min(upperBound, Math.max(0, Math.floor(input)));
-  }
-
-  const raw = String(input == null ? "" : input).trim().toLowerCase();
-  if (!raw) return upperBound;
-  if (raw === "latest" || raw === "current" || raw === "now") return upperBound;
-
-  const parsed = Number(raw.replace(/[^\d-]/g, ""));
-  if (!Number.isFinite(parsed)) return upperBound;
-  return Math.min(upperBound, Math.max(0, Math.floor(parsed)));
-}
-
-function getNextStageIndex(bundle = null) {
-  if (!bundle || typeof bundle !== "object") return 0;
-  const stages = Array.isArray(bundle.stages) ? bundle.stages : [];
-  if (!stages.length) return 0;
-  const currentIndex = Number.isFinite(Number(bundle.currentStageIndex))
-    ? Math.max(0, Number(bundle.currentStageIndex))
-    : Number(stages[stages.length - 1]?.stageIndex || 0);
-  return Math.max(currentIndex + 1, stages.length);
-}
-
-function hasMoreStages(bundle = null, stageRecord = null) {
-  if (stageRecord && typeof stageRecord === "object") {
-    return Boolean(stageRecord.moreAvailable);
-  }
-  const stage = getCurrentStage(bundle) || getLatestStage(bundle);
-  return Boolean(stage?.moreAvailable);
-}
-
-function buildCompletionState({
-  bundle = null,
-  stageRecord = null,
-  completeWhenDone = false,
-} = {}) {
-  const stage = stageRecord || getCurrentStage(bundle) || getLatestStage(bundle);
-  const stageIndex = Math.max(0, Number(stage?.stageIndex || 0));
-  const stageCount = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
-    ? bundle.stagesPlan.length
-    : Array.isArray(bundle?.plannerOutput?.candidate_stage_types) && bundle.plannerOutput.candidate_stage_types.length
-      ? bundle.plannerOutput.candidate_stage_types.length
-      : Array.isArray(bundle?.stages) ? bundle.stages.length : (stage ? 1 : 0);
-  const moreAvailable = hasMoreStages(bundle, stage);
-  const bundleStatus = moreAvailable
-    ? "partial"
-    : (completeWhenDone ? "completed" : "ready");
-
-  return {
-    stageIndex,
-    stageCount,
-    moreAvailable,
-    done: !moreAvailable,
-    bundleStatus,
-  };
-}
-
-function buildStageResponse({
-  bundle = null,
-  stageRecord = null,
-  question = "",
-  requestId = null,
-  voiceAnswerSource = "gpt",
-  completeWhenDone = false,
-} = {}) {
-  const payload = buildStagePayload({
-    bundle,
-    stageRecord,
-    question,
-    requestId,
-    voiceAnswerSource,
-  });
-  const completionState = buildCompletionState({
-    bundle,
-    stageRecord,
-    completeWhenDone,
-  });
-  return {
-    payload,
-    completionState,
-  };
-}
-
+/**
+ * Build the full payload for a stage — used for both voice and frontend/WebSocket.
+ */
 function buildStagePayload({
   bundle = null,
   stageRecord = null,
   question = "",
   requestId = null,
   voiceAnswerSource = "gpt",
+  stageCountOverride = null,
 } = {}) {
   const stage = stageRecord && typeof stageRecord === "object" ? stageRecord : null;
   const safeStage = stage || createStageRecord({
@@ -595,14 +337,16 @@ function buildStagePayload({
     requestId,
     question,
   });
+
   const stages = Array.isArray(bundle?.stages)
     ? bundle.stages.slice().sort((a, b) => Number(a?.stageIndex || 0) - Number(b?.stageIndex || 0))
     : [safeStage];
   const normalizedCurrentIndex = Math.max(0, Number(safeStage.stageIndex || 0));
   const suggestedFollowups = buildVoiceFirstFollowups(
-    safeStage.suggestedFollowups || safeStage.suggested_follow_up || [],
+    safeStage.suggestedFollowups || [],
     safeStage.moreAvailable
   ).slice(0, 4);
+
   const nextViews = suggestedFollowups.map((label, idx) => ({
     id: `stage_${normalizedCurrentIndex}_next_${idx + 1}`,
     label,
@@ -612,16 +356,8 @@ function buildStagePayload({
   }));
 
   const chartSpecForPanel = (safeStage.chartSpec && typeof safeStage.chartSpec === "object")
-    ? normalizeChartSpec(
-        safeStage.chartSpec,
-        safeStage.title || "Health insight",
-        safeStage.spokenText || "",
-        safeStage.screenText || ""
-      )
-    : buildFallbackChartSpec(
-        safeStage.title || "Health insight",
-        safeStage.screenText || safeStage.spokenText || "No chart."
-      );
+    ? normalizeChartSpec(safeStage.chartSpec, safeStage.title || "Health insight", safeStage.spokenText || "", safeStage.screenText || "")
+    : buildFallbackChartSpec(safeStage.title || "Health insight", safeStage.screenText || safeStage.spokenText || "No chart.");
 
   const panel = {
     panel_id: `stage_${normalizedCurrentIndex}`,
@@ -634,35 +370,30 @@ function buildStagePayload({
   };
 
   const bundleComplete = safeStage.moreAvailable === false;
-  const completionOffer = bundleComplete
-    ? " That completes the analysis. You can ask me a new health question, or say go deeper to explore this topic further."
-    : "";
 
-  // ── Position context prefix for voice (Gap 2) ──────────────────────────────
-  // When there are multiple charts, prefix with "Chart X of Y." so Alexa
-  // clearly orients the user in the sequential reveal flow.
-  // Also append a navigation cue on non-final charts so the user knows what to say.
-  const stageCountForVoice = (() => {
-    const planned = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
-      ? bundle.stagesPlan.length
-      : Array.isArray(bundle?.plannerOutput?.candidate_stage_types)
-        ? bundle.plannerOutput.candidate_stage_types.length
-        : 0;
-    const cap = 6;
-    const knownCount = planned > 0 ? Math.min(planned, cap) : Math.max(stages.length, 1);
-    if (safeStage.moreAvailable && knownCount <= normalizedCurrentIndex + 1) {
-      return normalizedCurrentIndex + 2;
-    }
-    return knownCount;
-  })();
-  const positionPrefix = stageCountForVoice > 1
-    ? `Chart ${normalizedCurrentIndex + 1} of ${stageCountForVoice}. `
-    : "";
-  const navigationCue = !bundleComplete && stageCountForVoice > 1
-    ? " Say next for the next chart."
-    : "";
-  const fullVoiceAnswer = positionPrefix + safeStage.spokenText + completionOffer + navigationCue;
-  // ── End position context ───────────────────────────────────────────────────
+  // Position context for voice — prefer the caller-supplied count (actual generated stages)
+  const stageCount = stageCountOverride != null
+    ? Math.max(1, Number(stageCountOverride))
+    : (() => {
+        const planned = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
+          ? bundle.stagesPlan.length
+          : Array.isArray(bundle?.stages) ? bundle.stages.length : 1;
+        return Math.max(1, planned);
+      })();
+
+  // Auto-advance: if all stages are available, combine into one flowing narrative
+  const allStagesAvailable = stages.length >= stageCount && stageCount > 1;
+  const autoAdvance = allStagesAvailable && normalizedCurrentIndex === 0;
+
+  let fullVoiceAnswer;
+  if (autoAdvance) {
+    fullVoiceAnswer = buildCombinedVoiceAnswer(stages);
+  } else {
+    const completionOffer = bundleComplete
+      ? " That covers everything I found. Feel free to ask me another question anytime."
+      : "";
+    fullVoiceAnswer = safeStage.spokenText + completionOffer;
+  }
 
   return {
     status: "ready",
@@ -670,6 +401,8 @@ function buildStagePayload({
     interaction_mode: "voice_first",
     navigation_mode: "voice_only",
     voice_navigation_only: true,
+    autoAdvance,
+    autoAdvanceIntervalMs: autoAdvance ? 15000 : 0,
     question: sanitizeText(question || safeStage.question, 280, ""),
     spoken_answer: fullVoiceAnswer,
     voice_answer: fullVoiceAnswer,
@@ -697,29 +430,15 @@ function buildStagePayload({
     followup_mode: "suggested_drill_down",
     stages: stages.map((item, idx) => ({
       id: `stage_${Number(item?.stageIndex || idx)}`,
-      speech: sanitizeText(item?.spokenText, 700, ""),
-      voice_answer: sanitizeText(item?.spokenText, 700, ""),
+      speech: sanitizeTextNoTruncate(item?.spokenText, ""),
+      voice_answer: sanitizeTextNoTruncate(item?.spokenText, ""),
       screen_text: sanitizeText(item?.screenText, 320, ""),
       chart_spec: item?.chartSpec || null,
       summary: sanitizeText(item?.screenText, 240, ""),
       title: sanitizeText(item?.title, 120, "Health insight"),
       stageIndex: Number(item?.stageIndex || idx),
     })),
-    stageCount: (() => {
-      const planned = Array.isArray(bundle?.stagesPlan) && bundle.stagesPlan.length
-        ? bundle.stagesPlan.length
-        : Array.isArray(bundle?.plannerOutput?.candidate_stage_types)
-          ? bundle.plannerOutput.candidate_stage_types.length
-          : 0;
-      const cap = 6;
-      const knownCount = planned > 0 ? Math.min(planned, cap) : Math.max(stages.length, 1);
-      // When more stages are coming, guarantee the count is at least currentIndex+2
-      // so the lambda show_more gate never prematurely blocks navigation.
-      if (safeStage.moreAvailable && knownCount <= normalizedCurrentIndex + 1) {
-        return normalizedCurrentIndex + 2;
-      }
-      return knownCount;
-    })(),
+    stageCount,
     activeStageIndex: normalizedCurrentIndex,
     activePanelId: panel.panel_id,
     chartContext: {
@@ -729,124 +448,28 @@ function buildStagePayload({
       chartTitle: safeStage.title,
       chartType: safeStage?.chartSpec?.chart_type || "list_summary",
       summaryBundle: null,
-      panels: [
-        {
-          panel_id: panel.panel_id,
-          title: panel.title,
-          goal: panel.goal,
-          metrics: panel.metrics,
-          index: 0,
-        },
-      ],
+      panels: [{ panel_id: panel.panel_id, title: panel.title, goal: panel.goal, metrics: panel.metrics, index: 0 }],
       nextViews: nextViews,
       suggestedDrillDowns: suggestedFollowups.slice(0, 3),
     },
   };
 }
 
-function extractStageSummary(stageRecord = {}) {
-  return {
-    stageIndex: Number(stageRecord?.stageIndex || 0),
-    title: sanitizeText(stageRecord?.title, 120, ""),
-    moreAvailable: Boolean(stageRecord?.moreAvailable),
-    source: sanitizeText(stageRecord?.source, 40, ""),
-    hasChartSpec: Boolean(stageRecord?.chartSpec),
-    createdAt: stageRecord?.createdAt || null,
-  };
-}
-
-function buildReplayResponse({
-  stage = null,
-  bundle = null,
-  question = "",
-  requestId = null,
-  voiceAnswerSource = "gpt",
-} = {}) {
-  if (!stage || typeof stage !== "object") return null;
-  return buildStagePayload({
-    bundle,
-    stageRecord: stage,
-    question: sanitizeText(question, 280, ""),
-    requestId,
-    voiceAnswerSource: sanitizeText(voiceAnswerSource, 20, "gpt"),
-  });
-}
-
-function replayStoredStage({
-  bundle = null,
-  stageIndex = null,
-  question = "",
-  requestId = null,
-  voiceAnswerSource = "gpt",
-} = {}) {
-  if (!bundle || typeof bundle !== "object") {
-    return {
-      ok: false,
-      reason: "missing_bundle",
-      stage: null,
-      payload: null,
-    };
-  }
-
-  const latestStage = getLatestStage(bundle);
-  const maxStageIndex = Number(latestStage?.stageIndex || 0);
-  let targetStageIndex = maxStageIndex;
-  if (stageIndex != null && stageIndex !== "") {
-    const raw = String(stageIndex).trim().toLowerCase();
-    if (["latest", "current", "now"].includes(raw)) {
-      targetStageIndex = maxStageIndex;
-    } else {
-      const parsed = Number(raw.replace(/[^\d-]/g, ""));
-      targetStageIndex = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : maxStageIndex;
-    }
-  }
-  const stage = getStageByIndex(bundle, targetStageIndex);
-
-  if (!stage) {
-    return {
-      ok: false,
-      reason: "stage_not_found",
-      stageIndex: targetStageIndex,
-      stage: null,
-      payload: null,
-    };
-  }
-
-  const payload = buildReplayResponse({
-    stage,
-    bundle,
-    question,
-    requestId,
-    voiceAnswerSource,
-  });
-
-  return {
-    ok: true,
-    reason: "replayed_stored_stage",
-    stageIndex: Number(stage.stageIndex || 0),
-    stage,
-    payload,
-    stageSummary: extractStageSummary(stage),
-  };
-}
-
 module.exports = {
-  appendStageToBundleFormat,
-  buildLegacyFallbackStage,
-  buildReplayResponse,
   buildStagePayload,
-  buildStageFromLegacyPayload,
+  buildCombinedVoiceAnswer,
   createStageRecord,
-  extractStageSummary,
-  hasMoreStages,
   getCurrentStage,
   getLatestStage,
   getStageByIndex,
-  getNextStageIndex,
-  hasStoredStage,
-  buildCompletionState,
-  buildStageResponse,
-  normalizeRequestedStageIndex,
   normalizeExecutorStageOutput,
-  replayStoredStage,
+  buildVoiceFirstFollowups,
+  // Keep backward compat exports for any remaining references
+  buildLegacyFallbackStage: createStageRecord,
+  replayStoredStage: ({ bundle, stageIndex, question, requestId }) => {
+    const stage = getStageByIndex(bundle, stageIndex);
+    if (!stage) return { ok: false, stage: null, payload: null };
+    const payload = buildStagePayload({ bundle, stageRecord: stage, question, requestId });
+    return { ok: true, stage, payload };
+  },
 };
