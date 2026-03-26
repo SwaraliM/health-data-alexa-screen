@@ -111,7 +111,6 @@ const LaunchRequestHandler = {
         ///////////////////////Get information from sheets about person etc...
 
         //let apiUrl = apiInfoCall;
-        //const authToken = 'Bearer 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';
         //var speakOutput2 = "Anything else I can help with?";
         //let counter = 0;
 
@@ -373,7 +372,6 @@ const AskChatGPTIntentHandler = {
 
 
     let apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
-    //const authToken = 'Bearer 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';
     //var speakOutput2 = "Anything else I can help with?";
     //let counter = 0;
 
@@ -427,7 +425,7 @@ const AskChatGPTIntentHandler = {
         //counter++;
         tryAgain = "true";
         const apiUrl =apiCall+followUp+'&tryAgain='+tryAgain;
-    //const authToken = 'Bearer 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';
+
 
         // Send progressive directive with filler text to keep user engaged while polling
         const STindex1 = Math.floor(Math.random() * smallTalkFillers1.length);
@@ -663,7 +661,6 @@ const TryAgainIntentHandler = {
             tryAgain = "true";
             //counter++;
             const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
-        //const authToken = 'Bearer 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';
             let apiResponsePromise2 = axios.post(apiUrl, "\"" + statement + "\"", {
               headers: {
                 //Authorization: authToken,
@@ -857,7 +854,6 @@ const NoIntentHandler = {
             tryAgain = "true";
             //counter++;
             const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
-        //const authToken = 'Bearer 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';
             let apiResponsePromise2 = axios.post(apiUrl, "\"" + statement + "\"", {
               headers: {
                 //Authorization: authToken,
@@ -1090,7 +1086,6 @@ const FallbackIntentHandler = {
             tryAgain = "true";
             //counter++;
             const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
-        //const authToken = 'Bearer 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';
             let apiResponsePromise2 = axios.post(apiUrl, "\"" + statement + "\"", {
               headers: {
                 //Authorization: authToken,
@@ -1293,7 +1288,6 @@ const IntentReflectorHandler = {
             tryAgain = "true";
             //counter++;
             const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
-        //const authToken = 'Bearer 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';
             let apiResponsePromise2 = axios.post(apiUrl, "\"" + statement + "\"", {
               headers: {
                 //Authorization: authToken,
@@ -1492,7 +1486,6 @@ const ErrorHandler = {
             tryAgain = "true";
             //counter++;
             const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
-        //const authToken = 'Bearer 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';
             let apiResponsePromise2 = axios.post(apiUrl, "\"" + statement + "\"", {
               headers: {
                 //Authorization: authToken,
