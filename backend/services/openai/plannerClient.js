@@ -11,6 +11,7 @@ const {
   EXECUTOR_ALLOWED_CHART_TYPES,
   PLANNER_ALLOWED_STAGE_TYPES,
   PLANNER_ALLOWED_TIME_SCOPES,
+  PLANNER_SYSTEM_PROMPT_V2,
 } = require("../../configs/agentConfigs");
 
 const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
@@ -283,6 +284,130 @@ async function runPlannerRequest({ question, enrichedIntent = null, userContext 
   };
 }
 
+/**
+ * V2 planner request — uses query decomposition with sub_analyses.
+ * Falls back to V1 if the V2 config is disabled or the response is malformed.
+ */
+async function runPlannerRequestV2({ question, enrichedIntent = null, userContext = null, forcedMetrics = null } = {}) {
+  const v2Config = AGENT_CONFIGS.plannerV2;
+  if (!v2Config?.enabled) {
+    return runPlannerRequest({ question, enrichedIntent, userContext, forcedMetrics });
+  }
+
+  const plannerInput = {
+    question: sanitizeText(question, 300, ""),
+    inferred_metrics: Array.isArray(enrichedIntent?.inferred_metrics) ? enrichedIntent.inferred_metrics : [],
+    rich_analysis_goal: sanitizeText(enrichedIntent?.rich_analysis_goal, 300, ""),
+    time_range: sanitizeText(enrichedIntent?.time_range, 40, "last_7_days") || "last_7_days",
+    user_context: userContext || null,
+    allowed_time_scopes: PLANNER_ALLOWED_TIME_SCOPES,
+    forced_metrics: Array.isArray(forcedMetrics) && forcedMetrics.length ? forcedMetrics : null,
+  };
+
+  try {
+    const response = await createResponse({
+      model: v2Config.model,
+      input: plannerInput,
+      instructions: PLANNER_SYSTEM_PROMPT_V2,
+      responseFormat: v2Config.textFormat,
+      tools: [],
+      timeoutMs: v2Config.timeoutMs,
+      temperature: v2Config.temperature,
+      maxOutputTokens: v2Config.maxOutputTokens,
+      metadata: {
+        agent: "planner_v2",
+        version: v2Config.version,
+      },
+    });
+
+    if (!response?.ok || !response?.outputJson) {
+      plannerLog("planner V2 request failed, falling back to V1");
+      return runPlannerRequest({ question, enrichedIntent, userContext, forcedMetrics });
+    }
+
+    const raw = response.outputJson;
+
+    // Validate V2 shape: must have sub_analyses array
+    if (!Array.isArray(raw.sub_analyses) || !raw.sub_analyses.length) {
+      plannerLog("planner V2 response missing sub_analyses, falling back to V1");
+      return runPlannerRequest({ question, enrichedIntent, userContext, forcedMetrics });
+    }
+
+    // Normalize sub_analyses
+    const subAnalyses = raw.sub_analyses.slice(0, 4).map((sa, idx) => ({
+      id: String(sa.id || `sa_${idx}`).slice(0, 20),
+      label: sanitizeText(sa.label, 80, ""),
+      metrics_needed: resolveRequestedMetrics(sa.metrics_needed || []).slice(0, 8),
+      time_scope: sanitizeTimeScope(sa.time_scope, "last_7_days"),
+      analysis_type: sanitizeText(sa.analysis_type, 40, "general"),
+    }));
+
+    // Normalize stages_plan
+    const saIds = new Set(subAnalyses.map((sa) => sa.id));
+    const stagesPlan = (Array.isArray(raw.stages_plan) ? raw.stages_plan : [])
+      .slice(0, EXECUTOR_MAX_STAGE_COUNT)
+      .map((stage, idx) => {
+        const subIds = Array.isArray(stage.sub_analysis_ids)
+          ? stage.sub_analysis_ids.filter((id) => saIds.has(id))
+          : [subAnalyses[0]?.id].filter(Boolean);
+        return {
+          stageIndex: idx,
+          sub_analysis_ids: subIds.length ? subIds : [subAnalyses[0]?.id].filter(Boolean),
+          visualization_intent: sanitizeText(stage.visualization_intent, 120, ""),
+          chartType: String(stage.chartType || "bar").trim().toLowerCase(),
+          title: sanitizeText(stage.title, 100, ""),
+          goal: sanitizeText(stage.goal, 180, ""),
+          // Backward-compat fields for the existing pipeline
+          stageType: "overview", // will be overridden by visualization_intent in V3 path
+          stageRole: idx === 0 ? "primary" : "deep_dive",
+          focusMetrics: subIds.flatMap((id) => {
+            const sa = subAnalyses.find((s) => s.id === id);
+            return sa?.metrics_needed || [];
+          }).slice(0, 6),
+        };
+      });
+
+    // Derive flat metrics_needed and time_scope for backward compat
+    const allMetrics = [...new Set(subAnalyses.flatMap((sa) => sa.metrics_needed))];
+    const primaryTimeScope = subAnalyses[0]?.time_scope || "last_7_days";
+
+    plannerLog("planner V2 request completed", {
+      responseId: response.responseId,
+      subAnalysisCount: subAnalyses.length,
+      stageCount: stagesPlan.length,
+      metrics: allMetrics,
+    });
+
+    return {
+      metrics_needed: allMetrics,
+      metricsNeeded: allMetrics,
+      time_scope: primaryTimeScope,
+      timeScope: primaryTimeScope,
+      analysis_goal: sanitizeText(raw.analysis_goal, 200, "Analyze health data"),
+      analysisGoal: sanitizeText(raw.analysis_goal, 200, "Analyze health data"),
+      candidate_stage_types: stagesPlan.map((s) => s.stageType),
+      candidateStageTypes: stagesPlan.map((s) => s.stageType),
+      stages_plan: stagesPlan,
+      stagesPlan,
+      sub_analyses: subAnalyses,
+      subAnalyses,
+      rawPlannerOutput: raw,
+      plannerMeta: {
+        source: "gpt_v2",
+        responseStatus: response.status || "completed",
+        responseId: response.responseId || null,
+        plannerVersion: v2Config.version,
+      },
+    };
+  } catch (error) {
+    plannerLog("planner V2 threw, falling back to V1", {
+      message: error?.message || String(error),
+    });
+    return runPlannerRequest({ question, enrichedIntent, userContext, forcedMetrics });
+  }
+}
+
 module.exports = {
   runPlannerRequest,
+  runPlannerRequestV2,
 };

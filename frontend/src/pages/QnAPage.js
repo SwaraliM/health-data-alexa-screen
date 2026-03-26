@@ -236,6 +236,8 @@ const QnAPage = () => {
 
   useEffect(() => {
     if (!payload || payload.loading || chartLoading || !payload.answer_ready) return undefined;
+    // When auto-advance is active, per-stage speech is handled by the auto-advance effect below
+    if (payload?.autoAdvance && Array.isArray(payload?.stages) && payload.stages.length > 1) return undefined;
     const speechText = getPayloadSpeechText(payload);
     const speechKey = getPayloadSpeechKey(payload);
     if (!speechText || !speechKey || spokenRequestRef.current === speechKey) return undefined;
@@ -249,15 +251,97 @@ const QnAPage = () => {
     return () => clearTimeout(speechTimer);
   }, [chartLoading, payload]);
 
+  // Auto-advance: cycle through stages driven by speech events (chart appears when previous narration ends)
+  const [autoAdvanceIndex, setAutoAdvanceIndex] = useState(0);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setAutoAdvanceIndex(0);
+
+    const stages = Array.isArray(payload?.stages) ? payload.stages : [];
+    if (!payload?.autoAdvance || stages.length <= 1) return undefined;
+    if (payload.loading || chartLoading || !payload.answer_ready) return undefined;
+
+    // TTS dedup — don't re-speak if we already spoke this payload
+    const speechKey = getPayloadSpeechKey(payload);
+    if (speechKey && spokenRequestRef.current === speechKey) return undefined;
+    spokenRequestRef.current = speechKey;
+    sessionStorage.setItem(QNA_SPOKEN_REQUEST_STORAGE_KEY, speechKey);
+
+    let cancelled = false;
+    const hasTTS = typeof window !== "undefined" && window.speechSynthesis
+      && typeof window.SpeechSynthesisUtterance === "function";
+
+    function speakStage(index) {
+      if (cancelled || index >= stages.length) return;
+      setAutoAdvanceIndex(index);
+
+      const stageText = stages[index]?.speech || stages[index]?.voice_answer || "";
+      if (!stageText) {
+        // No speech text — advance after a brief pause
+        setTimeout(() => { if (!cancelled) speakStage(index + 1); }, 500);
+        return;
+      }
+
+      if (!hasTTS) {
+        // Fallback: no TTS available, use 10s timer per stage
+        setTimeout(() => { if (!cancelled) speakStage(index + 1); }, 10000);
+        return;
+      }
+
+      const synth = window.speechSynthesis;
+      const utterance = new window.SpeechSynthesisUtterance(stageText);
+      utterance.rate = 1;
+      utterance.onend = () => { if (!cancelled) speakStage(index + 1); };
+      utterance.onerror = () => { if (!cancelled) speakStage(index + 1); };
+      synth.speak(utterance);
+    }
+
+    // Small delay to let the chart render before starting speech
+    const startTimer = setTimeout(() => speakStage(0), 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(startTimer);
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [payload?.autoAdvance, payload?.stages, payload?.answer_ready, chartLoading]);
+
+  // Build panels from stages for auto-advance, or use existing panels
+  const allStagePanels = useMemo(() => {
+    const stages = Array.isArray(payload?.stages) ? payload.stages : [];
+    if (!payload?.autoAdvance || stages.length <= 1) return null;
+    return stages.map((stage, idx) => ({
+      panel_id: `stage_${stage.stageIndex ?? idx}`,
+      title: stage.title || `Chart ${idx + 1}`,
+      subtitle: "",
+      goal: "deep_dive",
+      metrics: [],
+      visual_family: stage.chart_spec?.chart_type || "bar",
+      chart_spec: validateChartSpec(
+        stage.chart_spec || stage,
+        stage.title || "Health insight"
+      ),
+    }));
+  }, [payload?.autoAdvance, payload?.stages]);
+
   const panels = useMemo(() => payload?.panels || [], [payload]);
-  const activePanel = useMemo(
-    () => panels.find((panel) => panel.panel_id === payload?.activePanelId) || panels[0] || null,
-    [panels, payload?.activePanelId]
-  );
+  const activePanel = useMemo(() => {
+    if (allStagePanels && allStagePanels.length > 0) {
+      return allStagePanels[autoAdvanceIndex] || allStagePanels[0] || null;
+    }
+    return panels.find((panel) => panel.panel_id === payload?.activePanelId) || panels[0] || null;
+  }, [panels, payload?.activePanelId, allStagePanels, autoAdvanceIndex]);
+
   const shouldShowSinglePanel = payload?.voice_navigation_only === true
     || payload?.interaction_mode === "voice_first"
     || payload?.response_mode === "single_view"
-    || payload?.stagedFlow;
+    || payload?.stagedFlow
+    || payload?.autoAdvance;
   const visiblePanels = shouldShowSinglePanel
     ? (activePanel ? [activePanel] : panels.slice(0, 1))
     : panels;
@@ -265,9 +349,11 @@ const QnAPage = () => {
   const isSinglePanel = panelCount === 1;
   const renderedLayout = isSinglePanel ? "single_focus" : (payload?.layout || "single_focus");
   const gridHeroClass = panelCount === 2 && visiblePanels[0]?.emphasis === "hero" ? "hd-grid-hero-first" : "";
-  const activeStageNumber = (toNonNegativeInt(payload?.activeStageIndex, 0) || 0) + 1;
+  const activeStageNumber = payload?.autoAdvance
+    ? autoAdvanceIndex + 1
+    : (toNonNegativeInt(payload?.activeStageIndex, 0) || 0) + 1;
   const stageCount = Math.max(1, toNonNegativeInt(payload?.stageCount, panels.length || 1) || 1);
-  const bundleComplete = payload?.bundle_complete === true;
+  const bundleComplete = payload?.bundle_complete === true || (payload?.autoAdvance && autoAdvanceIndex >= stageCount - 1);
 
   return (
     <div className="hd-shell">
@@ -287,9 +373,6 @@ const QnAPage = () => {
 
           <section className={`hd-report-header hd-report-header-compact ${isSinglePanel ? "hd-report-header-single-panel" : ""}`.trim()}>
             <div>
-              {payload?.question ? (
-                <p className="hd-report-eyebrow">{payload.question}</p>
-              ) : null}
               <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
               <p className="hd-stage-counter">Chart {activeStageNumber} of {stageCount}</p>
             </div>

@@ -70,6 +70,9 @@ function hydrateChartSpec(gptChartSpec, fallbackTitle = "Health Summary") {
       takeaway,
       option,
     };
+    // Remove chart_data after hydration to prevent double-hydration
+    // when buildStagePayload calls normalizeChartSpec again
+    delete hydratedSpec.chart_data;
 
     return validateChartSpec(hydratedSpec, title || fallbackTitle);
   } catch (error) {

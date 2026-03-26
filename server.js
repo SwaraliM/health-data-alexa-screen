@@ -17,7 +17,7 @@ startReminderScheduler();
 
 // Serve Backend APIs
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "5mb", strict: false }));
 
 app.use('/api', backend.router);
 
