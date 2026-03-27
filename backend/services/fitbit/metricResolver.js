@@ -78,6 +78,13 @@ const CONCEPT_TO_METRICS = {
   "overnight health": ["sleep_minutes", "sleep_efficiency", "breathing_rate", "spo2", "resting_hr"],
 };
 
+const DOMAIN_METRIC_BUNDLES = {
+  sleep: ["sleep_minutes", "sleep_efficiency", "sleep_deep", "sleep_rem", "sleep_awake", "resting_hr"],
+  activity: ["steps", "calories", "distance", "floors", "resting_hr"],
+  "heart health": ["resting_hr", "hrv", "sleep_minutes", "steps"],
+  "overall health": ["steps", "calories", "sleep_minutes", "sleep_efficiency", "sleep_deep", "resting_hr", "hrv"],
+};
+
 function normalizeText(value = "") {
   return String(value || "")
     .trim()
@@ -196,9 +203,41 @@ function resolveRequestedMetrics(input) {
   return resolved;
 }
 
+function expandMetricSetForQuestion(question = "", metrics = []) {
+  const normalizedQuestion = normalizeText(question);
+  const expanded = [];
+  pushUnique(expanded, Array.isArray(metrics) ? metrics : [metrics]);
+
+  const includes = (pattern) => pattern.test(normalizedQuestion);
+  const addBundle = (name) => pushUnique(expanded, DOMAIN_METRIC_BUNDLES[name] || []);
+  const metricSet = new Set(expanded);
+
+  const isEvaluative = /\b(has|have|had|is|am|are|was|were|improv|better|worse|normal|enough|declin|increase|decrease|changed)\b/.test(normalizedQuestion);
+  const isBroadSleepQuestion = includes(/\b(sleep|slept|sleeping|sleep quality|sleep stages|rest)\b/);
+  const isBroadActivityQuestion = includes(/\b(activity|active|steps|walking|exercise|move)\b/);
+  const isBroadHeartQuestion = includes(/\b(heart|hrv|resting heart|pulse|recovery)\b/);
+  const isOverallHealthQuestion = includes(/\b(overall health|health report|how am i doing|wellness|summary of my health)\b/);
+
+  if (isBroadSleepQuestion && (isEvaluative || metricSet.has("sleep_minutes"))) {
+    addBundle("sleep");
+  }
+  if (isBroadActivityQuestion && (isEvaluative || metricSet.has("steps"))) {
+    addBundle("activity");
+  }
+  if (isBroadHeartQuestion) {
+    addBundle("heart health");
+  }
+  if (isOverallHealthQuestion) {
+    addBundle("overall health");
+  }
+
+  return expanded;
+}
+
 module.exports = {
   resolveMetricAliases,
   expandConceptToMetrics,
+  expandMetricSetForQuestion,
   resolveRequestedMetrics,
   CANONICAL_METRICS,
   CONCEPT_TO_METRICS,

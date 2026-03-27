@@ -246,6 +246,15 @@ async function loadActiveBundleForUser(username) {
   return doc;
 }
 
+async function loadLatestCompletedBundleForUser(username) {
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) return null;
+  return QnaBundle.findOne({
+    username: normalizedUsername,
+    status: "completed",
+  }).sort({ createdAt: -1 });
+}
+
 async function setBundleRequestOwnership(bundleId, requestKey, source = "internal") {
   const normalizedBundleId = normalizeBundleId(bundleId);
   const safeRequestKey = normalizeRequestKey(requestKey);
@@ -739,4 +748,5 @@ module.exports = {
   markBundleComplete,
   releaseBundle,
   touchBundle,
+  loadLatestCompletedBundleForUser,
 };

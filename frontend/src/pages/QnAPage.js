@@ -251,7 +251,7 @@ const QnAPage = () => {
     return () => clearTimeout(speechTimer);
   }, [chartLoading, payload]);
 
-  // Auto-advance: cycle through stages driven by speech events (chart appears when previous narration ends)
+  // Auto-advance: cycle through stages synchronized with Alexa narration or browser TTS
   const [autoAdvanceIndex, setAutoAdvanceIndex] = useState(0);
 
   useEffect(() => {
@@ -264,13 +264,33 @@ const QnAPage = () => {
     if (!payload?.autoAdvance || stages.length <= 1) return undefined;
     if (payload.loading || chartLoading || !payload.answer_ready) return undefined;
 
-    // TTS dedup — don't re-speak if we already spoke this payload
+    // Dedup — don't re-run if we already handled this payload
     const speechKey = getPayloadSpeechKey(payload);
     if (speechKey && spokenRequestRef.current === speechKey) return undefined;
     spokenRequestRef.current = speechKey;
     sessionStorage.setItem(QNA_SPOKEN_REQUEST_STORAGE_KEY, speechKey);
 
     let cancelled = false;
+    const schedule = Array.isArray(payload?.chartAdvanceSchedule) ? payload.chartAdvanceSchedule : [];
+
+    // ── Alexa-narrated: advance charts on pre-computed schedule ──────────
+    // Alexa speaks the combined SSML; we advance charts at estimated offsets.
+    // 1.5s initial delay accounts for Alexa processing before speech starts.
+    if (schedule.length > 1) {
+      const ALEXA_PROCESSING_DELAY = 1500;
+      const timers = schedule.map(({ stageIndex, offsetMs }) =>
+        setTimeout(() => {
+          if (!cancelled) setAutoAdvanceIndex(stageIndex);
+        }, ALEXA_PROCESSING_DELAY + offsetMs)
+      );
+
+      return () => {
+        cancelled = true;
+        timers.forEach(clearTimeout);
+      };
+    }
+
+    // ── Browser TTS fallback: advance charts driven by speech events ────
     const hasTTS = typeof window !== "undefined" && window.speechSynthesis
       && typeof window.SpeechSynthesisUtterance === "function";
 
@@ -280,13 +300,11 @@ const QnAPage = () => {
 
       const stageText = stages[index]?.speech || stages[index]?.voice_answer || "";
       if (!stageText) {
-        // No speech text — advance after a brief pause
         setTimeout(() => { if (!cancelled) speakStage(index + 1); }, 500);
         return;
       }
 
       if (!hasTTS) {
-        // Fallback: no TTS available, use 10s timer per stage
         setTimeout(() => { if (!cancelled) speakStage(index + 1); }, 10000);
         return;
       }
@@ -299,7 +317,6 @@ const QnAPage = () => {
       synth.speak(utterance);
     }
 
-    // Small delay to let the chart render before starting speech
     const startTimer = setTimeout(() => speakStage(0), 300);
 
     return () => {
@@ -354,6 +371,7 @@ const QnAPage = () => {
     : (toNonNegativeInt(payload?.activeStageIndex, 0) || 0) + 1;
   const stageCount = Math.max(1, toNonNegativeInt(payload?.stageCount, panels.length || 1) || 1);
   const bundleComplete = payload?.bundle_complete === true || (payload?.autoAdvance && autoAdvanceIndex >= stageCount - 1);
+  const showReadyResumePage = statusNotice?.type === "ready_to_resume" && Boolean(statusNotice?.message);
 
   return (
     <div className="hd-shell">
@@ -364,13 +382,23 @@ const QnAPage = () => {
           <div className="hd-user"><FiUser /> {username}</div>
         </header>
 
-        <main className={`hd-main hd-main-chart-only hd-layout-${renderedLayout} ${isSinglePanel ? "hd-main-single-panel" : ""}`.trim()}>
-          {statusNotice?.message ? (
+        <main className={`hd-main hd-main-chart-only hd-layout-${renderedLayout} ${isSinglePanel ? "hd-main-single-panel" : ""} ${showReadyResumePage ? "hd-main-ready-resume" : ""}`.trim()}>
+          {showReadyResumePage ? (
+            <section className="hd-ready-resume-page" aria-live="polite" aria-label="Answer ready">
+              <div className="hd-ready-resume-card">
+                <p className="hd-ready-resume-eyebrow">Your answer is ready</p>
+                <h2 className="hd-ready-resume-title">Alexa is ready to continue</h2>
+                <p className="hd-ready-resume-message">{statusNotice.message}</p>
+                <p className="hd-ready-resume-instruction">Say, “Alexa, continue” when you are ready.</p>
+              </div>
+            </section>
+          ) : statusNotice?.message ? (
             <div className={`hd-ready-banner ${statusNotice.type}`}>
               {statusNotice.message}
             </div>
           ) : null}
 
+          {!showReadyResumePage ? (
           <section className={`hd-report-header hd-report-header-compact ${isSinglePanel ? "hd-report-header-single-panel" : ""}`.trim()}>
             <div>
               <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
@@ -378,7 +406,9 @@ const QnAPage = () => {
             </div>
             <p className="hd-report-takeaway">{payload?.takeaway || summary}</p>
           </section>
+          ) : null}
 
+          {!showReadyResumePage ? (
           <section className="hd-voice-hints" aria-label="Voice commands">
             <div className="hd-voice-hints-row">
               {!bundleComplete && (
@@ -388,7 +418,9 @@ const QnAPage = () => {
               <span className="hd-voice-hint-chip">Ask any question about this chart</span>
             </div>
           </section>
+          ) : null}
 
+          {!showReadyResumePage ? (
           <section className={`hd-panel-grid hd-panel-grid-${renderedLayout} hd-panel-count-${panelCount} ${gridHeroClass} ${isSinglePanel ? "hd-panel-grid-single-panel" : ""}`.trim()}>
             {chartLoading ? (
               <div className="hd-chart-loading hd-loading-panel">
@@ -419,6 +451,7 @@ const QnAPage = () => {
               ))
             )}
           </section>
+          ) : null}
 
         </main>
       </div>

@@ -9,5 +9,9 @@ lambda/
 backend/.env
 backend/services/qna/__tests__
 index_original.js
-lambdaindex.js
-
+lambda/index.js
+claude.md
+agents.md
+backend/tests/
+/Users/swara/Documents/health-data-alexa-screen/frontend/.env
+/Users/swara/Documents/health-data-alexa-screen/backend/.env

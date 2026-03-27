@@ -8,7 +8,7 @@
 "use strict";
 
 const { AGENT_CONFIGS } = require("../../configs/agentConfigs");
-const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
+const { resolveRequestedMetrics, expandMetricSetForQuestion } = require("../fitbit/metricResolver");
 const { runPlannerRequestV2 } = require("../openai/plannerClient");
 
 const PLANNER_AGENT_DEBUG = process.env.QNA_PLANNER_AGENT_DEBUG !== "false";
@@ -36,7 +36,7 @@ function normalizeStageTypes(stageTypes = []) {
 }
 
 function fallbackPlannerResult({ question, enrichedIntent }) {
-  const metrics = resolveRequestedMetrics(question);
+  const metrics = expandMetricSetForQuestion(question, resolveRequestedMetrics(question)).slice(0, 8);
   const timeScope = sanitizeText(enrichedIntent?.time_range, 40, "last_7_days") || "last_7_days";
   return {
     metricsNeeded: metrics,
@@ -44,9 +44,9 @@ function fallbackPlannerResult({ question, enrichedIntent }) {
     analysisGoal: sanitizeText(enrichedIntent?.rich_analysis_goal || question, 140, "Summarize recent health trends"),
     candidateStageTypes: ["overview", "trend", "takeaway"],
     stagesPlan: [
-      { stageIndex: 0, stageType: "overview", stageRole: "primary", focusMetrics: metrics.slice(0, 4), chartType: "bar", title: "", goal: "" },
-      { stageIndex: 1, stageType: "trend", stageRole: "deep_dive", focusMetrics: metrics.slice(0, 4), chartType: "line", title: "", goal: "" },
-      { stageIndex: 2, stageType: "takeaway", stageRole: "summary", focusMetrics: metrics.slice(0, 4), chartType: "list_summary", title: "", goal: "" },
+      { stageIndex: 0, stageType: "overview", stageRole: "primary", focusMetrics: metrics.slice(0, 6), chartType: "bar", title: "", goal: "" },
+      { stageIndex: 1, stageType: "trend", stageRole: "deep_dive", focusMetrics: metrics.slice(0, 6), chartType: "line", title: "", goal: "" },
+      { stageIndex: 2, stageType: "takeaway", stageRole: "summary", focusMetrics: metrics.slice(0, 6), chartType: "list_summary", title: "", goal: "" },
     ],
     subAnalyses: [{
       id: "sa_primary",
@@ -98,13 +98,14 @@ async function planQuestion({ question, username, enrichedIntent = null, userCon
     const normalizedMetrics = Array.isArray(plan.metrics_needed || plan.metricsNeeded)
       ? (plan.metrics_needed || plan.metricsNeeded)
       : resolveRequestedMetrics(plan.metrics_needed);
+    const expandedMetrics = expandMetricSetForQuestion(safeQuestion, normalizedMetrics).slice(0, 8);
 
     const stagesPlan = Array.isArray(plan.stages_plan || plan.stagesPlan) && (plan.stages_plan || plan.stagesPlan).length
       ? (plan.stages_plan || plan.stagesPlan)
       : fallbackPlannerResult({ question: safeQuestion, enrichedIntent }).stagesPlan;
 
     const result = {
-      metricsNeeded: normalizedMetrics,
+      metricsNeeded: expandedMetrics,
       timeScope: sanitizeText(plan.time_scope || plan.timeScope, 40, "last_7_days"),
       analysisGoal: sanitizeText(plan.analysis_goal || plan.analysisGoal, 160, "Summarize recent health trends"),
       candidateStageTypes: normalizeStageTypes(plan.candidate_stage_types || plan.candidateStageTypes),

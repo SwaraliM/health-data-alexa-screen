@@ -43,12 +43,14 @@ function ensureSentence(text = "") {
 
 function getChartVisualSentence(chartSpec = null) {
   const chartType = String(chartSpec?.chart_type || "").toLowerCase();
+  if (chartType.includes("donut")) return "The donut chart shows your key reading at the center, with the breakdown displayed in the ring around it.";
   if (chartType.includes("bar")) return "The bars show how the values change across the time labels.";
   if (chartType.includes("line")) return "The line shows how the values move over time.";
   if (chartType.includes("scatter")) return "The points compare two measures and show how they move together.";
   if (chartType.includes("pie")) return "The slices show how each part contributes to the whole.";
   if (chartType.includes("gauge")) return "The gauge shows where your current value sits in the range.";
-  if (chartType.includes("heatmap")) return "The color blocks show where values are higher or lower.";
+  if (chartType.includes("heatmap")) return "The color blocks show where values are higher or lower across days and metrics.";
+  if (chartType.includes("radar")) return "The shape on the radar chart shows how your metrics compare to each other at a glance.";
   if (chartType.includes("timeline")) return "The timeline shows how your data changes step by step over time.";
   return "The chart shows your trend clearly in one view.";
 }
@@ -61,11 +63,12 @@ function ensureNarratedScreenText({ screenText = "", spokenText = "", chartSpec 
   return ensureSentence(candidate);
 }
 
+function hasInterpretiveContent(text = "") {
+  return /\b(means|suggests|tells us|shows that|which means|this matters|overall|in short|so to answer|improv|declin|rising|falling|better|worse|steady|normal|concern|healthy|restful|recovered|pattern)\b/i.test(text);
+}
+
 function ensureNarratedSpokenText({ spokenText = "", screenText = "", chartSpec = null, title = "Health insight" } = {}) {
   let narrated = sanitizeTextNoTruncate(spokenText, "");
-
-  // If the executor provided substantive spoken text (40+ chars), trust it.
-  if (narrated && narrated.length >= 40) return narrated;
 
   const orientationSentence = ensureSentence(`Here is what you see on the screen: ${title}.`);
   const visualSentence = ensureSentence(getChartVisualSentence(chartSpec));
@@ -74,6 +77,15 @@ function ensureNarratedSpokenText({ spokenText = "", screenText = "", chartSpec 
     "this trend gives a clear direction for your next step"
   );
   const overallSentence = ensureSentence(`Overall, ${meaningSeed}`);
+
+  // If the executor provided substantive spoken text, preserve it but still add
+  // interpretive meaning when it only describes the visual.
+  if (narrated && narrated.length >= 40) {
+    if (!hasInterpretiveContent(narrated)) {
+      narrated = `${narrated} ${overallSentence}`;
+    }
+    return narrated;
+  }
 
   if (!narrated) {
     return `${orientationSentence} ${visualSentence} ${overallSentence}`;
@@ -106,8 +118,29 @@ function normalizeFollowupPhrase(value = "") {
 }
 
 /**
+ * Estimate how long Alexa will take to speak the given text.
+ * Alexa speaks English at ~150 wpm (2.5 words/sec).
+ * 10% padding absorbs prosody/pause variance.
+ */
+function estimateSpeechDurationMs(text) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
+  if (words === 0) return 0;
+  const ALEXA_WPS = 2.5;
+  const PADDING = 1.1;
+  return Math.ceil((words / ALEXA_WPS) * PADDING * 1000);
+}
+
+// Silence between stages — gives the user time to look at the chart
+// and absorbs any timing drift between Alexa speech and frontend chart display.
+const STAGE_BREAK_MS = 5000;
+
+/**
  * Combine all stages' spoken text into one flowing narrative for auto-advance.
  * Alexa speaks this as a single response; the frontend auto-cycles charts.
+ *
+ * Returns { voiceText, chartAdvanceSchedule } where:
+ *   - voiceText: SSML string with <break> tags between stages
+ *   - chartAdvanceSchedule: array of { stageIndex, offsetMs } for frontend chart timing
  *
  * Each chart gets:
  *   1. A position + transition sentence ("Let's start with your first chart...")
@@ -118,7 +151,7 @@ function buildCombinedVoiceAnswer(stages = []) {
   const sorted = (Array.isArray(stages) ? stages : [])
     .slice()
     .sort((a, b) => Number(a?.stageIndex || 0) - Number(b?.stageIndex || 0));
-  if (!sorted.length) return "";
+  if (!sorted.length) return { voiceText: "", chartAdvanceSchedule: [] };
 
   const total = sorted.length;
 
@@ -138,6 +171,9 @@ function buildCombinedVoiceAnswer(stages = []) {
     "The chart on the screen shows this clearly.",
   ];
 
+  const chartAdvanceSchedule = [];
+  let cumulativeMs = 0;
+
   const parts = sorted.map((stage, idx) => {
     const spoken = sanitizeTextNoTruncate(stage?.spokenText, "");
     if (!spoken) return "";
@@ -147,11 +183,28 @@ function buildCombinedVoiceAnswer(stages = []) {
     const intro = introFn(title, total);
     const bridge = BRIDGES[idx % BRIDGES.length];
 
-    return `${intro} ${spoken} ${bridge}`;
+    const stageText = `${intro} ${spoken} ${bridge}`;
+
+    // Record when this chart should appear on screen
+    // narration_text added to each schedule entry so the frontend can display the matching
+    // narration text on screen when each chart advance timer fires, keeping voice and screen in sync.
+    chartAdvanceSchedule.push({ stageIndex: idx, offsetMs: cumulativeMs, narration_text: stage?.spokenText || "" });
+
+    // Accumulate: this stage's speech duration + break before next stage
+    const speechMs = estimateSpeechDurationMs(stageText);
+    cumulativeMs += speechMs + (idx < sorted.length - 1 ? STAGE_BREAK_MS : 0);
+
+    // Insert SSML break between stages (not after the last one)
+    if (idx < sorted.length - 1) {
+      return `${stageText} <break time="${Math.round(STAGE_BREAK_MS / 1000)}s"/>`;
+    }
+    return stageText;
   }).filter(Boolean);
 
-  if (!parts.length) return "";
-  return parts.join(" ") + " That covers everything I found. Feel free to ask me another question anytime.";
+  if (!parts.length) return { voiceText: "", chartAdvanceSchedule: [] };
+
+  const voiceText = parts.join(" ") + " That covers everything I found. Feel free to ask me another question anytime.";
+  return { voiceText, chartAdvanceSchedule };
 }
 
 function buildVoiceFirstFollowups(values = [], moreAvailable = false) {
@@ -222,6 +275,16 @@ function normalizeChartSpec(chartSpec, title = "Health insight", spokenText = ""
     sanitizeText(title, 80, "Health insight"),
     sanitizeText(chartSpec.takeaway || screenText || spokenText, 180, "Here is your health insight.")
   );
+}
+
+function resolveStageMetrics(stage = null, bundle = null) {
+  if (Array.isArray(stage?.metadata?.stageMetrics) && stage.metadata.stageMetrics.length) {
+    return stage.metadata.stageMetrics.slice(0, 8);
+  }
+  if (Array.isArray(stage?.metadata?.metrics) && stage.metadata.metrics.length) {
+    return stage.metadata.metrics.slice(0, 8);
+  }
+  return Array.isArray(bundle?.metricsRequested) ? bundle.metricsRequested.slice(0, 8) : ["steps"];
 }
 
 /**
@@ -351,7 +414,7 @@ function buildStagePayload({
     id: `stage_${normalizedCurrentIndex}_next_${idx + 1}`,
     label,
     goal: "deep_dive",
-    metrics: Array.isArray(bundle?.metricsRequested) ? bundle.metricsRequested.slice(0, 4) : ["steps"],
+    metrics: resolveStageMetrics(safeStage, bundle),
     visual_family: safeStage?.chartSpec?.chart_type || "list_summary",
   }));
 
@@ -364,7 +427,7 @@ function buildStagePayload({
     title: safeStage.title,
     subtitle: "",
     goal: "deep_dive",
-    metrics: Array.isArray(bundle?.metricsRequested) ? bundle.metricsRequested.slice(0, 4) : ["steps"],
+    metrics: resolveStageMetrics(safeStage, bundle),
     visual_family: chartSpecForPanel?.chart_type || "list_summary",
     chart_spec: chartSpecForPanel,
   };
@@ -386,8 +449,11 @@ function buildStagePayload({
   const autoAdvance = allStagesAvailable && normalizedCurrentIndex === 0;
 
   let fullVoiceAnswer;
+  let chartAdvanceSchedule = [];
   if (autoAdvance) {
-    fullVoiceAnswer = buildCombinedVoiceAnswer(stages);
+    const combined = buildCombinedVoiceAnswer(stages);
+    fullVoiceAnswer = combined.voiceText;
+    chartAdvanceSchedule = combined.chartAdvanceSchedule;
   } else {
     const completionOffer = bundleComplete
       ? " That covers everything I found. Feel free to ask me another question anytime."
@@ -403,6 +469,7 @@ function buildStagePayload({
     voice_navigation_only: true,
     autoAdvance,
     autoAdvanceIntervalMs: autoAdvance ? 15000 : 0,
+    chartAdvanceSchedule: autoAdvance ? chartAdvanceSchedule : [],
     question: sanitizeText(question || safeStage.question, 280, ""),
     spoken_answer: fullVoiceAnswer,
     voice_answer: fullVoiceAnswer,
@@ -444,7 +511,7 @@ function buildStagePayload({
     chartContext: {
       requestId: requestId || safeStage.requestId || null,
       originalQuestion: sanitizeText(question || safeStage.question, 280, ""),
-      metricsShown: Array.isArray(bundle?.metricsRequested) ? bundle.metricsRequested.slice(0, 4) : ["steps"],
+      metricsShown: resolveStageMetrics(safeStage, bundle),
       chartTitle: safeStage.title,
       chartType: safeStage?.chartSpec?.chart_type || "list_summary",
       summaryBundle: null,

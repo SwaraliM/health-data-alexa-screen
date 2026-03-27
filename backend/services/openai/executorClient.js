@@ -261,8 +261,64 @@ function buildExecutorInputV3({
         "spoken_text sentence 1: Orientation — describe what the chart shows.",
         "spoken_text sentence 2: Highlight — what stands out from the evidence.",
         "spoken_text sentence 3: Meaning — what this tells the user about their health.",
+        "spoken_text sentence 4 (FINAL stage only, evaluative questions): Verdict — direct answer starting with 'So to summarize', 'In short', or 'The bottom line'.",
       ],
+      conversational_verdict: "For yes/no or evaluative questions (worse, better, enough, normal, unusual, worsened, improved), end spoken_text on the FINAL stage with a verdict sentence: 'So to summarize — [answer]', 'In short — [verdict]', or 'The bottom line — [conclusion]'. Example: 'So to summarize — your sleep has actually stayed fairly average this week, no real decline.'",
+      anomaly_narration: "When evidence contains anomaly_summary: if all_clear is true, reassure warmly ('Everything looks normal this week'). If flagged_metrics exist, narrate the top 1-2 findings with gentle context. Never alarm — always frame anomalies as observations, not diagnoses.",
+      report_narration: "When evidence contains health_scorecard, structure narration around it: lead with the highest-scoring metric ('Your [metric] looks great'), then mention any area needing attention. Always frame constructively.",
       style: "Warm, plain-language, older-adult-friendly. No jargon. No long number lists.",
+    },
+  };
+}
+
+function buildExecutorBundleInputV3({
+  bundleSummary = null,
+  question = "",
+  userContext = null,
+  evidenceBundle = null,
+  bundleCandidates = [],
+} = {}) {
+  const compactBundleSummary = bundleSummary ? {
+    bundleId: bundleSummary.bundleId || null,
+    username: bundleSummary.username || null,
+    question: sanitizeText(bundleSummary.question, 360, ""),
+    planner: bundleSummary.planner || null,
+    metricsRequested: Array.isArray(bundleSummary.metricsRequested)
+      ? bundleSummary.metricsRequested.slice(0, 8) : [],
+    currentStageIndex: bundleSummary.currentStageIndex || 0,
+    stageCount: bundleSummary.stageCount || 0,
+  } : null;
+
+  return {
+    question: sanitizeText(question, 360, ""),
+    bundle_summary: compactBundleSummary,
+    user_context: userContext || null,
+    evidence: evidenceBundle || null,
+    bundle_candidates: Array.isArray(bundleCandidates) ? bundleCandidates.map((candidate) => ({
+      stage_index: Math.max(0, Number(candidate?.stage_index || candidate?.stageIndex || 0)),
+      title_hint: sanitizeText(candidate?.title_hint || candidate?.titleHint || candidate?.title, 120, ""),
+      narrative_role_hint: sanitizeText(candidate?.narrative_role_hint || candidate?.narrativeRoleHint || "", 60, ""),
+      chart_type_hint: sanitizeText(candidate?.chart_type_hint || candidate?.chartTypeHint || "", 40, ""),
+      focus_metrics: Array.isArray(candidate?.focus_metrics || candidate?.focusMetrics)
+        ? (candidate.focus_metrics || candidate.focusMetrics).slice(0, 8)
+        : [],
+      goal: sanitizeText(candidate?.goal, 180, ""),
+      visualization_intent: sanitizeText(candidate?.visualization_intent || candidate?.visualizationIntent, 180, ""),
+      viable_strategies: Array.isArray(candidate?.viable_strategies || candidate?.viableStrategies)
+        ? (candidate.viable_strategies || candidate.viableStrategies).map((s) => ({
+            strategy_id: s.strategy_id,
+            chart_type: s.chart_type,
+            description: s.description,
+            metrics: Array.isArray(s.metrics) ? s.metrics.slice(0, 8) : [],
+          }))
+        : [],
+    })) : [],
+    instructions: {
+      author_bundle: "Author the whole chart sequence as one coherent answer, then return ordered stages.",
+      keep_syncable: "Each stage must stand on its own when spoken alongside its chart, but all stages should feel like one answer.",
+      direct_verdict: "For evaluative questions, the final stage must explicitly answer the question in plain language.",
+      inference_required: "Each stage must go beyond describing the chart: include an inference from the evidence and explain why the metric matters.",
+      metric_explanation: "Briefly explain the current metric in plain language, not just what the visual looks like.",
     },
   };
 }
@@ -309,7 +365,7 @@ function extractTextFromRaw(raw = null) {
   return chunks.join("\n").trim();
 }
 
-function extractStageOutput(response = {}) {
+function extractExecutorOutput(response = {}) {
   if (response?.outputJson && typeof response.outputJson === "object") {
     return response.outputJson;
   }
@@ -326,7 +382,7 @@ function extractStageOutput(response = {}) {
 }
 
 function normalizeExecutorResponse(response = {}) {
-  const stageOutput = extractStageOutput(response);
+  const executorOutput = extractExecutorOutput(response);
   const responseId = extractResponseId(response);
   const toolCalls = extractToolCalls(response);
   const toolEvents = response?.toolEvents || [];
@@ -339,6 +395,7 @@ function normalizeExecutorResponse(response = {}) {
       error: response?.error || "executor request failed",
       responseId,
       previousResponseId: responseId,
+      bundleOutput: null,
       stageOutput: null,
       toolCalls,
       toolEvents,
@@ -347,13 +404,14 @@ function normalizeExecutorResponse(response = {}) {
     };
   }
 
-  if (!stageOutput) {
+  if (!executorOutput) {
     return {
       ok: false,
       status: "invalid_output",
       error: "Executor did not return valid structured JSON",
       responseId,
       previousResponseId: responseId,
+      bundleOutput: null,
       stageOutput: null,
       toolCalls,
       toolEvents,
@@ -368,7 +426,8 @@ function normalizeExecutorResponse(response = {}) {
     error: null,
     responseId,
     previousResponseId: responseId,
-    stageOutput,
+    bundleOutput: Array.isArray(executorOutput?.stages) ? executorOutput : null,
+    stageOutput: Array.isArray(executorOutput?.stages) ? null : executorOutput,
     toolCalls,
     toolEvents,
     raw: response?.data || null,
@@ -388,20 +447,22 @@ async function runExecutorRequest({
   toolContext = null,
   templateCandidates = null,  // V2: pre-built chart templates from chartTemplateBuilder
   viableStrategies = null,    // V3: strategies from chartStrategyService
+  bundleCandidates = null,    // V3 bundle authoring: per-stage candidate strategies
   evidenceBundle = null,      // V3: pre-computed evidence from evidenceComputer
   __deps = null,
 } = {}) {
   const deps = __deps && typeof __deps === "object" ? __deps : {};
 
-  // Select path: V3 (evidence+strategy) > V2 (template-fill) > V1 (legacy)
-  const hasStrategies = Array.isArray(viableStrategies) && viableStrategies.length > 0;
-  const hasTemplates = !hasStrategies
+  // Select path: V3 bundle authoring > V3 stage authoring > V2 template-fill > V1 legacy
+  const hasBundleCandidates = Array.isArray(bundleCandidates) && bundleCandidates.length > 0;
+  const hasStrategies = !hasBundleCandidates && Array.isArray(viableStrategies) && viableStrategies.length > 0;
+  const hasTemplates = !hasBundleCandidates && !hasStrategies
     && USE_TEMPLATE_FILL_EXECUTOR
     && Array.isArray(templateCandidates)
     && templateCandidates.length > 0;
 
   const config = deps.config || (
-    hasStrategies ? AGENT_CONFIGS.executorV3
+    hasBundleCandidates || hasStrategies ? AGENT_CONFIGS.executorV3
     : hasTemplates ? AGENT_CONFIGS.executorV2
     : AGENT_CONFIGS.executor
   );
@@ -411,10 +472,18 @@ async function runExecutorRequest({
 
   const timeoutMs = resolveTimeoutMs(config.timeoutMs, voiceDeadlineMs);
   // V2/V3 have no tools; V1 retains its tool loop
-  const tools = (hasTemplates || hasStrategies) ? [] : getExecutorToolsFn(config.toolPolicy || null);
+  const tools = (hasTemplates || hasStrategies || hasBundleCandidates) ? [] : getExecutorToolsFn(config.toolPolicy || null);
   const hasTools = Array.isArray(tools) && tools.length > 0;
 
-  const input = hasStrategies
+  const input = hasBundleCandidates
+    ? buildExecutorBundleInputV3({
+        bundleSummary,
+        question,
+        userContext,
+        evidenceBundle,
+        bundleCandidates,
+      })
+    : hasStrategies
     ? buildExecutorInputV3({
         bundleSummary,
         stageHistory,
@@ -465,8 +534,9 @@ async function runExecutorRequest({
     model: config.model,
     stageIndex,
     timeoutMs,
-    path: hasStrategies ? "v3_evidence_strategy" : hasTemplates ? "v2_template_fill" : "v1_legacy",
+    path: hasBundleCandidates ? "v3_bundle_authoring" : hasStrategies ? "v3_evidence_strategy" : hasTemplates ? "v2_template_fill" : "v1_legacy",
     templateCandidateCount: hasTemplates ? templateCandidates.length : 0,
+    bundleCandidateCount: hasBundleCandidates ? bundleCandidates.length : 0,
     strategyCount: hasStrategies ? viableStrategies.length : 0,
     hasPreviousResponseId: Boolean(previousResponseId),
     previousResponseId: previousResponseId || null,
@@ -547,6 +617,7 @@ async function runExecutorRequest({
 
 module.exports = {
   buildExecutorInput,
+  buildExecutorBundleInputV3,
   buildExecutorInputV2,
   buildExecutorInputV3,
   normalizeExecutorResponse,
