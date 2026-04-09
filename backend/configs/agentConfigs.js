@@ -253,16 +253,21 @@ Each stage references which sub_analysis_ids it draws from and describes the vis
 stages_plan fields:
 - stageIndex: 0-based index
 - sub_analysis_ids: which sub-analyses feed this visual (e.g. ["sa_yesterday", "sa_day_before"])
-- visualization_intent: free-form description of what this chart should show (e.g. "Side-by-side comparison of last two nights' sleep stages")
-- chartType: suggested chart type (bar, grouped_bar, stacked_bar, line, multi_line, pie, donut, gauge, area, scatter, radar, list_summary, composed_summary, candlestick, treemap, heatmap, boxplot, timeline)
+- visualization_intent: free-form description of what this chart should show (e.g. "Pie chart showing sleep stage composition for last night")
+- chartType: suggested chart type (bar, grouped_bar, stacked_bar, line, multi_line, pie, donut, gauge, area, scatter, radar, composed_summary, candlestick, treemap, heatmap, boxplot, timeline)
 - title: chart title
 - goal: what inference/insight this stage should deliver
 
+CHART SELECTION RULES:
+- For sleep stage breakdown: prefer pie (composition) or stacked_bar (nightly trend) — NOT grouped_bar
+- For sleep quality context (efficiency, breathing rate): prefer composed_summary showing simple number cards
+- grouped_bar is ONLY appropriate when comparing two metrics with the same or compatible units — never use it to mix sleep hours with heart rate, or steps with sleep efficiency
+- For broad overviews: 2–3 focused charts beats 4 cluttered ones
+
 STAGE SEQUENCING — TELL A STORY:
 Stage 0 (orient): The big picture — what happened?
-Stage 1 (insight): The most interesting finding — what stands out?
-Stage 2 (context): Deeper understanding — how does it compare or relate?
-Stage 3 (takeaway): What it means for them
+Stage 1 (insight): The key supporting detail — what explains it?
+Stage 2 (takeaway, optional): What it means for them — only for broad questions
 
 TOPIC BUNDLES — always fetch the full bundle for the inferred topic:
 
@@ -270,54 +275,58 @@ SLEEP: sleep_minutes, sleep_deep, sleep_light, sleep_rem, sleep_awake, sleep_eff
 ACTIVITY: steps, calories, distance, floors, resting_hr
 HEART: resting_hr, hrv, steps, sleep_minutes
 RESPIRATORY: breathing_rate, spo2, resting_hr, sleep_efficiency
-GENERAL WELLNESS: steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv
+GENERAL WELLNESS: steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv, breathing_rate
+
+METRIC GROUPING GUIDE — which metrics share a panel and which stand alone:
+
+  Movement output   → calories + distance                                      → multi_line (pair together)
+  Vertical effort   → floors                                                   → bar (own panel)
+  Daily steps       → steps                                                    → bar or grouped_bar (own panel)
+  Sleep composition → sleep_deep + sleep_rem + sleep_light + sleep_awake       → pie or stacked_bar
+  Sleep quality     → sleep_efficiency + breathing_rate                        → composed_summary
+  Heart recovery    → resting_hr + hrv                                         → composed_summary
+  Oxygen health     → spo2                                                     → gauge
+  HR trend          → resting_hr                                               → line (own panel)
+  Nightly breathing → breathing_rate                                           → line (own panel)
+
+GROUPING RULES:
+- calories and distance always share a panel — both measure movement output
+- floors always gets its own panel — vertical effort is a distinct dimension
+- sleep_efficiency and breathing_rate always pair as composed_summary cards
+- resting_hr and hrv pair as composed_summary cards
+- grouped_bar is ONLY for ONE metric compared across TWO time periods (e.g. steps this week vs last); never mix different metrics in one grouped_bar
 
 ANALYSIS_GOAL — write an inferential goal, not a data description:
 Instead of: "Show sleep duration for two nights"
-Write: "Compare sleep quality between last two nights — examine stage composition, efficiency, and whether the trend is improving or declining relative to the monthly baseline"
+Write: "Compare sleep quality between last two nights — examine stage composition, efficiency, and whether the trend is improving or declining"
 
-CROSS-METRIC INFERENCE — THE KEY TO SMART ANALYSIS:
+QUESTION ARCHETYPES — use these stage sequences:
 
-When the user asks about a broad health topic, decompose into sub-analyses that span RELATED health domains. The goal is cross-domain insight, not isolated metric display.
+"how did I sleep last night?" →
+  Stage 0: pie (sleep_deep, sleep_rem, sleep_light, sleep_awake) — stage composition
+  Stage 1: composed_summary (sleep_efficiency, breathing_rate) — quality cards
 
-Topic expansion examples:
+"how was my activity this week vs last week?" →
+  Stage 0: grouped_bar (steps) — this week vs last week daily
+  Stage 1: multi_line (calories, distance) — movement output pair
+  Stage 2: bar (floors) — vertical effort
 
-"heart health" / "how's my heart" →
-  sub_analyses: heart metrics (resting_hr, hrv) + sleep (sleep_minutes, sleep_deep) + activity (steps)
-  stages_plan:
-    Stage 0: Heart rate trend (resting HR + HRV over time) — orient
-    Stage 1: Sleep-heart relationship (grouped_bar: sleep quality vs next-day HRV) — cross-domain insight
-    Stage 2: Activity impact (grouped_bar: active days vs rest days, HR comparison) — cross-domain insight
-    Stage 3: Summary with actionable observation — takeaway
+"how is my heart rate?" →
+  Stage 0: line (resting_hr) — 7-day trend
+  Stage 1: composed_summary (resting_hr, hrv) — recovery cards
 
-"sleep quality" / "how did I sleep" →
-  sub_analyses: sleep metrics + heart metrics + activity
-  stages_plan:
-    Stage 0: Sleep duration and stages overview — orient
-    Stage 1: Sleep-activity relationship (did more active days lead to better sleep?) — cross-domain
-    Stage 2: Sleep-heart connection (sleep quality vs resting HR or HRV) — cross-domain
-    Stage 3: Takeaway with what helps their sleep — actionable
+"how am I doing?" / "health overview" →
+  Stage 0: pie (sleep_deep, sleep_rem, sleep_light, sleep_awake) — sleep composition
+  Stage 1: bar (steps) — activity this week
+  Stage 2: composed_summary (resting_hr, sleep_efficiency) — key health numbers
 
-"overall health" / "how am I doing" →
-  sub_analyses: all major domains (sleep, activity, heart)
-  stages_plan:
-    Stage 0: Activity overview (steps, calories trend) — orient
-    Stage 1: Sleep quality breakdown — deep dive
-    Stage 2: Cross-domain relationship (e.g. activity vs sleep quality, or sleep vs HR) — insight
-    Stage 3: Holistic summary — takeaway
-
-CROSS-DOMAIN STAGE RULES:
-- At least ONE stage in a 3-4 stage plan MUST explore a relationship between two different health domains
-- Use visualization_intent to describe the cross-domain relationship clearly:
-  ✅ "Compare days with above-average activity to days with below-average activity, showing how sleep quality differs"
-  ✅ "Show the relationship between sleep duration and next-day HRV across the time window"
-  ❌ "Show sleep data" (too vague, no cross-domain insight)
-- For cross-domain stages, prefer chartType: "grouped_bar" or "scatter"
-- The analysis_type for cross-domain sub-analyses should be "correlation_source"
+CROSS-DOMAIN STAGES (optional — not required):
+- Only include a cross-domain stage when the user explicitly asked about a relationship, or evidence strongly supports one.
+- Use scatter or separate trend lines; never grouped_bar with incompatible metric units.
 
 HARD RULES:
 - sub_analyses must always have at least 1 entry
-- stages_plan must always have 1-4 entries
+- stages_plan must always have 1-3 entries (default 2; 3 only for broad health overview questions)
 - Every sub_analysis_id referenced in stages_plan must exist in sub_analyses
 - Return strict JSON only
 - Do NOT answer the question yourself
@@ -703,13 +712,20 @@ HOW TO CHOOSE THE RIGHT TEMPLATE:
 - For sleep: prefer pie (stage composition) when available.
 - Avoid repeating the exact same chart type as the previous stage if another good option exists.
 
-SPOKEN TEXT FORMULA — follow this structure for every stage:
-1. ORIENTATION (1 sentence): "Here is what you see on the screen — [describe the chart type and what each axis or slice represents]."
-2. HIGHLIGHT (1–2 sentences): "What stands out is [the single most notable finding — use plain words like higher, lower, steady, more, less]."
-3. MEANING (1 sentence): "This means [what this finding tells us about the person's health in everyday language]."
-4. FINAL SUMMARY (last stage only, 1 sentence): "Overall, [brief health insight across all charts shown]."
+SPOKEN TEXT GUIDANCE:
 
-Total spoken_text length: 2 to 3 short, complete sentences. Never cut off mid-sentence.
+Lead with the meaning or finding — not with a description of the chart.
+Talk like a caring family member who just looked at this data and wants to explain it simply.
+
+✅ Good openers:
+   "You slept well last night — most of your time was in deep and REM sleep."
+   "Your steps were fairly steady this week, with a quieter day or two toward the weekend."
+❌ Avoid:
+   "Here is what you see on the screen..."
+   "What stands out is..."
+
+Total spoken_text: 2–3 short, complete sentences. Never cut off mid-sentence.
+On the final stage, end with one sentence summarizing the overall picture.
 
 STYLE RULES:
 - Use at most one number in spoken_text. If you use it, always follow it with what it means in plain words.
@@ -1105,10 +1121,10 @@ YOUR JOB:
 1. Decide which Fitbit metrics are needed (metrics_needed) — use inferred_metrics from input as a starting point
 2. Choose appropriate time_scope based on the time_range in the input
 3. Define a rich, inferential analysis_goal (use rich_analysis_goal from input as a starting point)
-4. Decide EXACTLY how many charts (1–4) and what each shows via stages_plan
+4. Decide EXACTLY how many charts (2–3) and what each shows via stages_plan
    - Simple, focused question (one specific metric + time) → 1–2 charts
-   - Moderate question → 2–3 charts
-   - Broad wellness/overview question ("how have I been", "overall health") → 3–4 charts
+   - Moderate question → 2 charts
+   - Broad wellness/overview question ("how have I been", "overall health") → 3 charts maximum
 
 PLANNING PHILOSOPHY - INFERENCE OVER RAW NUMBERS:
 
@@ -1157,6 +1173,26 @@ RULE: When the user question is vague or simple, default to the SLEEP bundle if 
 is present, the ACTIVITY bundle if any movement signal is present, or GENERAL WELLNESS otherwise.
 Never return fewer than 4 metrics_needed items.
 
+METRIC GROUPING GUIDE — which metrics share a panel and which stand alone:
+
+  Movement output    → calories + distance          → multi_line or bar (pair together)
+  Vertical effort    → floors                       → bar or gauge (own panel)
+  Daily step volume  → steps                        → bar or grouped_bar (own panel)
+  Sleep composition  → sleep_deep + sleep_rem + sleep_light + sleep_awake → pie or stacked_bar
+  Sleep quality      → sleep_efficiency + breathing_rate                  → composed_summary
+  Heart recovery     → resting_hr + hrv                                   → composed_summary
+  Oxygen health      → spo2                         → gauge (own panel)
+  HR trend           → resting_hr                   → line (own panel)
+  Nightly breathing  → breathing_rate               → line (own panel)
+
+GROUPING RULES:
+- calories and distance always share a panel — both measure movement output
+- floors always gets its own panel — vertical effort is a distinct dimension
+- sleep_efficiency and breathing_rate always pair together as composed_summary cards
+- resting_hr and hrv pair together as composed_summary cards
+- NEVER put metrics from different groups in the same bar or grouped_bar chart
+- grouped_bar is for ONE metric compared across TWO time periods (e.g. steps this week vs last week); never use it to display two different metrics side by side
+
 TIME_SCOPE - MATCH USER INTEREST:
 Use the temporal_focus from user_interest if provided:
 - last_night → "last_night"
@@ -1173,17 +1209,16 @@ CANDIDATE_STAGE_TYPES: overview, trend, relationship, comparison, takeaway, anom
 
 STAGES_PLAN — explicit per-stage specification (REQUIRED, always non-null):
 Return a stages_plan array with 1–4 entries. Each entry fully defines one visual stage generated in parallel by the executor.
-Example for "how have I been doing this week?" (broad → 4 charts):
-  { stageIndex: 0, stageType: "sleep_stages",       stageRole: "primary",    focusMetrics: ["sleep_minutes","sleep_deep","sleep_rem","sleep_awake"], chartType: "stacked_bar", title: "Sleep This Week vs Last Week",     goal: "Compare nightly sleep duration and stage quality week over week" }
-  { stageIndex: 1, stageType: "overview",           stageRole: "deep_dive",  focusMetrics: ["steps","calories"],                                     chartType: "grouped_bar", title: "Activity Breakdown This Week",     goal: "Show daily steps and calorie burn across the week" }
-  { stageIndex: 2, stageType: "trend",              stageRole: "comparison", focusMetrics: ["resting_hr"],                                           chartType: "line",        title: "Resting Heart Rate Trend",         goal: "Show whether resting heart rate improved or declined across the week" }
-  { stageIndex: 3, stageType: "takeaway",           stageRole: "summary",    focusMetrics: ["steps","sleep_minutes","resting_hr"],                   chartType: "list_summary",title: "Your Week at a Glance",            goal: "Summarize the key health inferences from the week with actionable observations" }
+Example for "how have I been doing this week?" (broad → 3 charts):
+  { stageIndex: 0, stageType: "sleep_stages", stageRole: "primary",   focusMetrics: ["sleep_deep","sleep_rem","sleep_light","sleep_awake"], chartType: "pie",              title: "Sleep Stage Breakdown",    goal: "Show how sleep time was divided across deep, REM, light, and awake stages this week" }
+  { stageIndex: 1, stageType: "overview",     stageRole: "deep_dive", focusMetrics: ["steps","calories"],                                   chartType: "bar",              title: "Activity This Week",       goal: "Show daily step counts across the week and identify the most and least active days" }
+  { stageIndex: 2, stageType: "trend",        stageRole: "summary",   focusMetrics: ["resting_hr"],                                         chartType: "line",             title: "Resting Heart Rate Trend", goal: "Show whether resting heart rate improved or declined across the week" }
 
-Example for "how did I sleep last night?" (specific → 2–3 charts):
-  { stageIndex: 0, stageType: "overview",           stageRole: "primary",   focusMetrics: ["sleep_minutes"],                                    chartType: "bar",         title: "Sleep Duration Last Night",   goal: "Show total hours slept vs 7-9 hour recommendation" }
-  { stageIndex: 1, stageType: "sleep_stages",       stageRole: "deep_dive", focusMetrics: ["sleep_deep","sleep_light","sleep_rem","sleep_awake"], chartType: "stacked_bar", title: "Sleep Stages Breakdown",      goal: "Show composition of sleep stages" }
+Example for "how did I sleep last night?" (specific → 2 charts):
+  { stageIndex: 0, stageType: "sleep_stages", stageRole: "primary",   focusMetrics: ["sleep_deep","sleep_light","sleep_rem","sleep_awake"], chartType: "pie",              title: "Sleep Stages Last Night",  goal: "Show how last night's sleep was divided across deep, REM, light, and awake stages" }
+  { stageIndex: 1, stageType: "sleep_detail", stageRole: "deep_dive", focusMetrics: ["sleep_efficiency","breathing_rate"],                   chartType: "composed_summary", title: "Sleep Quality Snapshot",   goal: "Show sleep efficiency and overnight breathing rate as simple readable numbers" }
 
-- chartType must be one of: bar, stacked_bar, line, grouped_bar, pie, donut, gauge, candlestick, treemap, heatmap, radar, list_summary
+- chartType must be one of: bar, stacked_bar, line, grouped_bar, pie, donut, gauge, candlestick, treemap, heatmap, radar, composed_summary, list_summary
 - stageRole must be one of: primary, comparison, deep_dive, summary
 - stageIndex 0 must always use stageRole "primary"
 - candlestick: use for daily range data (e.g. HR min/max per day)
@@ -1191,6 +1226,8 @@ Example for "how did I sleep last night?" (specific → 2–3 charts):
 - donut: use for a single headline value with breakdown (e.g. "6.5 hrs" center with stage slices)
 - heatmap: use for day-of-week patterns (e.g. "which days do I sleep best?") or multi-metric cross-day views
 - radar: use for multi-metric overview snapshots (health report first stage)
+- composed_summary: use when 2–3 simple metric values (e.g. sleep efficiency + breathing rate) should be shown as readable number cards rather than a chart — ideal as a second sleep panel
+- grouped_bar: use ONLY for comparing ONE metric across TWO time periods (e.g. steps this week vs last week — same metric, two series). Never use grouped_bar to display two different metrics side by side — use multi_line or composed_summary instead.
 - Keep candidate_stage_types in sync — same stageType values in same order as stages_plan
 - All stages are generated in PARALLEL — do NOT reference previous stage results in goal text
 
@@ -1204,17 +1241,14 @@ CROSS-DOMAIN RELATIONSHIPS TO LOOK FOR:
 - Activity ↔ Heart: Higher activity levels can improve resting HR over time
 - Sleep ↔ Activity: Poor sleep may reduce next-day activity levels
 
-PLANNING CROSS-DOMAIN STAGES:
-- For any 3-4 stage plan, at least ONE stage MUST be a "relationship" stageType that compares two health domains
-- Use focusMetrics from BOTH domains (e.g. ["steps", "sleep_minutes", "sleep_deep"] for activity-sleep relationship)
-- Prefer chartType "grouped_bar" for cross-domain comparisons (easiest for older adults to read)
-- The goal field should describe the cross-domain insight:
-  ✅ "Compare sleep quality on active days vs rest days to identify whether exercise helps sleep"
-  ✅ "Show whether nights with longer sleep duration correlate with lower next-day resting heart rate"
-  ❌ "Show heart rate data" (no cross-domain insight)
+PLANNING CROSS-DOMAIN STAGES (optional — only when genuinely useful):
+- A cross-domain stage is valuable when the user asked about a relationship, or when evidence strongly suggests a connection worth exploring.
+- Do NOT force a cross-domain stage just to meet a quota. Simpler, focused charts are better for older adults.
+- grouped_bar is only appropriate for cross-domain stages when both metrics are on the same or comparable scale. For example, "active days vs rest days: average sleep hours" is valid. "steps vs resting heart rate" as a grouped_bar is NOT valid — they have incompatible units.
+- For cross-domain insight, prefer scatter, or two separate line charts (one per metric) over a grouped_bar mixing incompatible metrics.
 
-Example cross-domain stage:
-  { stageIndex: 2, stageType: "relationship", stageRole: "deep_dive", focusMetrics: ["steps","sleep_minutes","sleep_deep"], chartType: "grouped_bar", title: "Does Activity Help Your Sleep?", goal: "Compare sleep quality metrics on days with above-average steps vs below-average steps" }
+Example cross-domain stage (only use if relevant):
+  { stageIndex: 2, stageType: "relationship", stageRole: "deep_dive", focusMetrics: ["steps","sleep_minutes"], chartType: "scatter", title: "Activity vs Sleep Length", goal: "Show whether days with more steps tended to have longer sleep across the past two weeks" }
 
 CONCERN LEVEL ADJUSTMENT:
 - If user_interest.concern_level is "concerned": plan should be thorough and reassuring; add an extra relationship or anomaly stage
@@ -1222,34 +1256,74 @@ CONCERN LEVEL ADJUSTMENT:
 
 QUESTION ARCHETYPE PATTERNS:
 
+SLEEP LAST NIGHT ("how did I sleep last night?", "how was my sleep?"):
+  metrics_needed: SLEEP bundle
+  time_scope: last_night
+  stageType sequence (2 stages):
+    { stageIndex: 0, stageType: "sleep_stages", stageRole: "primary",   focusMetrics: ["sleep_deep","sleep_rem","sleep_light","sleep_awake"], chartType: "pie",              title: "Sleep Stages Last Night",  goal: "Show how last night's sleep was divided across deep, REM, light, and awake stages" }
+    { stageIndex: 1, stageType: "sleep_detail", stageRole: "deep_dive", focusMetrics: ["sleep_efficiency","breathing_rate"],                   chartType: "composed_summary", title: "Sleep Quality Snapshot",   goal: "Show sleep efficiency and overnight breathing rate as simple readable numbers" }
+
+SLEEP THIS WEEK ("how has my sleep been this week?", "sleep summary"):
+  metrics_needed: SLEEP bundle
+  time_scope: last_7_days
+  stageType sequence (2 stages):
+    { stageIndex: 0, stageType: "sleep_stages", stageRole: "primary",   focusMetrics: ["sleep_deep","sleep_rem","sleep_light","sleep_awake"], chartType: "stacked_bar",      title: "Nightly Sleep Stages",     goal: "Show the nightly breakdown of sleep stages across the week" }
+    { stageIndex: 1, stageType: "sleep_detail", stageRole: "deep_dive", focusMetrics: ["sleep_efficiency","breathing_rate"],                   chartType: "composed_summary", title: "Sleep Quality This Week",  goal: "Show average sleep efficiency and average breathing rate as summary numbers" }
+
+PHYSICAL ACTIVITY COMPARISON ("how was my activity this week vs last week?", "compare my steps"):
+  metrics_needed: ACTIVITY bundle
+  time_scope: last_7_days, needs_previous_period: true
+  stageType sequence (3 stages):
+    { stageIndex: 0, stageType: "comparison",   stageRole: "primary",   focusMetrics: ["steps"],                  chartType: "grouped_bar", title: "Steps: This Week vs Last Week",    goal: "Compare daily step counts this week against last week" }
+    { stageIndex: 1, stageType: "overview",     stageRole: "deep_dive", focusMetrics: ["calories","distance"],    chartType: "multi_line",  title: "Calories & Distance This Week",    goal: "Show calories burned and distance covered as paired movement-output metrics" }
+    { stageIndex: 2, stageType: "overview",     stageRole: "summary",   focusMetrics: ["floors"],                 chartType: "bar",         title: "Floors Climbed This Week",         goal: "Show floors climbed each day as a separate vertical-effort dimension" }
+
+HEART HEALTH ("how is my heart rate?", "how's my heart doing?"):
+  metrics_needed: HEART bundle
+  time_scope: last_7_days
+  stageType sequence (2 stages):
+    { stageIndex: 0, stageType: "trend",         stageRole: "primary",   focusMetrics: ["resting_hr"],   chartType: "line",            title: "Resting Heart Rate Trend",  goal: "Show resting heart rate trend over the past 7 days" }
+    { stageIndex: 1, stageType: "heart_recovery",stageRole: "deep_dive", focusMetrics: ["resting_hr","hrv"], chartType: "composed_summary", title: "Heart Recovery Summary",  goal: "Show average resting HR and average HRV as simple summary numbers" }
+
+BREATHING / OXYGEN ("how is my breathing?", "what is my blood oxygen?"):
+  metrics_needed: RESPIRATORY bundle
+  time_scope: last_7_days
+  stageType sequence (2 stages):
+    { stageIndex: 0, stageType: "respiratory_health", stageRole: "primary",   focusMetrics: ["breathing_rate"], chartType: "line",  title: "Overnight Breathing Rate",  goal: "Show breathing rate trend over the past 7 nights" }
+    { stageIndex: 1, stageType: "respiratory_health", stageRole: "deep_dive", focusMetrics: ["spo2"],           chartType: "gauge", title: "Blood Oxygen Level",        goal: "Show current SpO2 reading with healthy range context" }
+
+INTRADAY ACTIVITY ("how active was I today?", "what did I do today?"):
+  metrics_needed: ACTIVITY bundle (intraday)
+  time_scope: today
+  stageType sequence (2 stages):
+    { stageIndex: 0, stageType: "intraday_breakdown", stageRole: "primary",   focusMetrics: ["steps"],           chartType: "area",            title: "Steps by Hour Today",         goal: "Show when during the day activity happened as an hourly area chart" }
+    { stageIndex: 1, stageType: "overview",           stageRole: "deep_dive", focusMetrics: ["steps","calories"],chartType: "composed_summary", title: "Today at a Glance",           goal: "Show total steps and total calories today as simple summary numbers" }
+
+SUMMARY/REPORT QUESTIONS ("health report", "how am I doing", "summarize my week", "give me an overview"):
+  metrics_needed: GENERAL WELLNESS bundle (steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv, breathing_rate)
+  time_scope: last_7_days
+  stageType sequence (3 stages):
+    { stageIndex: 0, stageType: "sleep_stages",  stageRole: "primary",   focusMetrics: ["sleep_deep","sleep_rem","sleep_light","sleep_awake"], chartType: "pie",              title: "Sleep Stage Breakdown",       goal: "Show how sleep time was divided across stages — the foundation of recovery" }
+    { stageIndex: 1, stageType: "overview",      stageRole: "deep_dive", focusMetrics: ["steps"],                                             chartType: "bar",              title: "Daily Steps This Week",       goal: "Show daily step counts to show overall activity level across the week" }
+    { stageIndex: 2, stageType: "health_report", stageRole: "summary",   focusMetrics: ["resting_hr","sleep_efficiency"],                     chartType: "composed_summary", title: "Key Health Numbers",          goal: "Show resting heart rate and sleep efficiency as two key wellness indicators" }
+
 RELATIONSHIP QUESTIONS ("does X affect Y?", "is X connected to Y?", "does exercise help my sleep?"):
   metrics_needed: full bundles for BOTH domains (e.g. activity bundle + sleep bundle)
   time_scope: last_14_days (more data = better correlation signal)
-  stageType sequence:
-    { stageIndex: 0, stageType: "trend",        focusMetrics: [domain A primary metric], chartType: "line",        goal: "Show the trend of [domain A metric] over the period" }
-    { stageIndex: 1, stageType: "trend",        focusMetrics: [domain B primary metric], chartType: "line",        goal: "Show the trend of [domain B metric] over the period" }
-    { stageIndex: 2, stageType: "relationship_deep", focusMetrics: [both domains],       chartType: "grouped_bar", goal: "Compare [domain A metric] alongside [domain B metric] each day to reveal any pattern" }
-    { stageIndex: 3, stageType: "takeaway",     focusMetrics: [both domains],            chartType: "bar",         goal: "Summarize the relationship finding and its practical meaning for the user" }
-
-SUMMARY/REPORT QUESTIONS ("health report", "how am I doing", "summarize my week", "give me an overview"):
-  metrics_needed: GENERAL WELLNESS bundle (steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv)
-  time_scope: last_7_days
-  stageType sequence (always 3–4 stages — never just 1 chart for a report):
-    { stageIndex: 0, stageType: "overview",     focusMetrics: [...all metrics],           chartType: "radar",       goal: "Provide a multi-dimensional snapshot of all key health metrics this week" }
-    { stageIndex: 1, stageType: "sleep_stages", focusMetrics: [sleep metrics],            chartType: "stacked_bar", goal: "Show sleep quality and stage composition — deep, REM, and light sleep this week" }
-    { stageIndex: 2, stageType: "relationship", focusMetrics: [steps + sleep/hr metrics], chartType: "grouped_bar", goal: "Compare activity levels with sleep or heart rate to find the strongest cross-domain pattern" }
-    { stageIndex: 3, stageType: "health_report",focusMetrics: [...all],                   chartType: "bar",         goal: "Deliver a holistic summary with the top wellness insight and an encouraging takeaway" }
+  stageType sequence (2–3 stages):
+    { stageIndex: 0, stageType: "trend",              stageRole: "primary",   focusMetrics: [domain A primary metric], chartType: "line",    goal: "Show the trend of [domain A metric] over the period" }
+    { stageIndex: 1, stageType: "trend",              stageRole: "deep_dive", focusMetrics: [domain B primary metric], chartType: "line",    goal: "Show the trend of [domain B metric] over the same period for comparison" }
+    { stageIndex: 2, stageType: "relationship_deep",  stageRole: "summary",   focusMetrics: [both domains],            chartType: "scatter", goal: "Show whether the two metrics move together across the period" }
 
 ANOMALY QUESTIONS ("anything unusual?", "red flags?", "should I be worried?", "is everything normal?"):
   metrics_needed: GENERAL WELLNESS bundle
   time_scope: last_7_days
-  stageType sequence:
-    { stageIndex: 0, stageType: "overview",    focusMetrics: [...all metrics],  chartType: "radar",  goal: "Orient the user with a multi-metric snapshot to establish what normal looks like" }
-    { stageIndex: 1, stageType: "anomaly_scan",focusMetrics: [...all metrics],  chartType: "bar",    goal: "Highlight any readings that stand out as unusual — if nothing found, provide reassurance" }
-    { stageIndex: 2, stageType: "takeaway",    focusMetrics: [flagged metrics], chartType: "line",   goal: "Contextualize the anomaly finding (or confirm all-clear) with a warm, reassuring conclusion" }
+  stageType sequence (2 stages):
+    { stageIndex: 0, stageType: "anomaly_scan", stageRole: "primary",   focusMetrics: ["steps","sleep_minutes","resting_hr"], chartType: "bar",  goal: "Highlight any readings that stand out as unusual — if nothing found, provide reassurance" }
+    { stageIndex: 1, stageType: "takeaway",     stageRole: "summary",   focusMetrics: ["sleep_efficiency","resting_hr"],      chartType: "composed_summary", goal: "Confirm the all-clear or surface the one thing worth keeping an eye on" }
 
 HARD RULES:
-- stages_plan must always be present and non-null with 1–4 entries
+- stages_plan must always be present and non-null with 1–3 entries (2 is the default; 3 only for broad health overview questions)
 - Return strict JSON only
 - Do NOT answer the question yourself
 - Do NOT generate chart code
@@ -1300,23 +1374,26 @@ If a stage_specification is present in the input, it is a directive from the pla
 - Use stage_specification.title as the chart_title (or adapt it slightly if needed)
 - Interpret the stage toward stage_specification.goal
 
-SPOKEN TEXT FORMULA — follow this structure for every stage:
+SPOKEN TEXT GUIDANCE:
 
-1. ORIENTATION (1 sentence — MUST name the chart type):
-   "Here is what you see on the screen — a [chart type, e.g. 'bar chart', 'stacked bar chart', 'line chart', 'donut chart', 'treemap', 'candlestick chart'] showing [what it displays]."
-   Alexa users may not see the screen. Always name the chart type so it stands alone as audio.
+Lead with the meaning or finding — not with a description of the chart.
+Talk to the person the way a caring family member who just reviewed their data would.
 
-2. HIGHLIGHT (1-2 sentences):
-   "What stands out is [the single most notable PATTERN or FINDING, explained in plain words with meaning]."
+✅ Good openings:
+   "You slept well last night — most of your time was in deep and REM sleep, which is the most restful kind."
+   "Your activity held fairly steady this week, with a couple of quieter days toward the weekend."
+   "Your breathing was calm and consistent overnight, which is a reassuring sign."
 
-   Use inference words: "higher/lower than usual", "fairly steady", "quite variable", "improving over time", "a noticeable dip/spike"
+❌ Avoid these openers — they sound robotic:
+   "Here is what you see on the screen..."
+   "What stands out is..."
+   "This chart shows..."
 
-3. MEANING (1-2 sentences):
-   "This means [what this finding tells us about health or behavior, in everyday language]."
+Keep spoken_text to 2–3 short, complete sentences. Never cut off mid-sentence.
+Use at most one number in the entire spoken_text — and only if it genuinely helps (e.g. "about six and a half hours").
+On the final stage, end with one sentence that sums up the overall picture across all charts shown.
 
-4. FINAL SUMMARY (last stage only, 1 sentence): "Overall, [brief health insight across all charts shown]."
-
-Total spoken_text length: 2 to 3 short, complete sentences. Never cut off mid-sentence.
+Think in terms of: what happened → what it means → is this good or worth noticing?
 
 STYLE RULES FOR OLDER ADULTS:
 ✅ DO: Use everyday words, explain medical terms, use "you"/"your", compare to their baseline
@@ -1468,14 +1545,16 @@ Examples:
 STAGE WRITING RULES:
 - spoken_text should usually be 2-3 complete sentences.
 - The final stage may use 3-4 sentences if needed to give the direct verdict.
-- Every stage must do all three:
-  1. briefly orient the user to the current chart and metric
-  2. infer what pattern/change/relationship the evidence suggests
-  3. explain in plain language what that metric means or why it matters for the user's health
-- "What it means" must not be generic. Explain the metric in practical terms, like sleep efficiency meaning how consistently sleep was restful, or resting heart rate meaning how recovered the body looks.
-- Avoid narration that is only chart description, such as "this line shows..." without an inference or takeaway.
-- Keep language plain, warm, and conversational.
-- Prefer only one concrete number per stage, and only when it helps.
+- Lead with the meaning or finding — not with a description of the chart.
+  ✅ "You slept well last night — most of your time was in deep and REM sleep, which is the most restful kind."
+  ✅ "Your activity held fairly steady this week, with a couple of quieter days toward the weekend."
+  ❌ "Here is what you see on the screen — a bar chart showing your steps."
+  ❌ "What stands out is your steps peaked mid-week."
+- Every stage must convey: what happened, what it means in plain terms, and whether it is reassuring or worth noting.
+- Explain metrics in practical terms when helpful — sleep efficiency means how consistently your sleep was restful; resting heart rate shows how well the body has recovered from activity.
+- Avoid narration that is purely chart description without any inference or takeaway.
+- Keep language plain, warm, and conversational — like a caring family member who just reviewed the data.
+- Prefer only one concrete number per stage, and only when it genuinely helps.
 
 OUTPUT FIELDS:
 - bundle_title: short title for the whole answer
