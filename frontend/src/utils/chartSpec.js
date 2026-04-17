@@ -135,6 +135,73 @@ function sanitizeListSummaryOption(rawOption = {}, spec = {}) {
   };
 }
 
+function sanitizeComposedSummaryOption(rawOption = {}, spec = {}) {
+  // Prefer chart_data.cards (set by backend); fall back to list_summary text rendering
+  const rawCards = Array.isArray(rawOption.cards) ? rawOption.cards
+    : Array.isArray(spec.cards) ? spec.cards : [];
+  const cards = rawCards
+    .slice(0, 3)
+    .map((c) => ({
+      label:    sanitizeText(c?.label,    40, "—"),
+      value:    sanitizeText(c?.value,    30, "—"),
+      subvalue: sanitizeText(c?.subvalue, 50, ""),
+    }));
+
+  if (cards.length === 0) return sanitizeListSummaryOption(rawOption, spec);
+
+  const VALUE_COLORS  = ["#2563EB", "#0f766e", "#F59E0B"];
+  const CARD_BG       = "rgba(255, 255, 255, 0.96)";
+  const LABEL_COLOR   = "#526277";
+  const SUBVAL_COLOR  = "#94a3b8";
+  const BORDER_COLOR  = "rgba(148, 163, 184, 0.22)";
+
+  // Layout constants (percentages of a nominal 600×340 canvas)
+  const CANVAS_W = 600;
+  const CANVAS_H = 340;
+  const n = cards.length;
+  const GAP = 20;
+  const CARD_W = Math.floor((CANVAS_W - (n + 1) * GAP) / n);
+  const CARD_H = 180;
+  const CARD_TOP = Math.floor((CANVAS_H - CARD_H) / 2);
+
+  const graphic = cards.flatMap((card, i) => {
+    const x = GAP + i * (CARD_W + GAP);
+    const cx = x + CARD_W / 2;
+    const valueColor = VALUE_COLORS[i % VALUE_COLORS.length];
+    return [
+      // Card background
+      {
+        type: "rect",
+        shape: { x, y: CARD_TOP, width: CARD_W, height: CARD_H, r: 16 },
+        style: { fill: CARD_BG, stroke: BORDER_COLOR, lineWidth: 1, shadowBlur: 12, shadowColor: "rgba(0,0,0,0.06)", shadowOffsetY: 4 },
+      },
+      // Large value
+      {
+        type: "text",
+        x: cx,
+        y: CARD_TOP + 58,
+        style: { text: card.value, textAlign: "center", fontSize: 42, fontWeight: "700", fill: valueColor, fontFamily: "system-ui, sans-serif" },
+      },
+      // Label
+      {
+        type: "text",
+        x: cx,
+        y: CARD_TOP + 112,
+        style: { text: card.label, textAlign: "center", fontSize: 14, fontWeight: "500", fill: LABEL_COLOR, fontFamily: "system-ui, sans-serif" },
+      },
+      // Subvalue
+      ...(card.subvalue ? [{
+        type: "text",
+        x: cx,
+        y: CARD_TOP + 136,
+        style: { text: card.subvalue, textAlign: "center", fontSize: 12, fill: SUBVAL_COLOR, fontFamily: "system-ui, sans-serif" },
+      }] : []),
+    ];
+  });
+
+  return { cards, graphic };
+}
+
 function sanitizeGaugeOption(rawOption = {}) {
   const rawSeries = Array.isArray(rawOption.series) ? rawOption.series[0] : {};
   const rawPoint = Array.isArray(rawSeries?.data) ? rawSeries.data[0] : {};
@@ -418,7 +485,8 @@ function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   if (chart_type === "gauge") option = sanitizeGaugeOption(rawOption);
   else if (chart_type === "pie") option = sanitizePieOption(rawOption);
   else if (chart_type === "donut") option = sanitizeDonutOption(rawOption);
-  else if (chart_type === "list_summary" || chart_type === "composed_summary") option = sanitizeListSummaryOption(rawOption, input);
+  else if (chart_type === "list_summary") option = sanitizeListSummaryOption(rawOption, input);
+  else if (chart_type === "composed_summary") option = sanitizeComposedSummaryOption(rawOption, input);
   else if (chart_type === "heatmap") option = sanitizeHeatmapOption(rawOption);
   else if (chart_type === "radar") option = sanitizeRadarOption(rawOption);
   else if (chart_type === "boxplot") option = sanitizeBoxplotOption(rawOption);

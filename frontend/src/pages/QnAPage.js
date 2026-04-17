@@ -354,11 +354,11 @@ const QnAPage = () => {
     return panels.find((panel) => panel.panel_id === payload?.activePanelId) || panels[0] || null;
   }, [panels, payload?.activePanelId, allStagePanels, autoAdvanceIndex]);
 
+  // Show all panels simultaneously when the backend sends a multi-panel layout.
+  // Only collapse to single-panel when the backend explicitly sets voice_navigation_only.
   const shouldShowSinglePanel = payload?.voice_navigation_only === true
-    || payload?.interaction_mode === "voice_first"
     || payload?.response_mode === "single_view"
-    || payload?.stagedFlow
-    || payload?.autoAdvance;
+    || payload?.stagedFlow;
   const visiblePanels = shouldShowSinglePanel
     ? (activePanel ? [activePanel] : panels.slice(0, 1))
     : panels;

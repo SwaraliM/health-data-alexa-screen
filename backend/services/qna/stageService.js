@@ -499,17 +499,40 @@ function buildStagePayload({
     }
   }
 
+  // When all stages are ready, send every panel simultaneously so the screen
+  // can render a multi-panel grid (two_up, two_up_plus_footer, etc.) while
+  // Alexa narrates the combined voice answer.
+  const allPanels = allStagesAvailable
+    ? stages.map((s, idx) => {
+        const spec = (s.chartSpec && typeof s.chartSpec === "object")
+          ? normalizeChartSpec(s.chartSpec, s.title || "Health insight", s.spokenText || "", s.screenText || "")
+          : buildFallbackChartSpec(s.title || "Health insight", s.screenText || s.spokenText || "No chart.");
+        return {
+          panel_id: `stage_${Number(s.stageIndex ?? idx)}`,
+          title: s.title,
+          subtitle: "",
+          goal: idx === 0 ? "primary" : idx === stages.length - 1 ? "summary" : "deep_dive",
+          metrics: resolveStageMetrics(s, bundle),
+          visual_family: spec?.chart_type || "list_summary",
+          chart_spec: spec,
+        };
+      })
+    : [panel];
+
+  const derivedLayout = allPanels.length >= 3 ? "two_up_plus_footer"
+    : allPanels.length === 2 ? "two_up"
+    : "single_focus";
+
   return {
     status: "ready",
     requestId: requestId || safeStage.requestId || null,
     interaction_mode: "voice_first",
-    navigation_mode: "voice_only",
-    // Multi-panel screens need voice_navigation_only=false so the layout renders correctly
-    voice_navigation_only: !isMultiPanel,
-    autoAdvance,
-    autoAdvanceIntervalMs: autoAdvance ? 15000 : 0,
-    chartAdvanceSchedule: autoAdvance ? chartAdvanceSchedule : [],
-    layout: groupLayout,
+    navigation_mode: allStagesAvailable ? "multi_panel" : "voice_only",
+    voice_navigation_only: !allStagesAvailable,
+    layout: derivedLayout,
+    autoAdvance: false,
+    autoAdvanceIntervalMs: 0,
+    chartAdvanceSchedule: allStagesAvailable ? chartAdvanceSchedule : [],
     question: sanitizeText(question || safeStage.question, 280, ""),
     spoken_answer: fullVoiceAnswer,
     voice_answer: fullVoiceAnswer,
@@ -526,7 +549,7 @@ function buildStagePayload({
       shortSpeech: safeStage.spokenText,
       shortText: safeStage.screenText || safeStage.spokenText,
     },
-    panels,
+    panels: allPanels,
     next_views: nextViews,
     suggestedDrillDowns: suggestedFollowups.slice(0, 3),
     suggested_follow_up: suggestedFollowups.slice(0, 3),
@@ -558,7 +581,7 @@ function buildStagePayload({
       chartTitle: safeStage.title,
       chartType: safeStage?.chartSpec?.chart_type || "list_summary",
       summaryBundle: null,
-      panels: panels.map((p, i) => ({ panel_id: p.panel_id, title: p.title, goal: p.goal, metrics: p.metrics, index: i })),
+      panels: allPanels.map((p, i) => ({ panel_id: p.panel_id, title: p.title, goal: p.goal, metrics: p.metrics, index: i })),
       nextViews: nextViews,
       suggestedDrillDowns: suggestedFollowups.slice(0, 3),
     },

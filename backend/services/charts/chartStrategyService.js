@@ -79,9 +79,22 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
     for (const col of getMetricColumns(sa.normalizedTable)) allMetrics.add(col);
   }
 
-  const metrics = [...allMetrics];
-  const primaryMetric = metrics[0] || null;
-  const secondaryMetric = metrics[1] || null;
+  // Apply focusMetrics filter: only plot what the planner intended for this stage.
+  // Without this, ALL columns from the normalizedTable end up in every strategy,
+  // mixing metrics with incompatible scales (e.g. steps ~10 000 alongside
+  // resting_hr ~65) which produces unreadable charts with one dominant line
+  // and several flat lines near zero.
+  const focusMetrics = Array.isArray(stageSpec?.focusMetrics) && stageSpec.focusMetrics.length
+    ? stageSpec.focusMetrics
+    : null;
+  const rawMetrics = [...allMetrics];
+  const metrics = focusMetrics
+    ? rawMetrics.filter((m) => focusMetrics.includes(m)).filter(Boolean)
+    : rawMetrics;
+  // Fall back to raw columns when focusMetrics don't match anything in the table
+  const effectiveMetrics = metrics.length > 0 ? metrics : rawMetrics;
+  const primaryMetric = effectiveMetrics[0] || null;
+  const secondaryMetric = effectiveMetrics[1] || null;
   const usedTypes = new Set(previousChartTypes);
 
   if (!primaryMetric) {
@@ -98,17 +111,29 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
   // ── Comparison strategies (multiple sub-analyses with same metric) ──────
   if (saIds.length >= 2) {
     const saLabels = saIds.map((id) => multiWindowData[id]?.label || id);
-    const sharedMetrics = metrics.filter((m) =>
-      saIds.every((id) => getMetricColumns(multiWindowData[id]?.normalizedTable || []).includes(m))
-    );
+
+    // effectiveMetrics is already filtered by focusMetrics — just check presence across periods
+    const sharedMetrics = effectiveMetrics
+      .filter((m) => saIds.every((id) => getMetricColumns(multiWindowData[id]?.normalizedTable || []).includes(m)));
 
     if (sharedMetrics.length > 0) {
+      // Daily-aligned: primary metric per day of week, two series (this period vs last period)
+      // Preferred for single-metric comparisons — shows Mon–Sun paired bars
+      strategies.push({
+        strategy_id: "grouped_bar_daily_aligned",
+        chart_type: "grouped_bar",
+        description: `${formatMetricName(sharedMetrics[0])} each day of the week: ${saLabels[0]} vs ${saLabels[1]}`,
+        data_sources: saIds,
+        metrics: [sharedMetrics[0]],
+      });
+
+      // Cross-period averages: one bar per period (fallback — max 2 metrics to avoid scale mixing)
       strategies.push({
         strategy_id: "grouped_bar_cross_period",
         chart_type: "grouped_bar",
-        description: `Side-by-side bars comparing ${saLabels.join(" vs ")} for ${sharedMetrics.map(formatMetricName).join(", ")}`,
+        description: `Average ${sharedMetrics.slice(0, 2).map(formatMetricName).join(" and ")} compared across ${saLabels.join(" vs ")}`,
         data_sources: saIds,
-        metrics: sharedMetrics.slice(0, 4),
+        metrics: sharedMetrics.slice(0, 2),
       });
     }
 
@@ -230,13 +255,13 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
   }
 
   // Radar for multi-metric overview
-  if (metrics.length >= 3 && primaryRows.length >= 1) {
+  if (effectiveMetrics.length >= 3 && primaryRows.length >= 1) {
     strategies.push({
       strategy_id: "radar_overview",
       chart_type: "radar",
       description: "Multi-dimensional health overview at a glance",
       data_sources: [primarySaId],
-      metrics: metrics.slice(0, 6),
+      metrics: effectiveMetrics.slice(0, 6),
     });
   }
 
@@ -252,13 +277,13 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
   }
 
   // Heatmap — multi-metric (3+ metrics, 7+ rows)
-  if (primaryRows.length >= 7 && metrics.length >= 3) {
+  if (primaryRows.length >= 7 && effectiveMetrics.length >= 3) {
     strategies.push({
       strategy_id: "heatmap_multi_metric",
       chart_type: "heatmap",
       description: "Multiple health metrics by day of week — spot which days your health metrics peak or dip",
       data_sources: [primarySaId],
-      metrics: metrics.slice(0, 4),
+      metrics: effectiveMetrics.slice(0, 4),
     });
   }
 
@@ -300,18 +325,18 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
       chart_type: "list_summary",
       description: "A summary of your most recent health metrics as cards",
       data_sources: [primarySaId],
-      metrics: metrics.slice(0, 4),
+      metrics: effectiveMetrics.slice(0, 4),
     });
   }
 
   // Composed summary
-  if (metrics.length >= 2) {
+  if (effectiveMetrics.length >= 2) {
     strategies.push({
       strategy_id: "composed_summary",
       chart_type: "composed_summary",
       description: "Overview dashboard with key metrics and observations",
       data_sources: [primarySaId],
-      metrics: metrics.slice(0, 4),
+      metrics: effectiveMetrics.slice(0, 4),
     });
   }
 
@@ -345,6 +370,27 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
   });
 
   return result;
+}
+
+// ─── Data helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Downsample rows into weekly buckets when there are >= 14 data points.
+ * Returns { labels, values, isDownsampled } or null when not needed.
+ */
+function downsampleToWeeklyBuckets(rows, metric) {
+  if (!Array.isArray(rows) || rows.length < 14) return null;
+  const buckets = [];
+  for (let i = 0; i < rows.length; i += 7) {
+    const bucket = rows.slice(i, i + 7);
+    const valid = bucket.filter((r) => toNumber(r[metric]) !== null);
+    if (!valid.length) continue;
+    const avg = valid.reduce((sum, r) => sum + (toNumber(r[metric]) || 0), 0) / valid.length;
+    const label = String(bucket[0]?.timestamp || "").slice(5, 10).replace("-", "/"); // "MM/DD"
+    buckets.push({ label, value: Math.round(avg * 10) / 10 });
+  }
+  if (buckets.length < 2) return null;
+  return { labels: buckets.map((b) => b.label), values: buckets.map((b) => b.value), isDownsampled: true };
 }
 
 // ─── Chart data builders (deterministic) ──────────────────────────────────────
@@ -384,7 +430,8 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
 
   switch (chartType) {
     case "bar": {
-      const { labels, values } = extractDailySeries(allRows, primaryMetric);
+      const downsampled = downsampleToWeeklyBuckets(allRows, primaryMetric);
+      const { labels, values } = downsampled || extractDailySeries(allRows, primaryMetric);
       const avg = computeAverage(allRows, primaryMetric);
 
       // For bar_anomaly_highlight: collect anomalous dates and mark them
@@ -428,6 +475,9 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
     }
 
     case "grouped_bar": {
+      if (strategyId === "grouped_bar_daily_aligned" && saIds.length >= 2) {
+        return buildDailyAlignedGroupedBar(saIds, metrics[0], multiWindowData);
+      }
       if (strategyId === "grouped_bar_cross_period" && saIds.length >= 2) {
         return buildCrossPeriodGroupedBar(saIds, metrics, multiWindowData);
       }
@@ -437,7 +487,8 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
     }
 
     case "line": {
-      const { labels, values } = extractDailySeries(allRows, primaryMetric);
+      const downsampled = downsampleToWeeklyBuckets(allRows, primaryMetric);
+      const { labels, values } = downsampled || extractDailySeries(allRows, primaryMetric);
       const avg = computeAverage(allRows, primaryMetric);
       return {
         chart_type: "line",
@@ -452,12 +503,22 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
 
     case "multi_line": {
       const targetMetrics = metrics.slice(0, 4);
+      // Use the first metric's downsampling schedule for label alignment
+      const downsampled = downsampleToWeeklyBuckets(allRows, targetMetrics[0]);
+      if (downsampled) {
+        const series = targetMetrics.map((m) => {
+          const ds = downsampleToWeeklyBuckets(allRows, m);
+          return { name: formatMetricName(m), data: ds ? ds.values : [] };
+        });
+        return { chart_type: "multi_line", chart_data: { labels: downsampled.labels, series } };
+      }
       const { labels, series } = extractMultiMetricSeries(allRows, targetMetrics);
       return { chart_type: "multi_line", chart_data: { labels, series } };
     }
 
     case "area": {
-      const { labels, values } = extractDailySeries(allRows, primaryMetric);
+      const downsampled = downsampleToWeeklyBuckets(allRows, primaryMetric);
+      const { labels, values } = downsampled || extractDailySeries(allRows, primaryMetric);
       return {
         chart_type: "area",
         chart_data: {
@@ -475,11 +536,15 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
     }
 
     case "pie": {
-      // Use latest row for single-night pie
-      const lastRow = allRows[allRows.length - 1] || {};
+      // Sum all rows across the period for proportional stage composition.
+      // For a single-night query this equals that one night's values.
+      // For a multi-night query this gives the aggregate stage breakdown across the period.
       const slices = metrics
-        .map((m) => ({ name: formatMetricName(m), value: toNumber(lastRow[m]) }))
-        .filter((s) => s.value != null && s.value > 0);
+        .map((m) => ({
+          name: formatMetricName(m),
+          value: allRows.reduce((sum, row) => sum + (toNumber(row[m]) || 0), 0),
+        }))
+        .filter((s) => s.value > 0);
       if (slices.length < 2) return buildFallbackChart(allRows, primaryMetric);
       return { chart_type: "pie", chart_data: { slices } };
     }
@@ -567,6 +632,53 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
     default:
       return buildFallbackChart(allRows, primaryMetric);
   }
+}
+
+/**
+ * Build a grouped_bar chart aligning two time periods by day of week (Mon–Sun).
+ * Each day gets two bars: one per period. Falls back to period averages if
+ * day-of-week alignment fails (e.g. date info missing).
+ */
+function buildDailyAlignedGroupedBar(saIds, metric, multiWindowData) {
+  if (!metric) return null;
+  const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const periodSeries = saIds.map((id) => {
+    const sa = multiWindowData[id];
+    const rows = sa?.normalizedTable || [];
+    const label = sa?.label || id;
+    const dayMap = {};
+    for (const row of rows) {
+      const d = new Date(String(row?.timestamp || "").slice(0, 10));
+      if (!isNaN(d.getTime())) {
+        const dayName = DAY_NAMES[d.getDay()];
+        const val = toNumber(row[metric]);
+        if (val !== null) dayMap[dayName] = val;
+      }
+    }
+    return { name: label, dayMap };
+  });
+
+  // Only include days present in at least one period
+  const presentDays = DAY_ORDER.filter((day) => periodSeries.some((s) => s.dayMap[day] != null));
+
+  if (presentDays.length < 2) {
+    // Fall back to period averages if day alignment yields too few points
+    return buildCrossPeriodGroupedBar(saIds, [metric], multiWindowData);
+  }
+
+  return {
+    chart_type: "grouped_bar",
+    chart_data: {
+      labels: presentDays,
+      series: periodSeries.map((s) => ({
+        name: s.name,
+        data: presentDays.map((day) => s.dayMap[day] ?? null),
+      })),
+      unit: deriveUnit(metric),
+    },
+  };
 }
 
 function buildCrossPeriodGroupedBar(saIds, metrics, multiWindowData) {
