@@ -182,8 +182,15 @@ function sanitizePieOption(rawOption = {}) {
   };
 }
 
+function sanitizeSingleYAxis(rawYAxis = {}) {
+  return {
+    ...(rawYAxis && typeof rawYAxis === "object" ? rawYAxis : {}),
+    type: rawYAxis?.type || "value",
+    name: sanitizeText(rawYAxis?.name, 20, ""),
+  };
+}
+
 function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
-  const yAxisName = sanitizeText(rawOption?.yAxis?.name, 20, "");
   const typeMap = {
     bar: "bar",
     grouped_bar: "bar",
@@ -222,6 +229,12 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
     areaStyle: chartType === "area" || chartType === "timeline" ? { opacity: 0.16 } : item.areaStyle,
   }));
 
+  // Support dual-axis: yAxis can be an array (e.g. two metrics with different scales)
+  const rawYAxis = rawOption?.yAxis;
+  const yAxis = Array.isArray(rawYAxis)
+    ? rawYAxis.slice(0, 2).map((ax) => sanitizeSingleYAxis(ax))
+    : sanitizeSingleYAxis(rawYAxis || {});
+
   return {
     tooltip: { trigger: chartType === "scatter" ? "item" : "axis" },
     color: Array.isArray(rawOption?.color) ? rawOption.color.slice(0, 10) : undefined,
@@ -234,7 +247,7 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
     xAxis: chartType === "scatter"
       ? { ...(rawOption?.xAxis || {}), type: "value", name: sanitizeText(rawOption?.xAxis?.name, 20, "") }
       : { ...rawXAxis, type: "category", data: xLabels },
-    yAxis: { ...(rawOption?.yAxis || {}), type: rawOption?.yAxis?.type || "value", name: yAxisName },
+    yAxis,
     series,
   };
 }

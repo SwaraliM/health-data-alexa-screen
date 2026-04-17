@@ -8,7 +8,7 @@
  * - keeps logging compact and failure-safe
  */
 
-const { AGENT_CONFIGS } = require("../../configs/agentConfigs");
+const { AGENT_CONFIGS, ECHARTS_SKELETON_GUIDE } = require("../../configs/agentConfigs");
 
 // V2 template-fill path is enabled by default.
 // Set USE_TEMPLATE_FILL_EXECUTOR=false to fall back to V1 for all requests.
@@ -323,6 +323,58 @@ function buildExecutorBundleInputV3({
   };
 }
 
+/**
+ * Build the user message input for the V4 LLM-generates-option executor path.
+ *
+ * Key difference from V3: bundle_candidates contain raw_data (columnar Fitbit rows)
+ * instead of viable_strategies. The LLM generates the full ECharts option directly.
+ */
+function buildExecutorBundleInputV4({
+  bundleSummary = null,
+  question = "",
+  userContext = null,
+  evidenceBundle = null,
+  rawDataCandidates = [],
+} = {}) {
+  const compactBundleSummary = bundleSummary ? {
+    bundleId: bundleSummary.bundleId || null,
+    username: bundleSummary.username || null,
+    question: sanitizeText(bundleSummary.question, 360, ""),
+    planner: bundleSummary.planner || null,
+    metricsRequested: Array.isArray(bundleSummary.metricsRequested)
+      ? bundleSummary.metricsRequested.slice(0, 8) : [],
+    currentStageIndex: bundleSummary.currentStageIndex || 0,
+    stageCount: bundleSummary.stageCount || 0,
+  } : null;
+
+  return {
+    question: sanitizeText(question, 360, ""),
+    bundle_summary: compactBundleSummary,
+    user_context: userContext || null,
+    evidence: evidenceBundle || null,
+    echarts_guide: ECHARTS_SKELETON_GUIDE,
+    bundle_candidates: Array.isArray(rawDataCandidates) ? rawDataCandidates.map((candidate) => ({
+      stage_index: Math.max(0, Number(candidate?.stage_index || candidate?.stageIndex || 0)),
+      title_hint: sanitizeText(candidate?.title_hint || candidate?.titleHint || candidate?.title, 120, ""),
+      narrative_role_hint: sanitizeText(candidate?.narrative_role_hint || candidate?.narrativeRoleHint || "", 60, ""),
+      focus_metrics: Array.isArray(candidate?.focus_metrics || candidate?.focusMetrics)
+        ? (candidate.focus_metrics || candidate.focusMetrics).slice(0, 8)
+        : [],
+      goal: sanitizeText(candidate?.goal, 180, ""),
+      visualization_intent: sanitizeText(candidate?.visualization_intent || candidate?.visualizationIntent, 180, ""),
+      display_group: Number(candidate?.display_group ?? 0),
+      raw_data: candidate?.raw_data || null,  // { dates, metrics, stats, row_count, focus_metrics }
+    })) : [],
+    instructions: {
+      generate_option: "For each stage, generate a complete ECharts chart_option from the raw_data using the echarts_guide skeletons.",
+      use_raw_data: "raw_data.dates → xAxis.data. raw_data.metrics[key] → series[].data (parallel arrays). raw_data.stats → use for markLine reference values or narration.",
+      no_invented_values: "All series data values must come from raw_data.metrics arrays. Use null for missing days.",
+      author_bundle: "Author the whole chart sequence as one coherent answer, then return ordered stages.",
+      direct_verdict: "For evaluative questions, the final stage must explicitly answer the question in plain language.",
+    },
+  };
+}
+
 function extractResponseId(response = {}) {
   return response?.responseId
     || response?.id
@@ -448,21 +500,25 @@ async function runExecutorRequest({
   templateCandidates = null,  // V2: pre-built chart templates from chartTemplateBuilder
   viableStrategies = null,    // V3: strategies from chartStrategyService
   bundleCandidates = null,    // V3 bundle authoring: per-stage candidate strategies
-  evidenceBundle = null,      // V3: pre-computed evidence from evidenceComputer
+  rawDataCandidates = null,   // V4: per-stage raw columnar data — LLM generates option
+  evidenceBundle = null,      // V3/V4: pre-computed evidence from evidenceComputer
   __deps = null,
 } = {}) {
   const deps = __deps && typeof __deps === "object" ? __deps : {};
 
-  // Select path: V3 bundle authoring > V3 stage authoring > V2 template-fill > V1 legacy
-  const hasBundleCandidates = Array.isArray(bundleCandidates) && bundleCandidates.length > 0;
-  const hasStrategies = !hasBundleCandidates && Array.isArray(viableStrategies) && viableStrategies.length > 0;
-  const hasTemplates = !hasBundleCandidates && !hasStrategies
+  // Select path: V4 raw-data > V3 bundle authoring > V3 stage authoring > V2 template-fill > V1 legacy
+  const hasRawDataCandidates = Array.isArray(rawDataCandidates) && rawDataCandidates.length > 0
+    && AGENT_CONFIGS.executorV4?.enabled === true;
+  const hasBundleCandidates = !hasRawDataCandidates && Array.isArray(bundleCandidates) && bundleCandidates.length > 0;
+  const hasStrategies = !hasRawDataCandidates && !hasBundleCandidates && Array.isArray(viableStrategies) && viableStrategies.length > 0;
+  const hasTemplates = !hasRawDataCandidates && !hasBundleCandidates && !hasStrategies
     && USE_TEMPLATE_FILL_EXECUTOR
     && Array.isArray(templateCandidates)
     && templateCandidates.length > 0;
 
   const config = deps.config || (
-    hasBundleCandidates || hasStrategies ? AGENT_CONFIGS.executorV3
+    hasRawDataCandidates ? AGENT_CONFIGS.executorV4
+    : hasBundleCandidates || hasStrategies ? AGENT_CONFIGS.executorV3
     : hasTemplates ? AGENT_CONFIGS.executorV2
     : AGENT_CONFIGS.executor
   );
@@ -471,11 +527,19 @@ async function runExecutorRequest({
   const runToolLoopFn = deps.runToolLoop || runToolLoop;
 
   const timeoutMs = resolveTimeoutMs(config.timeoutMs, voiceDeadlineMs);
-  // V2/V3 have no tools; V1 retains its tool loop
-  const tools = (hasTemplates || hasStrategies || hasBundleCandidates) ? [] : getExecutorToolsFn(config.toolPolicy || null);
+  // V2/V3/V4 have no tools; V1 retains its tool loop
+  const tools = (hasTemplates || hasStrategies || hasBundleCandidates || hasRawDataCandidates) ? [] : getExecutorToolsFn(config.toolPolicy || null);
   const hasTools = Array.isArray(tools) && tools.length > 0;
 
-  const input = hasBundleCandidates
+  const input = hasRawDataCandidates
+    ? buildExecutorBundleInputV4({
+        bundleSummary,
+        question,
+        userContext,
+        evidenceBundle,
+        rawDataCandidates,
+      })
+    : hasBundleCandidates
     ? buildExecutorBundleInputV3({
         bundleSummary,
         question,
@@ -534,9 +598,10 @@ async function runExecutorRequest({
     model: config.model,
     stageIndex,
     timeoutMs,
-    path: hasBundleCandidates ? "v3_bundle_authoring" : hasStrategies ? "v3_evidence_strategy" : hasTemplates ? "v2_template_fill" : "v1_legacy",
+    path: hasRawDataCandidates ? "v4_llm_option" : hasBundleCandidates ? "v3_bundle_authoring" : hasStrategies ? "v3_evidence_strategy" : hasTemplates ? "v2_template_fill" : "v1_legacy",
     templateCandidateCount: hasTemplates ? templateCandidates.length : 0,
     bundleCandidateCount: hasBundleCandidates ? bundleCandidates.length : 0,
+    rawDataCandidateCount: hasRawDataCandidates ? rawDataCandidates.length : 0,
     strategyCount: hasStrategies ? viableStrategies.length : 0,
     hasPreviousResponseId: Boolean(previousResponseId),
     previousResponseId: previousResponseId || null,
@@ -618,6 +683,7 @@ async function runExecutorRequest({
 module.exports = {
   buildExecutorInput,
   buildExecutorBundleInputV3,
+  buildExecutorBundleInputV4,
   buildExecutorInputV2,
   buildExecutorInputV3,
   normalizeExecutorResponse,
