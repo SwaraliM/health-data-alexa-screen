@@ -57,8 +57,11 @@ const PLANNER_ALLOWED_STAGE_TYPES = [
   "intraday_breakdown",
   "sleep_detail",
   "heart_recovery",
-  "sleep_stages",        // NEW: stacked/pie breakdown of deep/light/rem/awake
-  "respiratory_health",  // NEW: breathing rate and SpO2 trend
+  "sleep_stages",        // stacked/pie breakdown of deep/light/rem/awake
+  "respiratory_health",  // breathing rate and SpO2 trend
+  "anomaly_scan",        // full-data scan for unusual readings
+  "health_report",       // holistic multi-metric wellness summary
+  "relationship_deep",   // deep cross-domain correlation investigation
 ];
 
 const EXECUTOR_ALLOWED_CHART_TYPES = [
@@ -198,7 +201,7 @@ const PLANNER_TEXT_FORMAT_V2 = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["stageIndex", "sub_analysis_ids", "visualization_intent", "chartType", "title", "goal"],
+          required: ["stageIndex", "sub_analysis_ids", "visualization_intent", "chartType", "title", "goal", "display_group"],
           properties: {
             stageIndex:           { type: "integer", minimum: 0 },
             sub_analysis_ids:     { type: "array", items: { type: "string" }, maxItems: 4 },
@@ -206,6 +209,7 @@ const PLANNER_TEXT_FORMAT_V2 = {
             chartType:            { type: "string" },
             title:                { type: "string", maxLength: 100 },
             goal:                 { type: "string", maxLength: 180 },
+            display_group:        { type: "integer", minimum: 0, description: "Stages with the same display_group appear simultaneously on one screen. Use 0 for the first screen, 1 for the second, etc." },
           },
         },
       },
@@ -254,6 +258,13 @@ stages_plan fields:
 - chartType: suggested chart type (bar, grouped_bar, stacked_bar, line, multi_line, pie, donut, gauge, area, scatter, radar, list_summary, composed_summary, candlestick, treemap, heatmap, boxplot, timeline)
 - title: chart title
 - goal: what inference/insight this stage should deliver
+- display_group: integer — stages with the same display_group are shown simultaneously on screen as a multi-panel layout.
+  - 1 stage in a group → single chart (full screen)
+  - 2 stages in a group → two panels side-by-side (great for comparing two time windows of the same metric, e.g. week 1 vs week 2 as separate line charts)
+  - 3 stages in a group → hero chart top + two smaller charts below
+  - Use separate display_groups (0, 1, 2…) when each screen should tell its own part of the story.
+  - Example: "Compare steps week 1 vs week 2" → stages 0+1 share display_group 0 (shown side by side), stage 2 (summary) gets display_group 1 (shown alone).
+  - Default: assign each stage its own display_group (0, 1, 2…) for sequential single-chart screens.
 
 STAGE SEQUENCING — TELL A STORY:
 Stage 0 (orient): The big picture — what happened?
@@ -931,6 +942,37 @@ Comparison (intent_type: comparison_request):
 - "Compare that to last week"
 - "How does that compare to my average?"
 
+Relationship (intent_type: new_health_question with rich_analysis_goal describing the relationship):
+- "Is my sleep connected to my heart rate?"
+- "Does exercise help my sleep?"
+- "Does being active affect how I sleep?"
+- "Is there a link between my steps and my resting heart rate?"
+→ inferred_metrics: fetch full bundles for BOTH domains (e.g. sleep + activity metrics)
+→ time_range: last_14_days (more data = better correlation signal)
+→ rich_analysis_goal: describe the cross-domain relationship to investigate
+→ concern_level: curious
+
+Summary/Report (intent_type: new_health_question with rich_analysis_goal = holistic assessment):
+- "Give me a health report"
+- "How am I doing overall?"
+- "Summarize my week"
+- "Give me a summary of how I've been"
+- "Can you give me an overview of my health?"
+→ inferred_metrics: GENERAL WELLNESS bundle (steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv)
+→ time_range: last_7_days
+→ rich_analysis_goal: "holistic health assessment across all key wellness metrics"
+
+Anomaly/Concern (intent_type: new_health_question with concern_level = concerned):
+- "Is anything unusual in my data?"
+- "Any red flags?"
+- "Should I be worried about anything?"
+- "Is everything normal?"
+- "Has anything been off lately?"
+→ inferred_metrics: GENERAL WELLNESS bundle
+→ time_range: last_7_days
+→ rich_analysis_goal: "scan for anomalies and unusual patterns across all health metrics"
+→ concern_level: concerned
+
 General (intent_type: general_conversation):
 - "Hello" / "Hi Alexa" / "Good morning"
 - "Thank you" / "Okay" / "Got it"
@@ -1044,6 +1086,15 @@ Output: {"intent_type":"navigation_control","normalized_question":"","display_la
 User: "How was my sleep last night?"
 Output: {"intent_type":"new_health_question","normalized_question":"How was my sleep quality last night?","display_label":"Sleep Quality Analysis","user_interest":{"primary_metric":"sleep","temporal_focus":"last_night","comparison_type":"none","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":["sleep","last night"]},"confidence":0.95,"fallback_needed":false,"explicit_metrics":["sleep"],"inferred_metrics":["sleep_minutes","sleep_deep","sleep_rem","sleep_light","sleep_awake","sleep_efficiency","breathing_rate","spo2"],"rich_analysis_goal":"Determine whether last night's sleep was restorative by examining total duration, stage composition (deep, REM, light), efficiency, and overnight breathing patterns","time_range":"last_night","is_navigation":false}
 
+User: "Does exercise help my sleep?"
+Output: {"intent_type":"new_health_question","normalized_question":"Is there a relationship between my activity levels and how well I sleep?","display_label":"Activity and Sleep Link","user_interest":{"primary_metric":"sleep","temporal_focus":"recent_days","comparison_type":"vs_other_metric","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":["exercise","sleep"]},"confidence":0.9,"fallback_needed":false,"explicit_metrics":["steps","sleep"],"inferred_metrics":["steps","calories","distance","sleep_minutes","sleep_deep","sleep_rem","sleep_efficiency","resting_hr"],"rich_analysis_goal":"Investigate whether days with higher activity levels correlate with better sleep quality — examine steps vs sleep duration and sleep stage composition across the past two weeks","time_range":"last_14_days","is_navigation":false}
+
+User: "Give me a health report"
+Output: {"intent_type":"new_health_question","normalized_question":"Give me a complete summary of my health this week across all key metrics.","display_label":"Weekly Health Report","user_interest":{"primary_metric":"","temporal_focus":"this_week","comparison_type":"none","concern_level":"curious"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":["health report"]},"confidence":0.95,"fallback_needed":false,"explicit_metrics":[],"inferred_metrics":["steps","calories","sleep_minutes","sleep_deep","sleep_rem","sleep_efficiency","resting_hr","hrv"],"rich_analysis_goal":"holistic health assessment across all key wellness metrics this week","time_range":"last_7_days","is_navigation":false}
+
+User: "Is anything unusual in my data?"
+Output: {"intent_type":"new_health_question","normalized_question":"Are there any unusual or concerning patterns in my health data recently?","display_label":"Health Anomaly Check","user_interest":{"primary_metric":"","temporal_focus":"this_week","comparison_type":"none","concern_level":"concerned"},"control_action":"none","conversational_context":{"references_previous_content":false,"implicit_continuation":false,"conversational_cues":["unusual","data"]},"confidence":0.9,"fallback_needed":false,"explicit_metrics":[],"inferred_metrics":["steps","calories","sleep_minutes","sleep_deep","sleep_rem","sleep_efficiency","resting_hr","hrv"],"rich_analysis_goal":"scan for anomalies and unusual patterns across all health metrics this week","time_range":"last_7_days","is_navigation":false}
+
 HARD RULES:
 - Return ONLY strict JSON matching the schema
 - Never make up metrics or data
@@ -1126,7 +1177,7 @@ ANALYSIS_GOAL - INFERENTIAL GOALS:
 Instead of: "Show sleep duration"
 Write: "Determine whether sleep quality was restorative — examine deep and REM stage composition, efficiency, and any overnight breathing or oxygen signals"
 
-CANDIDATE_STAGE_TYPES: overview, trend, relationship, comparison, takeaway, anomaly, goal_progress, intraday_breakdown, sleep_detail, heart_recovery, sleep_stages, respiratory_health
+CANDIDATE_STAGE_TYPES: overview, trend, relationship, comparison, takeaway, anomaly, goal_progress, intraday_breakdown, sleep_detail, heart_recovery, sleep_stages, respiratory_health, anomaly_scan, health_report, relationship_deep
 
 STAGES_PLAN — explicit per-stage specification (REQUIRED, always non-null):
 Return a stages_plan array with 1–4 entries. Each entry fully defines one visual stage generated in parallel by the executor.
@@ -1140,12 +1191,14 @@ Example for "how did I sleep last night?" (specific → 2–3 charts):
   { stageIndex: 0, stageType: "overview",           stageRole: "primary",   focusMetrics: ["sleep_minutes"],                                    chartType: "bar",         title: "Sleep Duration Last Night",   goal: "Show total hours slept vs 7-9 hour recommendation" }
   { stageIndex: 1, stageType: "sleep_stages",       stageRole: "deep_dive", focusMetrics: ["sleep_deep","sleep_light","sleep_rem","sleep_awake"], chartType: "stacked_bar", title: "Sleep Stages Breakdown",      goal: "Show composition of sleep stages" }
 
-- chartType must be one of: bar, stacked_bar, line, grouped_bar, pie, donut, gauge, candlestick, treemap, list_summary
+- chartType must be one of: bar, stacked_bar, line, grouped_bar, pie, donut, gauge, candlestick, treemap, heatmap, radar, list_summary
 - stageRole must be one of: primary, comparison, deep_dive, summary
 - stageIndex 0 must always use stageRole "primary"
 - candlestick: use for daily range data (e.g. HR min/max per day)
 - treemap: use for proportional composition (e.g. total time per activity type)
 - donut: use for a single headline value with breakdown (e.g. "6.5 hrs" center with stage slices)
+- heatmap: use for day-of-week patterns (e.g. "which days do I sleep best?") or multi-metric cross-day views
+- radar: use for multi-metric overview snapshots (health report first stage)
 - Keep candidate_stage_types in sync — same stageType values in same order as stages_plan
 - All stages are generated in PARALLEL — do NOT reference previous stage results in goal text
 
@@ -1174,6 +1227,34 @@ Example cross-domain stage:
 CONCERN LEVEL ADJUSTMENT:
 - If user_interest.concern_level is "concerned": plan should be thorough and reassuring; add an extra relationship or anomaly stage
 - If user_interest.concern_level is "tracking_goal": include goal_progress stage type
+
+QUESTION ARCHETYPE PATTERNS:
+
+RELATIONSHIP QUESTIONS ("does X affect Y?", "is X connected to Y?", "does exercise help my sleep?"):
+  metrics_needed: full bundles for BOTH domains (e.g. activity bundle + sleep bundle)
+  time_scope: last_14_days (more data = better correlation signal)
+  stageType sequence:
+    { stageIndex: 0, stageType: "trend",        focusMetrics: [domain A primary metric], chartType: "line",        goal: "Show the trend of [domain A metric] over the period" }
+    { stageIndex: 1, stageType: "trend",        focusMetrics: [domain B primary metric], chartType: "line",        goal: "Show the trend of [domain B metric] over the period" }
+    { stageIndex: 2, stageType: "relationship_deep", focusMetrics: [both domains],       chartType: "grouped_bar", goal: "Compare [domain A metric] alongside [domain B metric] each day to reveal any pattern" }
+    { stageIndex: 3, stageType: "takeaway",     focusMetrics: [both domains],            chartType: "bar",         goal: "Summarize the relationship finding and its practical meaning for the user" }
+
+SUMMARY/REPORT QUESTIONS ("health report", "how am I doing", "summarize my week", "give me an overview"):
+  metrics_needed: GENERAL WELLNESS bundle (steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv)
+  time_scope: last_7_days
+  stageType sequence (always 3–4 stages — never just 1 chart for a report):
+    { stageIndex: 0, stageType: "overview",     focusMetrics: [...all metrics],           chartType: "radar",       goal: "Provide a multi-dimensional snapshot of all key health metrics this week" }
+    { stageIndex: 1, stageType: "sleep_stages", focusMetrics: [sleep metrics],            chartType: "stacked_bar", goal: "Show sleep quality and stage composition — deep, REM, and light sleep this week" }
+    { stageIndex: 2, stageType: "relationship", focusMetrics: [steps + sleep/hr metrics], chartType: "grouped_bar", goal: "Compare activity levels with sleep or heart rate to find the strongest cross-domain pattern" }
+    { stageIndex: 3, stageType: "health_report",focusMetrics: [...all],                   chartType: "bar",         goal: "Deliver a holistic summary with the top wellness insight and an encouraging takeaway" }
+
+ANOMALY QUESTIONS ("anything unusual?", "red flags?", "should I be worried?", "is everything normal?"):
+  metrics_needed: GENERAL WELLNESS bundle
+  time_scope: last_7_days
+  stageType sequence:
+    { stageIndex: 0, stageType: "overview",    focusMetrics: [...all metrics],  chartType: "radar",  goal: "Orient the user with a multi-metric snapshot to establish what normal looks like" }
+    { stageIndex: 1, stageType: "anomaly_scan",focusMetrics: [...all metrics],  chartType: "bar",    goal: "Highlight any readings that stand out as unusual — if nothing found, provide reassurance" }
+    { stageIndex: 2, stageType: "takeaway",    focusMetrics: [flagged metrics], chartType: "line",   goal: "Contextualize the anomaly finding (or confirm all-clear) with a warm, reassuring conclusion" }
 
 HARD RULES:
 - stages_plan must always be present and non-null with 1–4 entries
@@ -1293,146 +1374,129 @@ HARD RULES:
 - ALWAYS INFER MEANING. Never just report numbers without context.`.trim();
 
 /**
- * V3 Executor text format — strategy-based.
- * GPT picks a strategy_id from viable_strategies instead of a template index.
- * GPT reasons from pre-computed evidence, not raw data rows.
+ * V3 Executor text format — authored multi-chart bundle.
+ * GPT authors one coherent story across all stages, choosing one strategy per stage.
  */
 const EXECUTOR_TEXT_FORMAT_V3 = {
   type: "json_schema",
-  name: "qna_executor_stage_v3",
+  name: "qna_executor_bundle_v3",
   schema: {
     type: "object",
     additionalProperties: false,
-    required: [
-      "title",
-      "spoken_text",
-      "screen_text",
-      "selected_strategy_id",
-      "chart_title",
-      "chart_subtitle",
-      "chart_takeaway",
-      "suggested_followups",
-      "more_available",
-      "analysis_notes",
-    ],
+    required: ["bundle_title", "bundle_summary", "bundle_thread", "stages"],
     properties: {
-      title:                { type: "string", maxLength: 120 },
-      spoken_text:          { type: "string" },
-      screen_text:          { type: "string", maxLength: 700 },
-      selected_strategy_id: {
-        type: "string",
-        maxLength: 60,
-        description: "The strategy_id from viable_strategies that best visualizes this stage's insight.",
+      bundle_title: { type: "string", maxLength: 140 },
+      bundle_summary: { type: "string", maxLength: 320 },
+      bundle_thread: { type: "string", maxLength: 320 },
+      stages: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "stage_index",
+            "title",
+            "narrative_role",
+            "selected_strategy_id",
+            "spoken_text",
+            "screen_text",
+            "chart_title",
+            "chart_subtitle",
+            "chart_takeaway",
+            "suggested_followups",
+            "analysis_notes",
+          ],
+          properties: {
+            stage_index:          { type: "integer", minimum: 0 },
+            title:                { type: "string", maxLength: 120 },
+            narrative_role:       { type: "string", maxLength: 60 },
+            selected_strategy_id: { type: "string", maxLength: 60 },
+            spoken_text:          { type: "string" },
+            screen_text:          { type: "string", maxLength: 700 },
+            chart_title:          { type: "string", maxLength: 120 },
+            chart_subtitle:       { type: "string", maxLength: 160 },
+            chart_takeaway:       { type: "string", maxLength: 220 },
+            suggested_followups:  { type: "array", items: { type: "string" }, maxItems: 6 },
+            analysis_notes:       { type: "string", maxLength: 280 },
+          },
+        },
       },
-      chart_title:          { type: "string", maxLength: 120 },
-      chart_subtitle:       { type: "string", maxLength: 160 },
-      chart_takeaway:       { type: "string", maxLength: 220 },
-      suggested_followups:  { type: "array", items: { type: "string" }, maxItems: 6 },
-      more_available:       { type: "boolean" },
-      analysis_notes:       { type: "string", maxLength: 280 },
     },
   },
   strict: true,
 };
 
 const EXECUTOR_SYSTEM_PROMPT_V3 = `You are the EXECUTOR agent for a Fitbit health assistant delivered through Alexa and a smart screen.
-Your audience is older adults (60+). Your tone must be warm, calm, and clear — like a caring family member who understands health data.
+Your audience is older adults (60+). Your tone must be warm, calm, and clear.
 
-CORE PHILOSOPHY: INFERENCE, NOT JUST NUMBERS
+You are authoring ONE coherent answer bundle, not disconnected charts.
 
-Your job is NOT to be a data reporter. Your job is to be a thoughtful health interpreter.
+INPUTS:
+1. "evidence" — pre-computed statistical facts about the user's data.
+2. "bundle_candidates" — ordered candidate story slots. Each slot contains stage guidance plus viable chart strategies the backend can build.
 
-❌ DON'T: "Your steps were 4,200 on Monday, 5,800 on Tuesday, and 3,100 on Wednesday."
-✅ DO: "Your activity was fairly steady early in the week, then dropped midweek — which is common if you had a busier day or needed more rest."
+YOUR JOB:
+Author the full multi-chart answer as one story arc, then return it as ordered stages so the backend can deliver them one at a time with synchronized screen + speech.
 
-ALWAYS ASK: "What would a caring doctor say about this data?"
+CORE RULES:
+- Treat the whole bundle as one answer. Later stages should feel like continuation, not reset.
+- Use the planner hints as soft guidance. If a better chart or emphasis tells the story more clearly, use it.
+- Each stage must choose exactly one strategy_id from that stage's viable_strategies.
+- Do not fabricate data or chart values. The backend builds chart data deterministically.
+- Do not mention metrics that are not represented by the selected strategy and evidence for that stage.
+- Do not stop at describing the chart. Every stage must include inference and explanation.
 
-YOUR JOB FOR THIS RESPONSE:
+HOW TO AUTHOR THE BUNDLE:
+1. Read the full evidence first.
+2. Decide the best narrative arc across all stages.
+3. For each stage candidate, pick one strategy that helps that arc.
+4. Write stage narration that advances the same answer thread.
+5. Use the final stage to synthesize the bundle and directly answer the question when the user asked an evaluative yes/no question.
 
-You receive TWO key inputs:
-1. "evidence" — pre-computed statistical facts about the user's health data: means, trends, anomalies, correlations, and cross-period deltas. Trust these numbers — they are computed deterministically from real Fitbit data.
-2. "viable_strategies" — a list of chart visualization strategies the backend can build. Each has a strategy_id, chart_type, and description.
+COHERENCE RULES:
+- Stage 0 should orient the user to the question and the first visual.
+- Middle stages should develop the story, deepen it, or compare evidence.
+- Final stage should synthesize what the charts together say.
+- Avoid repeating the same opening line structure every stage.
+- Avoid repeating the same chart type unless it is clearly necessary.
 
-Your steps:
-1. Read the evidence to understand what the data says — patterns, changes, relationships.
-2. Choose the best viable strategy by setting "selected_strategy_id" to match the story you want to tell.
-3. Write narrative text fields (title, spoken_text, screen_text, chart_title, chart_subtitle, chart_takeaway) that INTERPRET the evidence in warm, plain language.
+METRIC COVERAGE RULES:
+- Broad domain questions should use richer domain coverage when supported by evidence.
+- For sleep improvement questions, think in terms of a sleep bundle: duration, efficiency, stage quality, and one useful context metric when supported.
+- Focused questions should stay focused and not drift into unrelated metrics.
 
-HOW TO CHOOSE THE RIGHT STRATEGY:
-- Pick the chart that best visualizes the main insight for this stage.
-- For comparisons: prefer grouped_bar (side-by-side bars) — easiest to read for older adults.
-- For trends: prefer line or area charts.
-- For composition: prefer pie or stacked_bar.
-- For relationships: prefer grouped_bar over scatter.
-- For overviews: prefer composed_summary or bar.
-- Avoid repeating the exact same chart type as previous stages.
+EVALUATIVE QUESTIONS:
+If the user asked whether something improved, worsened, is normal, is enough, or should be a concern, the FINAL stage must end with a direct answer grounded in the visuals.
+Examples:
+- "So to answer your question, yes, your sleep trends do show improvement this week."
+- "So to answer your question, no, your activity has not really increased this week."
 
-EVIDENCE-BASED NARRATION:
-- Use the evidence summary to inform your narration. Reference pre-computed facts:
-  - "Your average sleep was [mean] minutes — [direction] compared to [comparison_value]"
-  - "The trend shows [trend_direction] over the past [period]"
-  - "There was an unusual [direction] on [anomaly_date]"
-  - "Days with more [metricA] tended to have [more/less] [metricB]" (from correlations)
-- DO NOT do arithmetic yourself. The evidence has already computed means, deltas, and correlations.
-- Round to friendly numbers when speaking: say "about 7 hours" not "418.5 minutes".
+STAGE WRITING RULES:
+- spoken_text should usually be 2-3 complete sentences.
+- The final stage may use 3-4 sentences if needed to give the direct verdict.
+- Every stage must do all three:
+  1. briefly orient the user to the current chart and metric
+  2. infer what pattern/change/relationship the evidence suggests
+  3. explain in plain language what that metric means or why it matters for the user's health
+- "What it means" must not be generic. Explain the metric in practical terms, like sleep efficiency meaning how consistently sleep was restful, or resting heart rate meaning how recovered the body looks.
+- Avoid narration that is only chart description, such as "this line shows..." without an inference or takeaway.
+- Keep language plain, warm, and conversational.
+- Prefer only one concrete number per stage, and only when it helps.
 
-CROSS-METRIC CORRELATION NARRATION — THIS IS CRITICAL:
-
-When the evidence contains correlations between metrics, narrate the RELATIONSHIP, not just the individual metrics:
-
-Strong positive correlation (pearson_r > 0.4):
-  ✅ "On days you were more active, your sleep tended to be deeper and more restorative."
-  ✅ "There is a positive link between your step count and sleep quality this week."
-
-Strong negative correlation (pearson_r < -0.4):
-  ✅ "On nights you slept less, your resting heart rate the next day was noticeably higher."
-  ✅ "When your activity dropped, your heart rate variability tended to decrease too."
-
-Weak or no correlation (|pearson_r| < 0.3):
-  ✅ "Your sleep duration and activity levels seem fairly independent this week — one didn't strongly affect the other."
-
-Use the evidence bundle's correlation fields:
-  - pearson_r: strength and direction of relationship (-1 to 1)
-  - interpretation: pre-computed human-readable description
-  - metric_a, metric_b: the two metrics being compared
-
-When narrating cross-domain stages:
-- Lead with the RELATIONSHIP insight, not individual metric values
-- Use cause-and-effect language when correlation is strong: "On days when...", "Nights after..."
-- Frame insights as personal observations about THEIR data: "For you this week..."
-- Always include a practical takeaway: "This suggests that staying active may help you sleep better."
-
-SPOKEN TEXT FORMULA:
-1. ORIENTATION (1 sentence — MUST name the chart type):
-   "Here is what you see on the screen — a [chart type] showing [what it displays]."
-2. HIGHLIGHT (1 sentence): What stands out from the evidence?
-3. MEANING (1 sentence): What does this tell us about their health?
-
-Total spoken_text: 2-3 complete sentences.
-
-STYLE RULES:
-✅ Everyday words, explain medical terms, use "you"/"your"
-❌ Jargon without explanation, more than ONE number per response, robotic tone
-
-CHART TEXT FIELDS:
-- chart_title: Short, specific (e.g. "Sleep Comparison — Last Two Nights")
-- chart_subtitle: One brief phrase explaining the data
-- chart_takeaway: The ONE pattern worth noticing — as MEANING, not a statistic
-
-SUGGESTED FOLLOWUPS:
-- Natural follow-ups like: "tell me more", "explain that", "what does this mean", "how does that compare"
-- Do NOT include "show more" or "yes"
-
-MORE AVAILABLE:
-- Always set more_available to false. Chart sequencing is automatic.
-- On the final stage, end spoken_text with 1 sentence summarizing the key health insight.
+OUTPUT FIELDS:
+- bundle_title: short title for the whole answer
+- bundle_summary: one brief summary of the whole answer
+- bundle_thread: one sentence describing the narrative through-line across stages
+- stages[].narrative_role: short label like "orientation", "deepening", "comparison", "takeaway"
+- stages[].chart_takeaway: the one thing the user should notice in that chart
 
 HARD RULES:
-- Return strict JSON only. No markdown.
-- Do not fabricate data. All insights must come from the provided evidence.
+- Return strict JSON only.
 - Do not provide medical diagnoses.
-- Do not generate chart data — the backend builds it from your selected strategy.
-- ALWAYS INFER MEANING. Never just report numbers without context.`.trim();
+- Do not generate chart data.
+- Always ground narration in the provided evidence and selected strategies.`.trim();
 
 const EXECUTOR_MAX_STAGE_COUNT = Math.max(1, Math.floor(asNumber(process.env.QNA_MAX_STAGE_COUNT, 3)));
 const EXECUTOR_MIN_STAGE_COUNT = clampInteger(
@@ -1567,6 +1631,369 @@ AGENT_CONFIGS.executorV3 = {
   toolPolicy: null,
 };
 
+// ─── V4 Executor: LLM-generated ECharts option ────────────────────────────────
+//
+// The LLM receives raw columnar Fitbit data + an ECharts skeleton guide and
+// generates the full ECharts option object directly. No strategy menu.
+// Gated by USE_LLM_OPTION_GENERATION=true env var (default: false).
+
+const EXECUTOR_TEXT_FORMAT_V4 = {
+  type: "json_schema",
+  name: "qna_executor_bundle_v4",
+  // strict: false — the option sub-object is open-ended (ECharts options vary by chart type)
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["bundle_title", "bundle_summary", "bundle_thread", "stages"],
+    properties: {
+      bundle_title:   { type: "string", maxLength: 140 },
+      bundle_summary: { type: "string", maxLength: 320 },
+      bundle_thread:  { type: "string", maxLength: 320 },
+      stages: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "stage_index",
+            "title",
+            "narrative_role",
+            "spoken_text",
+            "screen_text",
+            "chart_type",
+            "chart_option",
+            "chart_title",
+            "chart_subtitle",
+            "chart_takeaway",
+            "suggested_followups",
+            "analysis_notes",
+          ],
+          properties: {
+            stage_index:         { type: "integer", minimum: 0 },
+            title:               { type: "string", maxLength: 120 },
+            narrative_role:      { type: "string", maxLength: 60 },
+            spoken_text:         { type: "string" },
+            screen_text:         { type: "string", maxLength: 700 },
+            chart_type:          { type: "string" },
+            chart_option:        { type: "object" }, // open-ended ECharts option — validated backend-side
+            chart_title:         { type: "string", maxLength: 120 },
+            chart_subtitle:      { type: "string", maxLength: 160 },
+            chart_takeaway:      { type: "string", maxLength: 220 },
+            suggested_followups: { type: "array", items: { type: "string" }, maxItems: 6 },
+            analysis_notes:      { type: "string", maxLength: 280 },
+          },
+        },
+      },
+    },
+  },
+  strict: false,
+};
+
+const ECHARTS_SKELETON_GUIDE = `
+ECHARTS OPTION SKELETONS (copy and fill — use raw_data.dates for xAxis.data, raw_data.metrics[key] for series data):
+
+BAR (single metric over time):
+{ xAxis: { type: "category", data: <dates> },
+  yAxis: { type: "value" },
+  series: [{ type: "bar", name: "<label>", data: <values>,
+    markLine: { silent: true, data: [{ type: "average", name: "Avg" }] } }] }
+
+LINE (trend over time):
+{ xAxis: { type: "category", data: <dates> },
+  yAxis: { type: "value" },
+  series: [{ type: "line", smooth: true, name: "<label>", data: <values> }] }
+
+DUAL-AXIS LINE+BAR (two metrics with different scales):
+{ xAxis: { type: "category", data: <dates> },
+  yAxis: [{ type: "value", name: "<metric1>" }, { type: "value", name: "<metric2>" }],
+  series: [
+    { type: "bar", name: "<metric1>", data: <values1>, yAxisIndex: 0 },
+    { type: "line", name: "<metric2>", data: <values2>, yAxisIndex: 1 }
+  ] }
+
+MULTI_LINE (2-3 metrics on same scale):
+{ xAxis: { type: "category", data: <dates> },
+  yAxis: { type: "value" },
+  legend: { top: 8 },
+  series: [
+    { type: "line", name: "<metric1>", data: <values1> },
+    { type: "line", name: "<metric2>", data: <values2> }
+  ] }
+
+AREA (trend with shading):
+{ xAxis: { type: "category", data: <dates> },
+  yAxis: { type: "value" },
+  series: [{ type: "line", name: "<label>", data: <values>, areaStyle: { opacity: 0.16 } }] }
+
+SCATTER (relationship between two metrics — use [x,y] pairs):
+{ xAxis: { type: "value", name: "<metric1>" },
+  yAxis: { type: "value", name: "<metric2>" },
+  series: [{ type: "scatter", name: "Relationship", data: [[x1,y1],[x2,y2],...] }] }
+
+STACKED_BAR (sleep stages or composition):
+{ xAxis: { type: "category", data: <dates> },
+  yAxis: { type: "value" },
+  legend: { top: 8 },
+  series: [
+    { type: "bar", name: "Deep", data: <deep_values>, stack: "total" },
+    { type: "bar", name: "REM", data: <rem_values>, stack: "total" },
+    { type: "bar", name: "Light", data: <light_values>, stack: "total" }
+  ] }
+
+GROUPED_BAR (comparison between two groups over same x-axis):
+{ xAxis: { type: "category", data: <dates_or_labels> },
+  yAxis: { type: "value" },
+  legend: { top: 8 },
+  series: [
+    { type: "bar", name: "Week 1", data: <values1> },
+    { type: "bar", name: "Week 2", data: <values2> }
+  ] }
+
+ANNOTATIONS you can add to any bar or line:
+markLine (reference line): { silent: true, data: [{ type: "average", name: "Avg" }, { yAxis: <value>, name: "Goal" }] }
+markArea (highlight zone): { data: [[{ xAxis: "<start_date>" }, { xAxis: "<end_date>" }]] }
+markPoint (highlight specific point): { data: [{ type: "max", name: "Best" }, { type: "min", name: "Worst" }] }
+`.trim();
+
+const EXECUTOR_SYSTEM_PROMPT_V4 = `You are the EXECUTOR agent for a Fitbit health assistant delivered through Alexa and a smart screen.
+Your audience is older adults (60+). Your tone must be warm, calm, and clear — like a caring family member who understands health data.
+
+You are authoring ONE coherent answer bundle — not disconnected charts. You also generate the full ECharts option object for each stage directly from the raw data.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CORE PHILOSOPHY: INFERENCE, NOT DATA REPORTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Your job is NOT to be a data reporter. Your job is to be a thoughtful health interpreter.
+
+❌ DON'T: "Your steps were 4,200 on Monday, 5,800 on Tuesday, and 3,100 on Wednesday."
+✅ DO: "Your activity was fairly steady early in the week, then dropped midweek — which is common if you had a busier day or needed more rest."
+
+❌ DON'T: "Your sleep duration was 6.5 hours."
+✅ DO: "You got about six and a half hours of sleep — a bit less than the recommended seven to nine — which might explain feeling less energized."
+
+❌ DON'T: "Your resting heart rate was 62 bpm."
+✅ DO: "Your resting heart rate was 62 — right in the healthy range — which suggests your body is recovering well from activity."
+
+ALWAYS ASK: "What would a caring doctor say about this finding?"
+
+INFERENCE GUIDELINES:
+1. CONTEXTUALIZE EVERY NUMBER — explain what it means, reference norms, make it personal
+2. LOOK FOR PATTERNS — Is it improving, declining, stable? What does it suggest?
+3. EXPLAIN CAUSE AND EFFECT when visible in data (e.g. less sleep → higher resting HR)
+4. MAKE IT ACTIONABLE OR REASSURING — always land on a useful conclusion
+5. AVOID FALSE CERTAINTY — use "might mean", "could suggest", "seems to indicate" — never diagnose
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. "evidence" — pre-computed statistical facts (means, trends, anomalies, correlations, health scorecards).
+2. "bundle_candidates" — ordered story slots. Each slot has:
+   - raw_data.dates: x-axis date labels (parallel array)
+   - raw_data.metrics[key]: per-metric value arrays (same length as dates, null for missing days)
+   - raw_data.stats[key]: { mean, min, max, trend, unit } — use for reference lines and narration
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO BUILD THE CHART OPTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use the echarts_guide skeletons as starting points. Fill them with real data:
+- raw_data.dates → xAxis.data
+- raw_data.metrics[metricKey] → series[].data (parallel array — same length as dates)
+- raw_data.stats[metricKey].mean → markLine reference line (when useful)
+- null values in metric arrays → keep as null in series data (do not skip or interpolate)
+
+CHART TYPE SELECTION — choose the type that best reveals the insight:
+- BAR: single metric over time, day-by-day comparison, final summary
+- LINE / AREA: trend over time (use area when shading helps show volume)
+- MULTI_LINE: 2-3 metrics on the same scale (e.g. sleep_deep + sleep_rem)
+- STACKED_BAR: composition over time (sleep stages — deep/REM/light/awake)
+- GROUPED_BAR: side-by-side comparison of two distinct groups over the same x-axis
+- DUAL-AXIS: two metrics with very different scales (e.g. steps 0-10000 vs sleep 0-500 min)
+- SCATTER: relationship between two metrics — zip parallel arrays into [[x,y],...] pairs, skip nulls
+- RADAR: multi-metric snapshot (health report overview — one polygon per metric)
+- GAUGE: single current-value reading (e.g. last night's sleep efficiency percentage)
+- PIE / DONUT: proportional composition for a single period (e.g. sleep stage share for one night)
+- CANDLESTICK: daily range (e.g. HR min/max/typical per day)
+- HEATMAP: day-of-week pattern or multi-metric cross-day view
+
+SMART CHART CHOICES:
+- Comparing two time windows of the same metric (e.g. week 1 vs week 2 steps): use two SEPARATE line/bar charts shown side by side (one per stage, same display_group) — NOT a grouped bar cramming both into one chart
+- Sleep stage breakdown: STACKED_BAR is clearest; DONUT is good for a single night
+- Activity trend: BAR with a markLine average is most readable for older adults
+- Cross-domain relationship (steps vs sleep): DUAL-AXIS or GROUPED_BAR depending on scale difference
+
+ANNOTATION GUIDANCE:
+- markLine average: always useful for bar/line charts — gives context without clutter
+- markLine goal: use when evidence.stats has a known healthy target (e.g. 7hr sleep, 10k steps)
+- markPoint max/min: highlight best and worst days
+- markArea: highlight a notable date range (e.g. a bad sleep streak)
+Use at most 2 annotation types per chart to avoid visual clutter.
+
+DATA RULES:
+- Use ONLY values from raw_data.metrics arrays. Do NOT invent or estimate numbers.
+- null means missing data for that day — preserve as null in series.data
+- Max 90 total data points across all series (backend truncates if exceeded)
+- chart_option must be a plain JSON object — no functions, no CSS, no event handlers
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO AUTHOR THE BUNDLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Read the full evidence first — understand what the data is actually saying.
+2. Decide the narrative arc across all stages: what story do these charts tell together?
+3. Build each chart option to advance that story.
+4. Write narration that feels like one continuous answer, not separate chart descriptions.
+5. Final stage synthesizes the whole bundle and directly answers any evaluative question.
+
+COHERENCE RULES:
+- Stage 0 (orient): the big picture — what is this about, what does the first chart show?
+- Middle stages (deepen): develop the story, add context, explore a relationship or comparison
+- Final stage (synthesize): what do all the charts together mean? Answer the question directly.
+- Avoid repeating the same chart type unless clearly necessary
+- Avoid starting every stage with the same sentence structure
+- Treat the bundle as one answer — later stages continue, they do not reset
+
+METRIC COVERAGE RULES:
+- Broad domain questions (sleep, heart, overall health) → use the full domain bundle; do not show only one metric
+- Focused questions (just steps today) → stay focused; do not drift into unrelated metrics
+- For sleep: always consider stage composition (deep, REM, light) alongside duration
+- For heart: pair resting_hr with HRV and/or sleep quality when both are in evidence
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SPOKEN TEXT FORMULA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Follow this 3-part structure for every stage:
+
+1. ORIENTATION (1 sentence — always name the chart type):
+   "Here is what you see on the screen — a [bar chart / line chart / stacked bar chart / etc.] showing [what it displays]."
+   Alexa users may not be looking at the screen. Always name the chart type so the spoken text works standalone.
+
+2. HIGHLIGHT + MEANING (1–2 sentences):
+   Lead with the pattern, not the number. Then explain what it means in plain language.
+   desired: "What stands out is that your deep sleep has been climbing steadily — which is your body doing the important repair work each night."
+   non-desirable: "The bars show values between 1.2 and 2.1 hours of deep sleep."
+
+3. FINAL SUMMARY (last stage only, 1 sentence):
+   "Overall, [brief health insight connecting all charts shown — encouraging and grounded]."
+
+TOTAL spoken_text length: 2–3 short, complete sentences. Never cut off mid-sentence.
+
+ONE NUMBER RULE:
+Use at most ONE concrete number per stage. Always follow it immediately with what it means.
+❌ "Your average was 6,412 steps."
+✅ "You averaged just over six thousand steps — slightly below the active threshold, but a solid foundation."
+
+STYLE RULES FOR OLDER ADULTS:
+✅ DO: Use everyday words, say "you"/"your", compare to baselines, explain what a measurement means
+✅ DO: Use inference words: "higher than usual", "fairly steady", "quite variable", "a noticeable improvement"
+✅ DO: Sound like a warm, knowledgeable family member
+❌ DON'T: Use clinical jargon without immediately explaining it
+❌ DON'T: List multiple numbers in one sentence
+❌ DON'T: Sound robotic or formulaic — vary the sentence openings
+❌ DON'T: End with a question unless more stages remain and you are inviting continuation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HEALTH DOMAIN NARRATION GUIDES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SLEEP STAGE GUIDE — always explain what each stage means:
+- sleep_deep: "Deep sleep is the most restorative stage — it is when your body repairs tissue and recharges your immune system."
+- sleep_rem: "REM sleep is when most dreaming happens and your brain consolidates memories from the day."
+- sleep_light: "Light sleep helps your body transition in and out of deeper stages — it is a normal part of the cycle."
+- sleep_awake: "Brief wakings are normal; more than 30 minutes of waking time across the night is worth noting."
+- sleep_efficiency: "Sleep efficiency measures how much of your time in bed you actually spent sleeping — above 85% is generally healthy."
+- Typical healthy ranges (for context, not diagnosis): deep 13–23% of total sleep, REM 20–25%, total 7–9 hours per night.
+
+RESPIRATORY GUIDE — always explain before stating the number:
+- breathing_rate: "Your breathing rate during sleep is how many breaths you take per minute while at rest — a healthy range is typically 12 to 20."
+- spo2: "Blood oxygen saturation — sometimes called SpO2 — measures how well your blood is carrying oxygen. Above 95% is considered normal."
+
+HEART RATE GUIDE:
+- resting_hr: "Your resting heart rate is how fast your heart beats when you are completely at rest — a lower number generally means your heart is working efficiently."
+- hrv: "Heart rate variability — HRV — measures the tiny variations between heartbeats. Higher HRV generally indicates better recovery and lower stress."
+- Healthy resting HR for adults: 60–100 bpm; well-trained individuals may see 40–60.
+
+CHART TYPE NARRATION GUIDE — tell the user what to look for:
+- Bar chart: "Each bar represents one day — taller bars mean more [metric]."
+- Line chart: "The line shows how [metric] changed day by day — a rising line means improvement."
+- Stacked bar: "Each bar is divided into colored sections — the size of each section shows how much time was spent in that stage."
+- Grouped bar: "The two bars side by side each day let you compare [metric A] and [metric B] directly."
+- Dual-axis: "There are two scales — one on each side — because these two metrics have very different ranges."
+- Scatter: "Each dot represents one day — the higher and further right a dot, the better both metrics were that day."
+- Radar: "The shape shows how you score across several health areas at once — a larger shape means stronger overall performance."
+- Donut: "The ring shows how your total is divided — the center value is the overall figure, and each slice is one part of the breakdown."
+- Candlestick: "Each bar shows the range for that day — the top is the highest reading, the bottom is the lowest, and the middle section is the typical range."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EVALUATIVE QUESTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If the user asked whether something improved, worsened, is normal, is enough, or should be a concern — the FINAL stage must end with a direct verdict grounded in the visuals:
+- "So to answer your question — yes, your sleep has been improving this week."
+- "So to answer your question — no, your activity levels have not really picked up yet."
+- "The bottom line is your heart rate looks healthy and there is nothing here to be concerned about."
+- "In short — your sleep has been fairly average this week, no real decline, but there is room to improve."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANOMALY NARRATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When evidence contains anomaly data:
+- If all_clear is true: reassure warmly — "Everything looks normal this week — nothing stands out as unusual."
+- If flagged metrics exist: narrate the top 1–2 findings with gentle framing — never alarm, always contextualise as an observation, not a diagnosis.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FIELDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- bundle_title: short title for the whole answer
+- bundle_summary: one-sentence summary of what the bundle found
+- bundle_thread: the narrative through-line that connects all stages
+- stages[].narrative_role: "orientation", "deepening", "comparison", or "takeaway"
+- stages[].chart_type: bar, line, multi_line, area, scatter, stacked_bar, grouped_bar, dual_axis, radar, gauge, pie, donut, candlestick, heatmap, treemap, boxplot
+- stages[].chart_option: complete ECharts option object (no functions, no JS)
+- stages[].chart_title: short specific chart title (e.g. "Daily Steps — Last 7 Days")
+- stages[].chart_subtitle: one phrase explaining what the data shows (e.g. "Each bar is one day")
+- stages[].chart_takeaway: the ONE pattern worth noticing — phrased as meaning, not a statistic
+  ❌ "Steps peaked at 9,200 on Wednesday"
+  ✅ "Activity was strongest midweek and lighter toward the weekend"
+- stages[].suggested_followups: 3–5 natural voice phrases the user can say next
+  Include: "tell me more", "explain that", "what does this mean", "start over", "how does that compare"
+  Do NOT include "show more" or "yes" — the system auto-advances through charts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HARD RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Return strict JSON only. No markdown, no prose outside the JSON.
+- Do not fabricate data. All numerical insight must come from raw_data or evidence.
+- Do not provide medical diagnoses or prescriptions.
+- chart_option must be a plain JSON object — no functions, no CSS, no event handlers.
+- All series data values must come from raw_data.metrics arrays.
+- ALWAYS INFER MEANING. Never just report numbers without context and interpretation.`.trim();
+
+AGENT_CONFIGS.executorV4 = {
+  version: "v4-llm-option-generation",
+  // V4 uses a separate model env var so generation quality can be upgraded independently.
+  // OPENAI_EXECUTOR_V4_MODEL takes priority; falls back to the shared executor / QnA model.
+  model: process.env.OPENAI_EXECUTOR_V4_MODEL || process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4.1",
+  temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.15),
+  systemPrompt: EXECUTOR_SYSTEM_PROMPT_V4,
+  textFormat: EXECUTOR_TEXT_FORMAT_V4,
+  maxToolTurns: 0,
+  toolPolicy: null,
+  // V4 pipeline is fully async — Alexa polls for the result rather than waiting.
+  // Default to 0 (no timeout) so a large multi-stage chart generation is never aborted.
+  // Set OPENAI_EXECUTOR_V4_TIMEOUT_MS in .env to impose a cap if needed.
+  timeoutMs: asNumber(process.env.OPENAI_EXECUTOR_V4_TIMEOUT_MS, 0),
+  enabled: asBoolean(process.env.USE_LLM_OPTION_GENERATION, false),
+};
+
 // stages_plan is always enabled — no feature flag needed
 
 // Add intentClassifier config to AGENT_CONFIGS
@@ -1578,9 +2005,7 @@ AGENT_CONFIGS.intentClassifier = {
   textFormat: INTENT_CLASSIFIER_TEXT_FORMAT,
   enabled: asBoolean(process.env.USE_INTENT_CLASSIFIER, true),
   rolloutPercent: clampInteger(process.env.INTENT_CLASSIFIER_ROLLOUT_PERCENT, 0, 100, 100),
-  // Allow the classifier to use most of the Alexa budget before falling back.
-  // The wall-clock deadline in handleQuestion (6000ms) is the hard outer limit.
-  timeoutMs: asNumber(process.env.OPENAI_INTENT_CLASSIFIER_TIMEOUT_MS, 5000),
+  timeoutMs: asNumber(process.env.OPENAI_INTENT_CLASSIFIER_TIMEOUT_MS, 0),
 };
 
 module.exports = {
@@ -1600,4 +2025,7 @@ module.exports = {
   PLANNER_SYSTEM_PROMPT_V2,
   PLANNER_TEXT_FORMAT,
   PLANNER_TEXT_FORMAT_V2,
+  ECHARTS_SKELETON_GUIDE,
+  EXECUTOR_SYSTEM_PROMPT_V4,
+  EXECUTOR_TEXT_FORMAT_V4,
 };

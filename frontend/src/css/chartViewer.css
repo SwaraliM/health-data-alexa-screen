@@ -78,6 +78,10 @@
   padding: 14px;
 }
 
+.hd-main-ready-resume {
+  justify-content: center;
+}
+
 .hd-main .hd-report-header,
 .hd-main .hd-ready-banner,
 .hd-main .hd-voice-hints {
@@ -118,6 +122,65 @@
 .hd-ready-banner.error {
   color: #991b1b;
   background: linear-gradient(135deg, #fee2e2, #fff1f2);
+}
+
+.hd-ready-resume-page {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.hd-ready-resume-card {
+  width: min(1180px, 100%);
+  min-height: min(700px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 24px;
+  padding: 56px 64px;
+  border-radius: 32px;
+  background: linear-gradient(145deg, #f0fdf4, #ecfeff 48%, #eff6ff);
+  border: 2px solid rgba(15, 118, 110, 0.18);
+  box-shadow: 0 30px 60px rgba(15, 23, 42, 0.12);
+}
+
+.hd-ready-resume-eyebrow {
+  margin: 0;
+  color: #0f766e;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hd-ready-resume-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: clamp(2.6rem, 4.8vw, 4.8rem);
+  line-height: 1.05;
+  font-weight: 900;
+}
+
+.hd-ready-resume-message {
+  margin: 0;
+  max-width: 18ch;
+  color: #164e63;
+  font-size: clamp(1.6rem, 2.8vw, 2.4rem);
+  line-height: 1.35;
+  font-weight: 700;
+}
+
+.hd-ready-resume-instruction {
+  margin: 0;
+  color: #1e293b;
+  font-size: clamp(1.3rem, 2.1vw, 1.8rem);
+  line-height: 1.4;
+  font-weight: 600;
 }
 
 .hd-report-header {
@@ -483,6 +546,12 @@
 
   .hd-panel-card {
     min-height: 210px;
+  }
+
+  .hd-ready-resume-card {
+    min-height: auto;
+    padding: 36px 28px;
+    gap: 18px;
   }
 
 }

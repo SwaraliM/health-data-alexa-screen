@@ -28,6 +28,7 @@ const {
   createBundle,
   getBundleById,
   loadActiveBundleForUser,
+  loadLatestCompletedBundleForUser,
   saveBundlePatch,
   setBundleStatus,
   setCurrentStageIndex: setBundleStageIndex,
@@ -62,6 +63,146 @@ function sanitizeText(value, max = 220, fallback = "") {
 
 function normalizeUsername(username = "") {
   return String(username || "").trim().toLowerCase();
+}
+
+function createInteractionState({
+  mode = "idle",
+  bundleId = null,
+  requestId = null,
+  currentStageIndex = 0,
+  stageCount = 0,
+  originalQuestion = "",
+  lastTurnType = "",
+  lastDeliveredFingerprint = "",
+  generationStartedAt = null,
+  readyAt = null,
+} = {}) {
+  return {
+    mode,
+    bundleId: bundleId || null,
+    requestId: requestId || null,
+    currentStageIndex: Math.max(0, Number(currentStageIndex) || 0),
+    stageCount: Math.max(0, Number(stageCount) || 0),
+    originalQuestion: sanitizeText(originalQuestion, 320, ""),
+    lastTurnType: sanitizeText(lastTurnType, 40, ""),
+    lastDeliveredFingerprint: String(lastDeliveredFingerprint || "").trim(),
+    generationStartedAt: generationStartedAt || null,
+    readyAt: readyAt || null,
+  };
+}
+
+function ensureJobInteraction(job, patch = null) {
+  if (!job || typeof job !== "object") return createInteractionState();
+  const current = createInteractionState(job.interaction || {});
+  const next = patch && typeof patch === "object"
+    ? createInteractionState({ ...current, ...patch })
+    : current;
+  job.interaction = next;
+  return next;
+}
+
+function setJobInteraction(username, patch = null) {
+  const safeUsername = normalizeUsername(username);
+  const job = activeJobs.get(safeUsername);
+  if (!job) return null;
+  return ensureJobInteraction(job, patch);
+}
+
+function buildDeliveryFingerprint(requestId = null, stageIndex = 0) {
+  const safeRequestId = String(requestId || "").trim();
+  if (!safeRequestId) return "";
+  return `${safeRequestId}:${Math.max(0, Number(stageIndex) || 0)}`;
+}
+
+async function getActiveRuntime(username) {
+  const safeUsername = normalizeUsername(username);
+  const job = activeJobs.get(safeUsername) || null;
+  let bundle = null;
+  let stages = [];
+  let currentIndex = 0;
+
+  if (job?.bundleId) {
+    bundle = await getBundleById(job.bundleId);
+    stages = job.stages.length ? job.stages : (Array.isArray(bundle?.stages) ? bundle.stages : []);
+    currentIndex = Number(job.currentChartIndex || job.interaction?.currentStageIndex || 0);
+  } else {
+    bundle = await loadActiveBundleForUser(safeUsername);
+    if (bundle) {
+      stages = Array.isArray(bundle.stages) ? bundle.stages : [];
+      currentIndex = Number(bundle.currentStageIndex || 0);
+    }
+  }
+
+  return {
+    username: safeUsername,
+    job,
+    bundle,
+    stages,
+    currentIndex: Math.max(0, Number(currentIndex) || 0),
+  };
+}
+
+async function getInteractionState(username) {
+  const { job, bundle, stages, currentIndex } = await getActiveRuntime(username);
+  if (job?.interaction) {
+    const stageCount = Math.max(
+      Number(job.interaction.stageCount || 0),
+      Array.isArray(stages) ? stages.length : 0
+    );
+    return createInteractionState({
+      ...job.interaction,
+      bundleId: job.bundleId || job.interaction.bundleId || bundle?.bundleId || null,
+      currentStageIndex: currentIndex,
+      stageCount,
+    });
+  }
+
+  if (bundle?.bundleId) {
+    const stageCount = Array.isArray(stages) ? stages.length : 0;
+    return createInteractionState({
+      mode: stageCount > 0 ? "ready_to_deliver" : "generating",
+      bundleId: bundle.bundleId,
+      requestId: bundle?.lineage?.activeRequestKey || null,
+      currentStageIndex: currentIndex,
+      stageCount,
+      originalQuestion: bundle.question || "",
+      readyAt: stageCount > 0 ? (bundle.updatedAt || new Date().toISOString()) : null,
+    });
+  }
+
+  return createInteractionState();
+}
+
+async function markStageDelivered({
+  username,
+  requestId = null,
+  stageIndex = 0,
+  stageCount = 0,
+  bundleComplete = false,
+  turnType = "delivery",
+} = {}) {
+  const { job, bundle } = await getActiveRuntime(username);
+  const nextMode = bundleComplete ? "complete" : "awaiting_continue";
+  const patch = {
+    mode: nextMode,
+    bundleId: job?.bundleId || bundle?.bundleId || null,
+    requestId: requestId || job?.interaction?.requestId || bundle?.lineage?.activeRequestKey || null,
+    currentStageIndex: stageIndex,
+    stageCount: Math.max(0, Number(stageCount) || 0),
+    lastTurnType: turnType,
+    lastDeliveredFingerprint: buildDeliveryFingerprint(requestId, stageIndex),
+    readyAt: job?.interaction?.readyAt || new Date().toISOString(),
+  };
+
+  if (job) {
+    job.currentChartIndex = Math.max(0, Number(stageIndex) || 0);
+    ensureJobInteraction(job, patch);
+  }
+
+  return createInteractionState({
+    ...(job?.interaction || {}),
+    ...patch,
+  });
 }
 
 async function getUserContext(username) {
@@ -115,6 +256,15 @@ async function handleQuestion({
     currentChartIndex: 0,
     complete: false,
     startedAt: Date.now(),
+    interaction: createInteractionState({
+      mode: "generating",
+      requestId: safeRequestId,
+      currentStageIndex: 0,
+      stageCount: 0,
+      originalQuestion: safeQuestion,
+      lastTurnType: "new_health_question",
+      generationStartedAt: new Date().toISOString(),
+    }),
   };
   activeJobs.set(safeUsername, job);
 
@@ -174,6 +324,15 @@ async function handleQuestion({
 
       job.bundleId = bundle.bundleId;
       job.stagesPlan = plannerResult.stagesPlan || [];
+      ensureJobInteraction(job, {
+        mode: "generating",
+        bundleId: bundle.bundleId,
+        requestId: safeRequestId,
+        currentStageIndex: 0,
+        stageCount: Array.isArray(plannerResult?.stagesPlan) ? plannerResult.stagesPlan.length : 0,
+        originalQuestion: safeQuestion,
+        lastTurnType: "new_health_question",
+      });
 
       // Build sub-analyses — use V3 sub_analyses if planner provided them,
       // otherwise synthesize a single sub-analysis from flat metrics
@@ -215,6 +374,12 @@ async function handleQuestion({
       if (!generationResult.ok || !generationResult.stages.length) {
         warn("all stage generation failed", { errors: generationResult.errors });
         job.complete = true;
+        ensureJobInteraction(job, {
+          mode: "idle",
+          stageCount: 0,
+          readyAt: null,
+          lastTurnType: "generation_failed",
+        });
         return buildPendingResponse({
           bundle,
           requestId: safeRequestId,
@@ -235,6 +400,16 @@ async function handleQuestion({
       // Update job state
       job.stages = generationResult.stages;
       job.complete = true;
+      ensureJobInteraction(job, {
+        mode: "ready_to_deliver",
+        bundleId: bundle.bundleId,
+        requestId: safeRequestId,
+        currentStageIndex: 0,
+        stageCount: generationResult.stages.length,
+        originalQuestion: safeQuestion,
+        lastTurnType: "generation_complete",
+        readyAt: new Date().toISOString(),
+      });
 
       log("all stages generated", {
         bundleId: bundle.bundleId,
@@ -263,6 +438,12 @@ async function handleQuestion({
         stack: error?.stack || null,
       });
       job.complete = true;
+      ensureJobInteraction(job, {
+        mode: "idle",
+        bundleId: job.bundleId || null,
+        requestId: safeRequestId,
+        lastTurnType: "error",
+      });
       return {
         ok: false,
         status: "error",
@@ -296,24 +477,10 @@ async function handleNavigation({
   requestId = null,
 } = {}) {
   const safeUsername = normalizeUsername(username);
-  const job = activeJobs.get(safeUsername);
-
-  // Try to load bundle from MongoDB if no in-memory job
-  let bundle = null;
-  let stages = [];
-  let currentIndex = 0;
-
-  if (job?.bundleId) {
-    bundle = await getBundleById(job.bundleId);
-    stages = job.stages.length ? job.stages : (Array.isArray(bundle?.stages) ? bundle.stages : []);
-    currentIndex = job.currentChartIndex || 0;
-  } else {
-    bundle = await loadActiveBundleForUser(safeUsername);
-    if (bundle) {
-      stages = Array.isArray(bundle.stages) ? bundle.stages : [];
-      currentIndex = Number(bundle.currentStageIndex || 0);
-    }
-  }
+  const { job, bundle: runtimeBundle, stages: runtimeStages, currentIndex: runtimeIndex } = await getActiveRuntime(safeUsername);
+  let bundle = runtimeBundle;
+  let stages = runtimeStages;
+  let currentIndex = runtimeIndex;
 
   if (!bundle?.bundleId || !stages.length) {
     return buildPendingResponse({
@@ -375,6 +542,17 @@ async function handleNavigation({
   // Update current index
   if (job) job.currentChartIndex = targetIndex;
   await setBundleStageIndex(bundle.bundleId, targetIndex, { requestKey: requestId });
+  if (job) {
+    ensureJobInteraction(job, {
+      mode: "ready_to_deliver",
+      bundleId: bundle.bundleId,
+      requestId: requestId || job.interaction?.requestId || bundle?.lineage?.activeRequestKey || null,
+      currentStageIndex: targetIndex,
+      stageCount,
+      lastTurnType: "navigation",
+      readyAt: new Date().toISOString(),
+    });
+  }
 
   return buildStageResult({
     bundle,
@@ -395,14 +573,14 @@ async function handleNavigation({
  */
 async function resumePending(username) {
   const safeUsername = normalizeUsername(username);
-  const job = activeJobs.get(safeUsername);
+  const { job, bundle: runtimeBundle, stages: runtimeStages, currentIndex: runtimeIndex } = await getActiveRuntime(safeUsername);
 
   if (!job) {
     // No active job — check MongoDB for a ready bundle
-    const bundle = await loadActiveBundleForUser(safeUsername);
+    const bundle = runtimeBundle || await loadActiveBundleForUser(safeUsername);
     if (bundle && Array.isArray(bundle.stages) && bundle.stages.length > 0) {
-      const currentIndex = Number(bundle.currentStageIndex || 0);
-      const stage = getStageByIndex(bundle, currentIndex) || bundle.stages[0];
+      const currentStageIndex = runtimeStages.length ? runtimeIndex : Number(bundle.currentStageIndex || 0);
+      const stage = getStageByIndex(bundle, currentStageIndex) || bundle.stages[0];
       if (stage) {
         return buildStageResult({
           bundle,
@@ -411,12 +589,37 @@ async function resumePending(username) {
         });
       }
     }
+
+    // MongoDB fallback — if the in-memory activeJobs entry was lost (process restart or wiped
+    // by a new question), check MongoDB for the user's most recently completed bundle so the
+    // session can recover.
+    const completedBundle = await loadLatestCompletedBundleForUser(safeUsername);
+    if (completedBundle && Array.isArray(completedBundle.stages) && completedBundle.stages.length > 0) {
+      const currentIndex = Number(completedBundle.currentStageIndex || 0);
+      const stage = getStageByIndex(completedBundle, currentIndex) || completedBundle.stages[0];
+      if (stage) {
+        return buildStageResult({
+          bundle: completedBundle,
+          stage,
+          stageCount: completedBundle.stages.length,
+        });
+      }
+    }
+
     return null;
   }
 
   if (job.complete && job.stages.length > 0) {
-    const bundle = job.bundleId ? await getBundleById(job.bundleId) : null;
+    const bundle = runtimeBundle || (job.bundleId ? await getBundleById(job.bundleId) : null);
     const stage = job.stages[job.currentChartIndex] || job.stages[0];
+    ensureJobInteraction(job, {
+      mode: "ready_to_deliver",
+      bundleId: bundle?.bundleId || job.bundleId || null,
+      currentStageIndex: Number(job.currentChartIndex || 0),
+      stageCount: job.stages.length,
+      lastTurnType: "resume_pending",
+      readyAt: job.interaction?.readyAt || new Date().toISOString(),
+    });
     return buildStageResult({
       bundle,
       stage,
@@ -424,15 +627,8 @@ async function resumePending(username) {
     });
   }
 
-  // Pipeline still running — try waiting briefly
-  if (job.promise) {
-    const result = await Promise.race([
-      job.promise,
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
-    if (result?.answer_ready) return result;
-  }
-
+  // Pipeline still running — return null immediately so backend sends "Still working on that"
+  // on every poll. Alexa's progressive response mechanism handles the filler speech cycle.
   return null;
 }
 
@@ -449,8 +645,10 @@ function clearRuntimeState(username = null) {
 // ── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
+  getInteractionState,
   handleQuestion,
   handleNavigation,
+  markStageDelivered,
   resumePending,
   clearRuntimeState,
   // Aliases for backward compat with router

@@ -216,6 +216,134 @@ function extractListSummaryCards(rows, metricKeys) {
 }
 
 /**
+ * Extract heatmap data as [dayIndex, metricIndex, normalizedValue] triples.
+ * Used for day-of-week pattern heatmaps and multi-metric heatmaps.
+ *
+ * @param {object[]} rows - normalizedTable rows
+ * @param {string[]} metricKeys - metrics to include on y-axis
+ * @param {"day_of_week"|"date"} xMode - x-axis grouping
+ * @returns {{ xLabels: string[], yLabels: string[], data: [number, number, number][] }}
+ */
+function extractHeatmapData(rows, metricKeys, xMode = "day_of_week") {
+  const keys = Array.isArray(metricKeys) && metricKeys.length ? metricKeys : [];
+  if (!keys.length || !Array.isArray(rows) || !rows.length) {
+    return { xLabels: [], yLabels: [], data: [] };
+  }
+
+  const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const yLabels = keys.map(formatMetricName);
+
+  if (xMode === "day_of_week") {
+    // Build day-of-week average buckets for each metric
+    const buckets = {}; // { metricKey: { Mon: [], Tue: [], ... } }
+    for (const key of keys) {
+      buckets[key] = {};
+      for (const d of DAY_NAMES) buckets[key][d] = [];
+    }
+
+    for (const row of rows) {
+      const ts = String(row?.timestamp || "");
+      const dateMatch = ts.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!dateMatch) continue;
+      const dayIdx = new Date(ts).getDay(); // 0=Sun
+      const dayName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dayIdx];
+      // Remap to Mon-first
+      const monFirstDay = dayName === "Sun" ? "Sun" : dayName;
+      for (const key of keys) {
+        const val = toNumber(row?.[key]);
+        if (val !== null && buckets[key][monFirstDay]) {
+          buckets[key][monFirstDay].push(val);
+        }
+      }
+    }
+
+    // Compute per-metric averages and normalize to 0-100
+    const data = [];
+    for (let mi = 0; mi < keys.length; mi++) {
+      const key = keys[mi];
+      const dayAverages = DAY_NAMES.map((d) => {
+        const vals = buckets[key][d] || [];
+        return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+      });
+      const validVals = dayAverages.filter((v) => v !== null);
+      const minVal = validVals.length ? Math.min(...validVals) : 0;
+      const maxVal = validVals.length ? Math.max(...validVals) : 1;
+      const range = maxVal - minVal || 1;
+
+      for (let di = 0; di < DAY_NAMES.length; di++) {
+        const avg = dayAverages[di];
+        if (avg !== null) {
+          const normalized = Math.round(((avg - minVal) / range) * 100);
+          data.push([di, mi, normalized]);
+        }
+      }
+    }
+
+    return { xLabels: DAY_NAMES, yLabels, data };
+  }
+
+  // xMode === "date": use actual date labels
+  const sorted = sortedRows(rows);
+  const xLabels = sorted.map((row) => formatDateLabel(String(row.timestamp || "")));
+  const data = [];
+
+  for (let mi = 0; mi < keys.length; mi++) {
+    const key = keys[mi];
+    const vals = sorted.map((row) => toNumber(row?.[key]));
+    const validVals = vals.filter((v) => v !== null);
+    const minVal = validVals.length ? Math.min(...validVals) : 0;
+    const maxVal = validVals.length ? Math.max(...validVals) : 1;
+    const range = maxVal - minVal || 1;
+
+    for (let di = 0; di < sorted.length; di++) {
+      const val = vals[di];
+      if (val !== null) {
+        const normalized = Math.round(((val - minVal) / range) * 100);
+        data.push([di, mi, normalized]);
+      }
+    }
+  }
+
+  return { xLabels, yLabels, data };
+}
+
+/**
+ * Extract donut chart data: slices + center value/label.
+ * Uses the most recent row's values for slice proportions.
+ *
+ * @param {object[]} rows - normalizedTable rows
+ * @param {string} primaryMetric - metric shown in center (latest value)
+ * @param {string[]} sliceMetrics - metrics that form the ring slices (defaults to [primaryMetric])
+ * @returns {{ slices: { name, value }[], centerValue: number|null, centerLabel: string, unit: string }}
+ */
+function extractDonutData(rows, primaryMetric, sliceMetrics = null) {
+  const sorted = sortedRows(rows);
+  const lastRow = sorted[sorted.length - 1] || {};
+
+  // Latest value for center display
+  let centerValue = null;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const v = toNumber(sorted[i]?.[primaryMetric]);
+    if (v !== null) { centerValue = v; break; }
+  }
+
+  const metricsForSlices = Array.isArray(sliceMetrics) && sliceMetrics.length
+    ? sliceMetrics
+    : [primaryMetric];
+
+  const slices = metricsForSlices
+    .map((m) => ({ name: formatMetricName(m), value: toNumber(lastRow[m]) }))
+    .filter((s) => s.value != null && s.value > 0);
+
+  return {
+    slices,
+    centerValue,
+    centerLabel: formatMetricName(primaryMetric),
+    unit: deriveUnit(primaryMetric),
+  };
+}
+
+/**
  * Compute the arithmetic mean of a metric across all rows (ignoring nulls).
  * Returns null if no valid values exist.
  *
@@ -276,6 +404,8 @@ module.exports = {
   extractComparisonSeries,
   extractGaugeValue,
   extractListSummaryCards,
+  extractHeatmapData,
+  extractDonutData,
   computeAverage,
   isIntradayTable,
   formatMetricName,

@@ -10,7 +10,9 @@
 
 const { runExecutorRequest } = require("../openai/executorClient");
 const { normalizeExecutorStageOutput } = require("./stageService");
-const { generateViableStrategies, buildChartFromStrategy } = require("../charts/chartStrategyService");
+const { generateViableStrategies, buildChartFromStrategy, buildRawDataPayload } = require("../charts/chartStrategyService");
+const { validateLLMGeneratedOption } = require("../charts/optionValidator");
+const { AGENT_CONFIGS } = require("../../configs/agentConfigs");
 
 const EXECUTOR_AGENT_DEBUG = process.env.QNA_EXECUTOR_AGENT_DEBUG !== "false";
 
@@ -70,14 +72,9 @@ function buildBundleSummary(bundle = null, evidenceBundle = null) {
   };
 }
 
-/**
- * Merge a GPT response (text fills + selected_strategy_id) with the
- * strategy-built chart data to produce a stageOutput compatible with
- * normalizeExecutorStageOutput.
- */
 function mergeStrategyResponse(gptOutput, viableStrategies, multiWindowData, evidenceBundle) {
   if (!gptOutput || !Array.isArray(viableStrategies) || !viableStrategies.length) {
-    return gptOutput;
+    return { stageOutput: gptOutput, strategy: null };
   }
 
   const selectedId = String(gptOutput.selected_strategy_id || "").trim();
@@ -90,7 +87,6 @@ function mergeStrategyResponse(gptOutput, viableStrategies, multiWindowData, evi
     chart_type: strategy?.chart_type || "unknown",
   });
 
-  // Build chart data deterministically from the selected strategy
   let chartData = null;
   try {
     chartData = buildChartFromStrategy(
@@ -106,135 +102,296 @@ function mergeStrategyResponse(gptOutput, viableStrategies, multiWindowData, evi
   }
 
   return {
-    title:               gptOutput.title || "",
-    spoken_text:         gptOutput.spoken_text || "",
-    screen_text:         gptOutput.screen_text || "",
-    suggested_followups: gptOutput.suggested_followups || [],
-    more_available:      gptOutput.more_available,
-    continuation_hint:   "",
-    analysis_notes:      gptOutput.analysis_notes || "",
-    chart_spec: {
-      chart_type: chartData?.chart_type || strategy.chart_type || "bar",
-      title:      gptOutput.chart_title || strategy.description || "",
-      subtitle:   gptOutput.chart_subtitle || "",
-      takeaway:   gptOutput.chart_takeaway || "",
-      chart_data: chartData?.chart_data || null,
+    strategy,
+    stageOutput: {
+      title:               gptOutput.title || "",
+      spoken_text:         gptOutput.spoken_text || "",
+      screen_text:         gptOutput.screen_text || "",
+      suggested_followups: gptOutput.suggested_followups || [],
+      more_available:      gptOutput.more_available,
+      continuation_hint:   "",
+      analysis_notes:      gptOutput.analysis_notes || "",
+      chart_spec: {
+        chart_type: chartData?.chart_type || strategy.chart_type || "bar",
+        title:      gptOutput.chart_title || strategy.description || "",
+        subtitle:   gptOutput.chart_subtitle || "",
+        takeaway:   gptOutput.chart_takeaway || "",
+        chart_data: chartData?.chart_data || null,
+      },
     },
   };
 }
 
-/**
- * Generate a single stage.
- * V3 path only: evidence-based strategy selection.
- */
-async function generateStageFromExecutor({
-  bundle,
-  question,
-  stageIndex,
-  userContext = null,
-  stageSpec = null,
-  requestId = null,
-  multiWindowData = null,
-  evidenceBundle = null,
-} = {}) {
-  if (!bundle || typeof bundle !== "object") {
-    return { ok: false, error: "generateStageFromExecutor requires bundle", stage: null };
-  }
+function buildBundleCandidates(stagesPlan = [], multiWindowData = {}, evidenceBundle = {}) {
+  const allChartTypeHints = (Array.isArray(stagesPlan) ? stagesPlan : [])
+    .map((spec) => String(spec?.chartType || "").toLowerCase().trim())
+    .filter(Boolean);
 
-  const safeStageIndex = Math.max(0, Number(stageIndex) || 0);
-  const safeQuestion = sanitizeText(question, 360, "");
-
-  // Generate viable chart strategies from data + evidence
-  let viableStrategies = null;
-  try {
-    const previousChartTypes = Array.isArray(bundle.stages)
-      ? bundle.stages.map((s) => s?.chartSpec?.chart_type || s?.metadata?.executor?.selectedChartType).filter(Boolean)
-      : [];
-    viableStrategies = generateViableStrategies({
+  return (Array.isArray(stagesPlan) ? stagesPlan : []).map((stageSpec, i) => {
+    const otherStageHints = allChartTypeHints.filter((_, idx) => idx !== i);
+    const viableStrategies = generateViableStrategies({
       stageSpec: stageSpec || {},
       multiWindowData: multiWindowData || {},
       evidenceBundle: evidenceBundle || {},
-      previousChartTypes,
+      previousChartTypes: otherStageHints,
     });
-    if (Array.isArray(viableStrategies) && !viableStrategies.length) viableStrategies = null;
-  } catch (err) {
-    agentLog("strategy generation failed", {
-      stageIndex: safeStageIndex,
-      error: String(err?.message || err),
-    });
-    viableStrategies = null;
-  }
 
-  if (!viableStrategies) {
-    return { ok: false, error: "No viable chart strategies generated", stage: null };
-  }
-
-  agentLog("generating stage", {
-    bundleId: bundle.bundleId || null,
-    stageIndex: safeStageIndex,
-    strategyCount: viableStrategies.length,
-  });
-
-  const executorInput = {
-    bundleSummary: buildBundleSummary(bundle, evidenceBundle),
-    stageHistory: buildCompactStageHistory(bundle?.stages),
-    question: safeQuestion,
-    previousResponseId: null,
-    userContext: userContext || null,
-    stageIndex: safeStageIndex,
-    stageSpec: stageSpec || null,
-    templateCandidates: null,
-    viableStrategies,
-    evidenceBundle,
-    toolContext: null,
-  };
-
-  const response = await runExecutorRequest(executorInput);
-
-  if (!response?.ok || !response?.stageOutput) {
     return {
-      ok: false,
-      error: response?.error || "Executor stage generation failed",
-      stage: null,
+      stage_index: Number(stageSpec?.stageIndex ?? i),
+      title_hint: stageSpec?.title || `Insight stage ${i + 1}`,
+      narrative_role_hint: i === 0 ? "orientation" : i === (stagesPlan.length - 1) ? "takeaway" : "deepening",
+      chart_type_hint: stageSpec?.chartType || "",
+      focus_metrics: Array.isArray(stageSpec?.focusMetrics) ? stageSpec.focusMetrics.slice(0, 8) : [],
+      goal: stageSpec?.goal || "",
+      visualization_intent: stageSpec?.visualization_intent || stageSpec?.stageType || "",
+      viable_strategies: Array.isArray(viableStrategies) ? viableStrategies : [],
+      stage_spec: stageSpec || {},
     };
-  }
-
-  // Merge GPT text fills with deterministic chart data
-  const resolvedStageOutput = mergeStrategyResponse(
-    response.stageOutput, viableStrategies, multiWindowData, evidenceBundle,
-  );
-
-  const stage = normalizeExecutorStageOutput({
-    executorOutput: resolvedStageOutput,
-    stageIndex: safeStageIndex,
-    requestId,
-    question: safeQuestion,
-    source: "executor_agent",
-    fallbackTitle: `Insight stage ${safeStageIndex + 1}`,
   });
-
-  stage.metadata = {
-    ...(stage.metadata || {}),
-    executor: {
-      responseId: response.responseId || null,
-      responseStatus: response.status || "completed",
-      stageIndex: safeStageIndex,
-      path: "v3_evidence_strategy",
-      strategyCount: viableStrategies.length,
-      selectedChartType: resolvedStageOutput?.chart_spec?.chart_type || null,
-      selectedStrategyId: response.stageOutput?.selected_strategy_id || null,
-    },
-  };
-
-  return {
-    ok: true,
-    stage,
-    executorResponseId: response.responseId || null,
-  };
 }
 
 /**
- * Generate all N stages in parallel using Promise.all.
+ * Build V4 candidates — each candidate has raw columnar data instead of viable_strategies.
+ * Also pre-computes V3 viable_strategies as a silent fallback (pure CPU, no I/O).
+ */
+function buildRawDataCandidates(stagesPlan = [], multiWindowData = {}, evidenceBundle = {}) {
+  const allChartTypeHints = (Array.isArray(stagesPlan) ? stagesPlan : [])
+    .map((spec) => String(spec?.chartType || "").toLowerCase().trim())
+    .filter(Boolean);
+
+  return (Array.isArray(stagesPlan) ? stagesPlan : []).map((stageSpec, i) => {
+    // Pre-build V3 viable strategies as fallback — pure CPU
+    const otherStageHints = allChartTypeHints.filter((_, idx) => idx !== i);
+    const viableStrategies = generateViableStrategies({
+      stageSpec: stageSpec || {},
+      multiWindowData: multiWindowData || {},
+      evidenceBundle: evidenceBundle || {},
+      previousChartTypes: otherStageHints,
+    });
+
+    // Build raw data payload for the LLM to use
+    let rawData = null;
+    try {
+      rawData = buildRawDataPayload(stageSpec || {}, multiWindowData || {}, evidenceBundle || {});
+    } catch (err) {
+      agentLog("buildRawDataPayload failed for stage", { stageIndex: i, error: String(err?.message || err) });
+    }
+
+    return {
+      stage_index: Number(stageSpec?.stageIndex ?? i),
+      title_hint: stageSpec?.title || `Insight stage ${i + 1}`,
+      narrative_role_hint: i === 0 ? "orientation" : i === (stagesPlan.length - 1) ? "takeaway" : "deepening",
+      focus_metrics: Array.isArray(stageSpec?.focusMetrics) ? stageSpec.focusMetrics.slice(0, 8) : [],
+      goal: stageSpec?.goal || "",
+      visualization_intent: stageSpec?.visualization_intent || stageSpec?.stageType || "",
+      display_group: Number(stageSpec?.display_group ?? i),
+      raw_data: rawData,
+      // Silent fallback — not sent to LLM, used by normalizeAuthoredBundleStagesV4 on failure
+      _viableStrategies: Array.isArray(viableStrategies) ? viableStrategies : [],
+      _stageSpec: stageSpec || {},
+    };
+  });
+}
+
+/**
+ * Normalize V4 bundle output — extracts chart_option from LLM output,
+ * validates it, and falls back to V3 deterministic chart on failure.
+ */
+function normalizeAuthoredBundleStagesV4({
+  bundleOutput = null,
+  rawDataCandidates = [],
+  question = "",
+  requestId = null,
+  responseId = null,
+  responseStatus = "completed",
+  multiWindowData = null,
+  evidenceBundle = null,
+} = {}) {
+  const safeQuestion = sanitizeText(question, 360, "");
+  const authoredStages = Array.isArray(bundleOutput?.stages) ? bundleOutput.stages : [];
+  const candidateMap = new Map(rawDataCandidates.map((c) => [Number(c.stage_index || 0), c]));
+  const totalStages = rawDataCandidates.length || authoredStages.length || 1;
+  const stages = [];
+  const errors = [];
+
+  for (let idx = 0; idx < totalStages; idx++) {
+    const authored = authoredStages.find((stage) => Number(stage?.stage_index || 0) === idx) || null;
+    const candidate = candidateMap.get(idx) || null;
+
+    if (!authored) {
+      stages.push(buildFallbackStage(idx, totalStages, safeQuestion, requestId));
+      errors.push(`Missing authored stage ${idx}`);
+      continue;
+    }
+
+    // Try to validate the LLM-generated option
+    const rawOption = authored?.chart_option || null;
+    const chartType = String(authored?.chart_type || "bar").toLowerCase();
+    let chartSpec = null;
+    let usedFallback = false;
+
+    if (rawOption && typeof rawOption === "object") {
+      const { ok, sanitizedOption, errors: validationErrors } = validateLLMGeneratedOption(rawOption, chartType);
+      if (ok && sanitizedOption) {
+        chartSpec = {
+          chart_type: chartType,
+          title:      sanitizeText(authored.chart_title, 120, ""),
+          subtitle:   sanitizeText(authored.chart_subtitle, 160, ""),
+          takeaway:   sanitizeText(authored.chart_takeaway, 220, ""),
+          option:     sanitizedOption,
+        };
+        agentLog("V4 option validated OK", { stageIndex: idx, chartType });
+      } else {
+        agentLog("V4 option validation failed, falling back to V3", {
+          stageIndex: idx,
+          errors: validationErrors,
+        });
+        errors.push(`Stage ${idx} V4 option invalid: ${validationErrors.join("; ")}`);
+      }
+    }
+
+    // Fallback: use V3 deterministic chart building
+    if (!chartSpec && candidate?._viableStrategies?.length) {
+      usedFallback = true;
+      const merged = mergeStrategyResponse(
+        { selected_strategy_id: candidate._viableStrategies[0]?.strategy_id, ...authored },
+        candidate._viableStrategies,
+        multiWindowData,
+        evidenceBundle,
+      );
+      chartSpec = merged?.stageOutput?.chart_spec || null;
+    }
+
+    const stage = normalizeExecutorStageOutput({
+      executorOutput: {
+        title:               authored.title || "",
+        spoken_text:         authored.spoken_text || "",
+        screen_text:         authored.screen_text || "",
+        suggested_followups: authored.suggested_followups || [],
+        more_available:      idx < totalStages - 1,
+        analysis_notes:      authored.analysis_notes || "",
+        chart_spec:          chartSpec,
+      },
+      stageIndex: idx,
+      requestId,
+      question: safeQuestion,
+      source: "executor_agent_v4",
+      fallbackTitle: candidate?.title_hint || `Insight stage ${idx + 1}`,
+    });
+
+    stage.metadata = {
+      ...(stage.metadata || {}),
+      bundleThread: sanitizeText(bundleOutput?.bundle_thread, 320, ""),
+      bundleSummary: sanitizeText(bundleOutput?.bundle_summary, 320, ""),
+      narrativeRole: sanitizeText(authored?.narrative_role, 60, ""),
+      display_group: Number(candidate?.display_group ?? idx),
+      executor: {
+        ...((stage.metadata && stage.metadata.executor) || {}),
+        responseId: responseId || null,
+        responseStatus,
+        stageIndex: idx,
+        path: usedFallback ? "v4_with_v3_fallback" : "v4_llm_option",
+        selectedChartType: chartType,
+      },
+    };
+
+    stages.push(stage);
+  }
+
+  stages.sort((a, b) => (a.stageIndex ?? 0) - (b.stageIndex ?? 0));
+  return { stages, errors };
+}
+
+function buildFallbackStage(stageIndex, totalStages, question, requestId) {
+  return normalizeExecutorStageOutput({
+    executorOutput: {
+      title: `Insight stage ${stageIndex + 1}`,
+      spoken_text: stageIndex === totalStages - 1
+        ? "I was able to prepare part of your answer, but not the final section."
+        : "I wasn't able to generate this section clearly, so I am moving to the next chart.",
+      screen_text: "Section unavailable.",
+      suggested_followups: ["explain that"],
+      more_available: stageIndex < totalStages - 1,
+      analysis_notes: "bundle_generation_fallback",
+      chart_spec: null,
+    },
+    stageIndex,
+    requestId,
+    question,
+    source: "executor_agent_fallback",
+    fallbackTitle: `Insight stage ${stageIndex + 1}`,
+  });
+}
+
+function normalizeAuthoredBundleStages({
+  bundleOutput = null,
+  bundleCandidates = [],
+  question = "",
+  requestId = null,
+  responseId = null,
+  responseStatus = "completed",
+  multiWindowData = null,
+  evidenceBundle = null,
+} = {}) {
+  const safeQuestion = sanitizeText(question, 360, "");
+  const authoredStages = Array.isArray(bundleOutput?.stages) ? bundleOutput.stages : [];
+  const candidateMap = new Map(bundleCandidates.map((candidate) => [Number(candidate.stage_index || 0), candidate]));
+  const totalStages = bundleCandidates.length || authoredStages.length || 1;
+  const stages = [];
+  const errors = [];
+
+  for (let idx = 0; idx < totalStages; idx++) {
+    const authored = authoredStages.find((stage) => Number(stage?.stage_index || 0) === idx) || null;
+    const candidate = candidateMap.get(idx) || null;
+    const viableStrategies = Array.isArray(candidate?.viable_strategies) ? candidate.viable_strategies : [];
+
+    if (!authored || !viableStrategies.length) {
+      stages.push(buildFallbackStage(idx, totalStages, safeQuestion, requestId));
+      if (!authored) errors.push(`Missing authored stage ${idx}`);
+      else errors.push(`No viable strategies for stage ${idx}`);
+      continue;
+    }
+
+    const merged = mergeStrategyResponse(authored, viableStrategies, multiWindowData, evidenceBundle);
+    const stage = normalizeExecutorStageOutput({
+      executorOutput: {
+        ...merged.stageOutput,
+        more_available: idx < totalStages - 1,
+      },
+      stageIndex: idx,
+      requestId,
+      question: safeQuestion,
+      source: "executor_agent",
+      fallbackTitle: candidate?.title_hint || `Insight stage ${idx + 1}`,
+    });
+
+    stage.metadata = {
+      ...(stage.metadata || {}),
+      bundleThread: sanitizeText(bundleOutput?.bundle_thread, 320, ""),
+      bundleSummary: sanitizeText(bundleOutput?.bundle_summary, 320, ""),
+      narrativeRole: sanitizeText(authored?.narrative_role, 60, ""),
+      stageMetrics: Array.isArray(merged?.strategy?.metrics) ? merged.strategy.metrics.slice(0, 8) : [],
+      executor: {
+        ...((stage.metadata && stage.metadata.executor) || {}),
+        responseId: responseId || null,
+        responseStatus,
+        stageIndex: idx,
+        path: "v3_bundle_authoring",
+        strategyCount: viableStrategies.length,
+        selectedChartType: merged?.stageOutput?.chart_spec?.chart_type || null,
+        selectedStrategyId: authored?.selected_strategy_id || null,
+      },
+    };
+
+    stages.push(stage);
+  }
+
+  stages.sort((a, b) => (a.stageIndex ?? 0) - (b.stageIndex ?? 0));
+  return { stages, errors };
+}
+
+/**
+ * Generate all stages as one authored bundle.
  */
 async function generateAllStages({
   bundle,
@@ -249,59 +406,106 @@ async function generateAllStages({
     return { ok: false, stages: [], errors: ["stagesPlan is empty"] };
   }
 
-  agentLog("generating all stages in parallel", {
+  agentLog("generating authored bundle", {
     bundleId: bundle?.bundleId || null,
     stageCount: stagesPlan.length,
   });
 
-  const stagePromises = stagesPlan.map((stageSpec) => {
-    const stageIndex = Number(stageSpec?.stageIndex ?? 0);
-    return generateStageFromExecutor({
-      bundle,
-      question,
-      stageIndex,
-      userContext,
-      stageSpec,
-      requestId,
-      multiWindowData,
-      evidenceBundle,
-    });
-  });
+  const useV4 = AGENT_CONFIGS.executorV4?.enabled === true;
 
-  const results = await Promise.all(stagePromises);
+  let bundleCandidates;
+  let rawDataCandidates;
 
-  const stages = [];
-  const errors = [];
-
-  results.forEach((result, i) => {
-    if (result?.ok && result?.stage) {
-      // Set moreAvailable based on position in the plan
-      result.stage.moreAvailable = i < stagesPlan.length - 1;
-      stages.push(result.stage);
-    } else {
-      errors.push(result?.error || `Stage ${i} failed`);
-      agentLog("stage generation failed", { stageIndex: i, error: result?.error });
+  if (useV4) {
+    try {
+      rawDataCandidates = buildRawDataCandidates(stagesPlan, multiWindowData || {}, evidenceBundle || {});
+    } catch (error) {
+      return {
+        ok: false,
+        stages: [],
+        errors: [String(error?.message || error)],
+      };
     }
+  } else {
+    try {
+      bundleCandidates = buildBundleCandidates(stagesPlan, multiWindowData || {}, evidenceBundle || {});
+    } catch (error) {
+      return {
+        ok: false,
+        stages: [],
+        errors: [String(error?.message || error)],
+      };
+    }
+
+    if (!bundleCandidates.length || bundleCandidates.some((candidate) => !candidate.viable_strategies?.length)) {
+      return {
+        ok: false,
+        stages: [],
+        errors: ["Failed to build viable chart strategies for one or more stages"],
+      };
+    }
+  }
+
+  const response = await runExecutorRequest({
+    bundleSummary: buildBundleSummary(bundle, evidenceBundle),
+    stageHistory: buildCompactStageHistory(bundle?.stages),
+    question: sanitizeText(question, 360, ""),
+    previousResponseId: null,
+    userContext: userContext || null,
+    stageIndex: 0,
+    ...(useV4 ? { rawDataCandidates } : { bundleCandidates }),
+    evidenceBundle,
+    toolContext: null,
   });
 
-  stages.sort((a, b) => (a.stageIndex ?? 0) - (b.stageIndex ?? 0));
+  if (!response?.ok || !response?.bundleOutput) {
+    return {
+      ok: false,
+      stages: [],
+      errors: [response?.error || "Executor bundle generation failed"],
+    };
+  }
 
-  agentLog("all stages completed", {
+  const normalized = useV4
+    ? normalizeAuthoredBundleStagesV4({
+        bundleOutput: response.bundleOutput,
+        rawDataCandidates,
+        question,
+        requestId,
+        responseId: response.responseId || null,
+        responseStatus: response.status || "completed",
+        multiWindowData,
+        evidenceBundle,
+      })
+    : normalizeAuthoredBundleStages({
+        bundleOutput: response.bundleOutput,
+        bundleCandidates,
+        question,
+        requestId,
+        responseId: response.responseId || null,
+        responseStatus: response.status || "completed",
+        multiWindowData,
+        evidenceBundle,
+      });
+
+  agentLog("authored bundle completed", {
     total: stagesPlan.length,
-    succeeded: stages.length,
-    failed: errors.length,
+    produced: normalized.stages.length,
+    failed: normalized.errors.length,
   });
 
   return {
-    ok: stages.length > 0,
-    stages,
-    errors,
+    ok: normalized.stages.length > 0,
+    stages: normalized.stages,
+    errors: normalized.errors,
   };
 }
 
 module.exports = {
   buildBundleSummary,
-  generateStageFromExecutor,
+  buildBundleCandidates,
+  buildRawDataCandidates,
   generateAllStages,
   mergeStrategyResponse,
+  normalizeAuthoredBundleStagesV4,
 };

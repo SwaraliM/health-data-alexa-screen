@@ -6,12 +6,13 @@
 const Alexa = require('ask-sdk-core');
 const AWS = require("aws-sdk");
 const axios = require('axios');
+axios.defaults.timeout = 7000; // main handler + ErrorHandler timeouts must fit within Lambda's 8s limit
 const ddbAdapter = require('ask-sdk-dynamodb-persistence-adapter');
 const moment = require('moment-timezone');
 const break_audio = "  <break time='10s'/>  ";
 const pauseDuration = break_audio.repeat(18);
 const SmallPauseDuration = break_audio.repeat(3);
-let repromptText = " I'm still here whenever you're ready. Just say something and we can keep going. " + pauseDuration + " What would you like to know? ";
+let repromptText = " I'm still here whenever you're ready. Say Alexa, and then ask about your health whenever you'd like to keep going. " + pauseDuration + " What would you like to know? ";
 
 //let medCounter = 0;
 //let remCounter = 0;
@@ -22,7 +23,7 @@ var tryAgain = "false";
 const timeOut = 5500;
 const sayIt = 1000;
 // API CALL FOR BACKEND
-const apiCall = 'YOUR_API_URL_HERE';
+const apiCall = 'https://noncryptical-weston-entomophagous.ngrok-free.dev/api/alexa?followUp';
 var questionAsked = false;
 var countQuestion = 0;
 /*const config = new Configuration({
@@ -137,11 +138,11 @@ const LaunchRequestHandler = {
         //const index3 = Math.floor(Math.random() * 3);
         //let reprompting = intro[index2];
         //let reprompting2 = other[index3];
-        let reprompting = 'Should I continue? ';
+        let reprompting = 'Say Alexa when you are ready to continue. ';
         if (!questionAsked){
             //speakOutput = speakOutput + pauseDuration  + " Are you still there? Should we continue?";
             //reprompting = reprompting + "Whenever you are ready to respond, say Alexa and proceed. " + pauseDuration + reprompting2;
-            reprompting = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health. ";
+            reprompting = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health. ";
 
 
         }
@@ -341,9 +342,9 @@ const AskChatGPTIntentHandler = {
         question = "Update " + question;
     }
     //tryAgain = "false";
-    ////// Progressive call
+    ////// Progressive call — COMMENTED OUT: backend now holds connection for 5.5s, no Lambda-side polling
     countQuestion += 1;
-    const timeoutId = setTimeout(() => {
+    /*const timeoutId = setTimeout(() => {
       //console.log('API call not completed within 3 seconds. so sending a progressive call ');
       // Reject the API response promise to handle the timeout scenario
       //apiResponseReject(new Error('API call timed out'));
@@ -365,7 +366,7 @@ const AskChatGPTIntentHandler = {
    //flagProgressiveAPI = true;
 
 
-    },sayIt);
+    },sayIt);*/
 
 
     //////////
@@ -388,19 +389,19 @@ const AskChatGPTIntentHandler = {
       headers: {
         //Authorization: authToken,
         'Content-Type': 'application/json',
-        accept: '*/*',
+        accept: 'application/json',
       },
     });
 
     //////// working code
-    //progressive call
+    //progressive call — COMMENTED OUT: backend holds connection, no Lambda polling
 
-   // Get the API access token and request ID
+   /* // Get the API access token and request ID
     const apiAccessToken = handlerInput.requestEnvelope.context.System.apiAccessToken;
     const requestId = handlerInput.requestEnvelope.request.requestId;
 
 
-    const index_filler = Math.floor(Math.random() * 8);
+    const index_filler = Math.floor(Math.random() * fillers.length);
     const repromptText2 = fillers[index_filler];
 
 
@@ -413,13 +414,13 @@ const AskChatGPTIntentHandler = {
         requestId: requestId
       },
       directive: directive
-    };
+    };*/
     /////////////////////////////////////
 
     var speakOutput = await apiResponsePromise;
     //smallTalk = speakOutput.data.smallTalk;
     //followUp = "true";
-    let currentTime = Date.now();
+    /*let currentTime = Date.now();
     //speakOutput.data.GPTresponse === "Still working on that"
     while ( speakOutput.data.GPTresponse === "Still working on that" && currentTime-startTime < timeOut){
         //counter++;
@@ -457,26 +458,22 @@ const AskChatGPTIntentHandler = {
           headers: {
             //Authorization: authToken,
             'Content-Type': 'application/json',
-            accept: '*/*',
+            accept: 'application/json',
           },
     });
     speakOutput = await apiResponsePromise;
     //smallTalk = speakOutput.data.smallTalk;
     currentTime = Date.now();
     //tryAgain = "false";
-    /*if (speakOutput.data === "Still working on that"){
-        tryAgain = "true";
-        speakOutput.data = "Taking a bit longer than expected. Should I check again?";
     }*/
-    }
-    clearTimeout(timeoutId);
+    //clearTimeout(timeoutId);
     if (followUp === "false"){
         followUp = "true";
     }
     //var repromptText = "";
     if (speakOutput.data.GPTresponse  === "Still working on that"){
         tryAgain = "true";
-        repromptText = "It's taking a little longer than usual. I'll keep working on it. Just say anything when you're ready." + pauseDuration + " I'm here whenever you need me.";
+        repromptText = " I'm here whenever you're ready. Say Alexa, continue when you want me to keep going." + pauseDuration + " What would you like to know?";
         /*const index_meanwhile = Math.floor(Math.random() * 6);
         const attributesManager = handlerInput.attributesManager;
         let attributes = await attributesManager.getPersistentAttributes() || {};
@@ -492,7 +489,16 @@ const AskChatGPTIntentHandler = {
         attributesManager.setPersistentAttributes(attributes);
         await attributesManager.savePersistentAttributes();
         */
-        if (questionAsked || countQuestion < 2)
+        // Prefer backend's contextual filler; fall back to own arrays only if empty.
+        // (Backend provides topic-matched fillers via getContextualFiller — no duplication needed here.)
+        if (speakOutput.data.smallTalk && speakOutput.data.smallTalk.length > 0) {
+            smallTalk = speakOutput.data.smallTalk;
+        } else {
+            const STindex1 = Math.floor(Math.random() * 3);
+            const STindex2 = Math.floor(Math.random() * 3);
+            smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2];
+        }
+        /*if (questionAsked || countQuestion < 2)
         {
             const STindex1 = Math.floor(Math.random() * 3);
             const STindex2 = Math.floor(Math.random() * 3);
@@ -516,7 +522,7 @@ const AskChatGPTIntentHandler = {
             //smallTalk = speakOutput.data.smallTalk;
             countQuestion = 0;
             //countQuestion += 1; // add everytime you get smallTalk from sheets
-        }
+        }*/
         speakOutput.data.GPTresponse = smallTalk;
         questionAsked = true;
 
@@ -545,7 +551,7 @@ const AskChatGPTIntentHandler = {
         //const index2 = Math.floor(Math.random() * 3);
         //const index3 = Math.floor(Math.random() * 3);
         //repromptText = intro[index2] + "Whenever you are ready to respond, say Alexa and continue. " + pauseDuration + other[index3];
-        repromptText = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health.";
+        repromptText = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health.";
 
         speakOutput.data.GPTresponse = speakOutput.data.GPTresponse + SmallPauseDuration;
 
@@ -596,7 +602,8 @@ const TryAgainIntentHandler = {
         //let repromptText = "What else can I help you with";
         //if (tryAgain === "true"){
         countQuestion += 1;
-        const timeoutId = setTimeout(() => {
+        // Progressive directive & polling loop — COMMENTED OUT: backend now holds connection for 5.5s
+        /*const timeoutId = setTimeout(() => {
           //console.log('API call not completed within 3 seconds. so sending a progressive call ');
           // Reject the API response promise to handle the timeout scenario
           //apiResponseReject(new Error('API call timed out'));
@@ -618,22 +625,22 @@ const TryAgainIntentHandler = {
        //flagProgressiveAPI = true;
 
 
-        },sayIt);
+        },sayIt);*/
         //////////
         const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
         //let counter = 0;
         let apiResponsePromise2 = axios.post(apiUrl,"\"" + statement + "\"", {
           headers: {
             'Content-Type': 'application/json',
-            accept: '*/*',
+            accept: 'application/json',
           },
         });
 
 
         //////// working code
-        //progressive call
+        //progressive call — COMMENTED OUT: backend holds connection, no Lambda polling
 
-       // Get the API access token and request ID
+       /* // Get the API access token and request ID
         const apiAccessToken = handlerInput.requestEnvelope.context.System.apiAccessToken;
         const requestId = handlerInput.requestEnvelope.request.requestId;
 
@@ -651,12 +658,12 @@ const TryAgainIntentHandler = {
             requestId: requestId
           },
           directive: directive
-        };
+        };*/
         /////////////////////////////////////
 
         var speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
-        let currentTime = Date.now();
+        /*let currentTime = Date.now();
         while (speakOutput2.data.GPTresponse  === "Still working on that" && currentTime-startTime < timeOut){
             tryAgain = "true";
             //counter++;
@@ -665,23 +672,19 @@ const TryAgainIntentHandler = {
               headers: {
                 //Authorization: authToken,
                 'Content-Type': 'application/json',
-                accept: '*/*',
+                accept: 'application/json',
               },
         });
         speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
 
         currentTime = Date.now();
-        /*if (speakOutput2.data === "Still working on that"){
-            tryAgain = "true";
-            speakOutput2.data= "It's taking a bit longer. Should I continue?"
         }*/
-        }
-        clearTimeout(timeoutId);
+        //clearTimeout(timeoutId);
         //var repromptText = "";
         if (speakOutput2.data.GPTresponse  === "Still working on that"){
             tryAgain = "true";
-            repromptText = "It's taking a little longer than usual. I'll keep working on it. Just say anything when you're ready." + pauseDuration + " I'm here whenever you need me.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, continue when you want me to keep going." + pauseDuration + " What would you like to know?";
 
             /*const index_meanwhile = Math.floor(Math.random() * 6);
             const attributesManager = handlerInput.attributesManager;
@@ -697,7 +700,16 @@ const TryAgainIntentHandler = {
             attributes.counter = counter; // Update the persistent attribute
             attributesManager.setPersistentAttributes(attributes);
             await attributesManager.savePersistentAttributes();*/
-            if (questionAsked || countQuestion < 2)
+            // Prefer backend's contextual filler; fall back to own arrays only if empty.
+            // (Backend provides topic-matched fillers via getContextualFiller — no duplication needed here.)
+            if (speakOutput2.data.smallTalk && speakOutput2.data.smallTalk.length > 0) {
+                smallTalk = speakOutput2.data.smallTalk;
+            } else {
+                const STindex1 = Math.floor(Math.random() * 3);
+                const STindex2 = Math.floor(Math.random() * 3);
+                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2];
+            }
+            /*if (questionAsked || countQuestion < 2)
             {
                 const STindex1 = Math.floor(Math.random() * 3);
                 const STindex2 = Math.floor(Math.random() * 3);
@@ -719,7 +731,7 @@ const TryAgainIntentHandler = {
                     smallTalk = speakOutput2.data.smallTalk;
                 }
                 countQuestion = 0;
-            }
+            }*/
             speakText = smallTalk;
             questionAsked = true;
 
@@ -730,7 +742,7 @@ const TryAgainIntentHandler = {
             //const index2 = Math.floor(Math.random() * 3);
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = intro[index2] + "Whenever you are ready to respond, say Alexa and proceed. " + pauseDuration + other[index3];
-             repromptText = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health.";
+             repromptText = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health.";
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = other[index3];
             //repromptText = "What else would you like to know?";
@@ -789,7 +801,8 @@ const NoIntentHandler = {
         //let speakText = "What else can I help you with.";
         //let repromptText = "What else can I help you with";
         //if (tryAgain === "true"){
-        const timeoutId = setTimeout(() => {
+        // Progressive directive & polling loop — COMMENTED OUT: backend now holds connection for 5.5s
+        /*const timeoutId = setTimeout(() => {
           //console.log('API call not completed within 3 seconds. so sending a progressive call ');
           // Reject the API response promise to handle the timeout scenario
           //apiResponseReject(new Error('API call timed out'));
@@ -811,22 +824,22 @@ const NoIntentHandler = {
        //flagProgressiveAPI = true;
 
 
-        },sayIt);
+        },sayIt);*/
         //////////
         const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
         //let counter = 0;
         let apiResponsePromise2 = axios.post(apiUrl,"\"" +  statement + "\"", {
           headers: {
             'Content-Type': 'application/json',
-            accept: '*/*',
+            accept: 'application/json',
           },
         });
 
 
         //////// working code
-        //progressive call
+        //progressive call — COMMENTED OUT: backend holds connection, no Lambda polling
 
-       // Get the API access token and request ID
+       /* // Get the API access token and request ID
         const apiAccessToken = handlerInput.requestEnvelope.context.System.apiAccessToken;
         const requestId = handlerInput.requestEnvelope.request.requestId;
 
@@ -844,12 +857,12 @@ const NoIntentHandler = {
             requestId: requestId
           },
           directive: directive
-        };
+        };*/
         /////////////////////////////////////
 
         var speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
-        let currentTime = Date.now();
+        /*let currentTime = Date.now();
         while (speakOutput2.data.GPTresponse  === "Still working on that" && currentTime-startTime < timeOut){
             tryAgain = "true";
             //counter++;
@@ -858,22 +871,18 @@ const NoIntentHandler = {
               headers: {
                 //Authorization: authToken,
                 'Content-Type': 'application/json',
-                accept: '*/*',
+                accept: 'application/json',
               },
         });
         speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
         currentTime = Date.now();
-        /*if (speakOutput2.data === "Still working on that"){
-            tryAgain = "true";
-            speakOutput2.data= "It's taking a bit longer. Should I continue?"
         }*/
-        }
-        clearTimeout(timeoutId);
+        //clearTimeout(timeoutId);
         //var repromptText = "";
         if (speakOutput2.data.GPTresponse  === "Still working on that"){
             tryAgain = "true";
-            repromptText = "It's taking a little longer than usual. I'll keep working on it. Just say anything when you're ready." + pauseDuration + " I'm here whenever you need me.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, continue when you want me to keep going." + pauseDuration + " What would you like to know?";
             /*const index_meanwhile = Math.floor(Math.random() * 6);
             const attributesManager = handlerInput.attributesManager;
             let attributes = await attributesManager.getPersistentAttributes() || {};
@@ -884,11 +893,20 @@ const NoIntentHandler = {
                 counter = -1;
             }
             counter++;
-            //attributes = {"counter":counter};
+            //attributes = {"counter":counter);
             attributes.counter = counter; // Update the persistent attribute
             attributesManager.setPersistentAttributes(attributes);
             await attributesManager.savePersistentAttributes();*/
-            if (questionAsked || countQuestion < 2)
+            // Prefer backend's contextual filler; fall back to own arrays only if empty.
+            // (Backend provides topic-matched fillers via getContextualFiller — no duplication needed here.)
+            if (speakOutput2.data.smallTalk && speakOutput2.data.smallTalk.length > 0) {
+                smallTalk = speakOutput2.data.smallTalk;
+            } else {
+                const STindex1 = Math.floor(Math.random() * 3);
+                const STindex2 = Math.floor(Math.random() * 3);
+                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2];
+            }
+            /*if (questionAsked || countQuestion < 2)
             {
                 const STindex1 = Math.floor(Math.random() * 3);
                 const STindex2 = Math.floor(Math.random() * 3);
@@ -911,7 +929,7 @@ const NoIntentHandler = {
                 }
                 //smallTalk = speakOutput2.data.smallTalk;
                 countQuestion = 0;
-            }
+            }*/
             speakText = smallTalk;
             questionAsked = true;
 
@@ -922,7 +940,7 @@ const NoIntentHandler = {
             //const index2 = Math.floor(Math.random() * 3);
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = intro[index2] + "Whenever you are ready to respond, say Alexa and proceed. " + pauseDuration + other[index3];
-            repromptText = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health.";
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = other[index3];
             //repromptText = "What else would you like to know?";
@@ -1021,7 +1039,8 @@ const FallbackIntentHandler = {
         //var repromptText = other[index3];
         //if (tryAgain === "true"){
         countQuestion += 1;
-        const timeoutId = setTimeout(() => {
+        // Progressive directive & polling loop — COMMENTED OUT: backend now holds connection for 5.5s
+        /*const timeoutId = setTimeout(() => {
           //console.log('API call not completed within 3 seconds. so sending a progressive call ');
           // Reject the API response promise to handle the timeout scenario
           //apiResponseReject(new Error('API call timed out'));
@@ -1043,22 +1062,22 @@ const FallbackIntentHandler = {
        //flagProgressiveAPI = true;
 
 
-        },sayIt);
+        },sayIt);*/
         //////////
         const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
         //let counter = 0;
         let apiResponsePromise2 = axios.post(apiUrl,"\"" + statement + "\"", {
           headers: {
             'Content-Type': 'application/json',
-            accept: '*/*',
+            accept: 'application/json',
           },
         });
 
 
         //////// working code
-        //progressive call
+        //progressive call — COMMENTED OUT: backend holds connection, no Lambda polling
 
-       // Get the API access token and request ID
+       /* // Get the API access token and request ID
         const apiAccessToken = handlerInput.requestEnvelope.context.System.apiAccessToken;
         const requestId = handlerInput.requestEnvelope.request.requestId;
 
@@ -1076,12 +1095,12 @@ const FallbackIntentHandler = {
             requestId: requestId
           },
           directive: directive
-        };
+        };*/
         /////////////////////////////////////
 
         var speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
-        let currentTime = Date.now();
+        /*let currentTime = Date.now();
         while (speakOutput2.data.GPTresponse  === "Still working on that" && currentTime-startTime < timeOut){
             tryAgain = "true";
             //counter++;
@@ -1090,23 +1109,19 @@ const FallbackIntentHandler = {
               headers: {
                 //Authorization: authToken,
                 'Content-Type': 'application/json',
-                accept: '*/*',
+                accept: 'application/json',
               },
         });
         speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
         currentTime = Date.now();
-        /*if (speakOutput2.data === "Still working on that"){
-            tryAgain = "true";
-            speakOutput2.data= "It's taking a bit longer. Should I continue?"
         }*/
-        }
-        clearTimeout(timeoutId);
+        //clearTimeout(timeoutId);
         //var repromptText = "";
         if (speakOutput2.data.GPTresponse  === "Still working on that"){
             tryAgain = "true";
             //repromptText = "Should I continue? " + pauseDuration + " Should I continue?";
-             repromptText = "It's taking a little longer than usual. I'll keep working on it. Just say anything when you're ready." + pauseDuration + " I'm here whenever you need me.";
+             repromptText = " I'm here whenever you're ready. Say Alexa, continue when you want me to keep going." + pauseDuration + " What would you like to know?";
             /*const index_meanwhile = Math.floor(Math.random() * 6);
             const attributesManager = handlerInput.attributesManager;
             let attributes = await attributesManager.getPersistentAttributes() || {};
@@ -1121,7 +1136,16 @@ const FallbackIntentHandler = {
             attributes.counter = counter; // Update the persistent attribute
             attributesManager.setPersistentAttributes(attributes);
             await attributesManager.savePersistentAttributes();*/
-            if (questionAsked || countQuestion < 2)
+            // Prefer backend's contextual filler; fall back to own arrays only if empty.
+            // (Backend provides topic-matched fillers via getContextualFiller — no duplication needed here.)
+            if (speakOutput2.data.smallTalk && speakOutput2.data.smallTalk.length > 0) {
+                smallTalk = speakOutput2.data.smallTalk;
+            } else {
+                const STindex1 = Math.floor(Math.random() * 3);
+                const STindex2 = Math.floor(Math.random() * 3);
+                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2];
+            }
+            /*if (questionAsked || countQuestion < 2)
             {
                 const STindex1 = Math.floor(Math.random() * 3);
                 const STindex2 = Math.floor(Math.random() * 3);
@@ -1143,7 +1167,7 @@ const FallbackIntentHandler = {
                     smallTalk = speakOutput2.data.smallTalk;
                 }
                 countQuestion = 0;
-            }
+            }*/
             speakText = smallTalk;
             questionAsked = true;
 
@@ -1154,7 +1178,7 @@ const FallbackIntentHandler = {
             //const index2 = Math.floor(Math.random() * 3);
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = intro[index2] + "Whenever you are ready to respond, say Alexa and proceed. " + pauseDuration + other[index3];
-            repromptText = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health.";
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = other[index3];
             //repromptText = "What else would you like to know?";
@@ -1223,7 +1247,8 @@ const IntentReflectorHandler = {
         //var repromptText = other[index3];
         //if (tryAgain === "true"){
         countQuestion += 1;
-        const timeoutId = setTimeout(() => {
+        // Progressive directive & polling loop — COMMENTED OUT: backend now holds connection for 5.5s
+        /*const timeoutId = setTimeout(() => {
           //console.log('API call not completed within 3 seconds. so sending a progressive call ');
           // Reject the API response promise to handle the timeout scenario
           //apiResponseReject(new Error('API call timed out'));
@@ -1245,22 +1270,22 @@ const IntentReflectorHandler = {
        //flagProgressiveAPI = true;
 
 
-        },sayIt);
+        },sayIt);*/
         //////////
         const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
         //let counter = 0;
         let apiResponsePromise2 = axios.post(apiUrl,"\"" +  statement + "\"", {
           headers: {
             'Content-Type': 'application/json',
-            accept: '*/*',
+            accept: 'application/json',
           },
         });
 
 
         //////// working code
-        //progressive call
+        //progressive call — COMMENTED OUT: backend holds connection, no Lambda polling
 
-       // Get the API access token and request ID
+       /* // Get the API access token and request ID
         const apiAccessToken = handlerInput.requestEnvelope.context.System.apiAccessToken;
         const requestId = handlerInput.requestEnvelope.request.requestId;
 
@@ -1278,12 +1303,12 @@ const IntentReflectorHandler = {
             requestId: requestId
           },
           directive: directive
-        };
+        };*/
         /////////////////////////////////////
 
         var speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
-        let currentTime = Date.now();
+        /*let currentTime = Date.now();
         while (speakOutput2.data.GPTresponse  === "Still working on that" && currentTime-startTime < timeOut){
             tryAgain = "true";
             //counter++;
@@ -1292,23 +1317,19 @@ const IntentReflectorHandler = {
               headers: {
                 //Authorization: authToken,
                 'Content-Type': 'application/json',
-                accept: '*/*',
+                accept: 'application/json',
               },
         });
         speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
         currentTime = Date.now();
-        /*if (speakOutput2.data === "Still working on that"){
-            tryAgain = "true";
-            speakOutput2.data= "It's taking a bit longer. Should I continue?"
         }*/
-        }
-        clearTimeout(timeoutId);
+        //clearTimeout(timeoutId);
         //var repromptText = "";
         if (speakOutput2.data.GPTresponse  === "Still working on that"){
             tryAgain = "true";
             //repromptText = "Should I continue? " + pauseDuration + " Should I continue?";
-             repromptText = "It's taking a little longer than usual. I'll keep working on it. Just say anything when you're ready." + pauseDuration + " I'm here whenever you need me.";
+             repromptText = " I'm here whenever you're ready. Say Alexa, continue when you want me to keep going." + pauseDuration + " What would you like to know?";
             /*const index_meanwhile = Math.floor(Math.random() * 6);
             const attributesManager = handlerInput.attributesManager;
             let attributes = await attributesManager.getPersistentAttributes() || {};
@@ -1323,29 +1344,14 @@ const IntentReflectorHandler = {
             attributes.counter = counter; // Update the persistent attribute
             attributesManager.setPersistentAttributes(attributes);
             await attributesManager.savePersistentAttributes();*/
-            if (questionAsked || countQuestion < 2)
-            {
+            // Prefer backend's contextual filler; fall back to own arrays only if empty.
+            // (Backend provides topic-matched fillers via getContextualFiller — no duplication needed here.)
+            if (speakOutput2.data.smallTalk && speakOutput2.data.smallTalk.length > 0) {
+                smallTalk = speakOutput2.data.smallTalk;
+            } else {
                 const STindex1 = Math.floor(Math.random() * 3);
                 const STindex2 = Math.floor(Math.random() * 3);
-                const STindex3 = Math.floor(Math.random() * 1);
-                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2] + smallTalkFillers3[STindex3] ;
-                //smallTalk = "It's taking me a bit longer. Are you still here? ";
-
-            }
-            else if (countQuestion >= 2)
-            {
-                if (speakOutput2.data.smallTalk.length === 0)
-                {
-                    const STindex1 = Math.floor(Math.random() * 3);
-                    const STindex2 = Math.floor(Math.random() * 3);
-                    const STindex3 = Math.floor(Math.random() * 1);
-                    smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2] + smallTalkFillers3[STindex3] ;
-                }
-                else{
-                    smallTalk = speakOutput2.data.smallTalk;
-                }
-                //smallTalk = speakOutput2.data.smallTalk;
-                countQuestion = 0;
+                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2];
             }
             speakText = smallTalk;
             questionAsked = true;
@@ -1357,7 +1363,7 @@ const IntentReflectorHandler = {
             //const index2 = Math.floor(Math.random() * 3);
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = intro[index2] + "Whenever you are ready to respond, say Alexa and proceed. " + pauseDuration + other[index3];
-            repromptText = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health.";
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = other[index3];
             //repromptText = "What else would you like to know?";
@@ -1421,7 +1427,8 @@ const ErrorHandler = {
         //var repromptText = other[index3];
         //if (tryAgain === "true"){
         countQuestion += 1;
-        const timeoutId = setTimeout(() => {
+        // Progressive directive & polling loop — COMMENTED OUT: backend now holds connection for 5.5s
+        /*const timeoutId = setTimeout(() => {
           //console.log('API call not completed within 3 seconds. so sending a progressive call ');
           // Reject the API response promise to handle the timeout scenario
           //apiResponseReject(new Error('API call timed out'));
@@ -1443,22 +1450,22 @@ const ErrorHandler = {
        //flagProgressiveAPI = true;
 
 
-        },sayIt);
+        },sayIt);*/
         //////////
         const apiUrl = apiCall+followUp+'&tryAgain='+tryAgain;
         //let counter = 0;
         let apiResponsePromise2 = axios.post(apiUrl,"\"" +  statement + "\"", {
           headers: {
             'Content-Type': 'application/json',
-            accept: '*/*',
+            accept: 'application/json',
           },
         });
 
 
         //////// working code
-        //progressive call
+        //progressive call — COMMENTED OUT: backend holds connection, no Lambda polling
 
-       // Get the API access token and request ID
+       /* // Get the API access token and request ID
         const apiAccessToken = handlerInput.requestEnvelope.context.System.apiAccessToken;
         const requestId = handlerInput.requestEnvelope.request.requestId;
 
@@ -1476,12 +1483,12 @@ const ErrorHandler = {
             requestId: requestId
           },
           directive: directive
-        };
+        };*/
         /////////////////////////////////////
 
         var speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
-        let currentTime = Date.now();
+        /*let currentTime = Date.now();
         while (speakOutput2.data.GPTresponse  === "Still working on that" && currentTime-startTime < timeOut){
             tryAgain = "true";
             //counter++;
@@ -1490,23 +1497,19 @@ const ErrorHandler = {
               headers: {
                 //Authorization: authToken,
                 'Content-Type': 'application/json',
-                accept: '*/*',
+                accept: 'application/json',
               },
         });
         speakOutput2 = await apiResponsePromise2;
         //smallTalk = speakOutput2.data.smallTalk;
         currentTime = Date.now();
-        /*if (speakOutput2.data === "Still working on that"){
-            tryAgain = "true";
-            speakOutput2.data= "It's taking a bit longer. Should I continue?"
         }*/
-        }
-        clearTimeout(timeoutId);
+        //clearTimeout(timeoutId);
         //var repromptText = "";
         if (speakOutput2.data.GPTresponse  === "Still working on that"){
             tryAgain = "true";
             //repromptText = "Should I continue? " + pauseDuration + " Should I continue?";
-            repromptText = "It's taking a little longer than usual. I'll keep working on it. Just say anything when you're ready." + pauseDuration + " I'm here whenever you need me.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, continue when you want me to keep going." + pauseDuration + " What would you like to know?";
             /*const index_meanwhile = Math.floor(Math.random() * 6);
             const attributesManager = handlerInput.attributesManager;
             let attributes = await attributesManager.getPersistentAttributes() || {};
@@ -1521,29 +1524,14 @@ const ErrorHandler = {
             attributes.counter = counter; // Update the persistent attribute
             attributesManager.setPersistentAttributes(attributes);
             await attributesManager.savePersistentAttributes();*/
-            if (questionAsked || countQuestion < 2)
-            {
+            // Prefer backend's contextual filler; fall back to own arrays only if empty.
+            // (Backend provides topic-matched fillers via getContextualFiller — no duplication needed here.)
+            if (speakOutput2.data.smallTalk && speakOutput2.data.smallTalk.length > 0) {
+                smallTalk = speakOutput2.data.smallTalk;
+            } else {
                 const STindex1 = Math.floor(Math.random() * 3);
                 const STindex2 = Math.floor(Math.random() * 3);
-                const STindex3 = Math.floor(Math.random() * 1);
-                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2] + smallTalkFillers3[STindex3] ;
-                //smallTalk = "It's taking me a bit longer. Are you still here? ";
-
-            }
-            else if (countQuestion >= 2)
-            {
-                if (speakOutput2.data.smallTalk.length === 0)
-                {
-                    const STindex1 = Math.floor(Math.random() * 3);
-                    const STindex2 = Math.floor(Math.random() * 3);
-                    const STindex3 = Math.floor(Math.random() * 1);
-                    smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2] + smallTalkFillers3[STindex3] ;
-                }
-                else{
-                    smallTalk = speakOutput2.data.smallTalk;
-                }
-                //smallTalk = speakOutput2.data.smallTalk;
-                countQuestion = 0;
+                smallTalk = smallTalkFillers1[STindex1] + smallTalkFillers2[STindex2];
             }
             speakText = smallTalk;
             questionAsked = true;
@@ -1555,7 +1543,7 @@ const ErrorHandler = {
             //const index2 = Math.floor(Math.random() * 3);
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = intro[index2] + "Whenever you are ready to respond, say Alexa and proceed. " + pauseDuration + other[index3];
-            repromptText = " I'm here whenever you're ready. What would you like to know? " + pauseDuration + " Feel free to ask me anything about your health.";
+            repromptText = " I'm here whenever you're ready. Say Alexa, then ask what you would like to know about your health. " + pauseDuration + " Feel free to ask me anything about your health.";
             //const index3 = Math.floor(Math.random() * 3);
             //repromptText = other[index3];
             //repromptText = "What else would you like to know?";

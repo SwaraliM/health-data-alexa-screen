@@ -21,11 +21,16 @@ const {
   extractComparisonSeries,
   extractGaugeValue,
   extractListSummaryCards,
+  extractHeatmapData,
+  extractDonutData,
   computeAverage,
+  formatDateLabel,
   formatMetricName,
   deriveUnit,
   deriveMax,
 } = require("./metricExtractor");
+
+const { computeDayOfWeekPattern } = require("../analytics/evidenceComputer");
 
 const STRATEGY_DEBUG = process.env.QNA_STRATEGY_DEBUG !== "false";
 
@@ -235,6 +240,59 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
     });
   }
 
+  // Heatmap — day-of-week pattern (1+ metric, 7+ rows)
+  if (primaryRows.length >= 7 && primaryMetric) {
+    strategies.push({
+      strategy_id: "heatmap_day_of_week",
+      chart_type: "heatmap",
+      description: `${formatMetricName(primaryMetric)} pattern by day of week — which days are consistently higher or lower`,
+      data_sources: [primarySaId],
+      metrics: [primaryMetric],
+    });
+  }
+
+  // Heatmap — multi-metric (3+ metrics, 7+ rows)
+  if (primaryRows.length >= 7 && metrics.length >= 3) {
+    strategies.push({
+      strategy_id: "heatmap_multi_metric",
+      chart_type: "heatmap",
+      description: "Multiple health metrics by day of week — spot which days your health metrics peak or dip",
+      data_sources: [primarySaId],
+      metrics: metrics.slice(0, 4),
+    });
+  }
+
+  // Donut — headline value with breakdown ring
+  if (primaryMetric && primaryRows.length >= 1) {
+    strategies.push({
+      strategy_id: "donut_headline",
+      chart_type: "donut",
+      description: `Your latest ${formatMetricName(primaryMetric)} reading highlighted at center, with context breakdown around the ring`,
+      data_sources: [primarySaId],
+      metrics: [primaryMetric],
+    });
+  }
+
+  // Bar anomaly highlight — daily values with anomalous readings flagged
+  const hasAnomalies = (() => {
+    const subAnalyses = evidenceBundle?.sub_analyses || {};
+    for (const saEvidence of Object.values(subAnalyses)) {
+      for (const metricEvidence of Object.values(saEvidence?.metrics || {})) {
+        if (Array.isArray(metricEvidence?.anomalies) && metricEvidence.anomalies.length > 0) return true;
+      }
+    }
+    return false;
+  })();
+  if (hasAnomalies && primaryMetric && primaryRows.length >= 1) {
+    strategies.push({
+      strategy_id: "bar_anomaly_highlight",
+      chart_type: "bar",
+      description: `Daily ${formatMetricName(primaryMetric)} values with unusual readings marked — anomalous days stand out`,
+      data_sources: [primarySaId],
+      metrics: [primaryMetric],
+    });
+  }
+
   // List summary
   if (metrics.length >= 1) {
     strategies.push({
@@ -257,16 +315,27 @@ function generateViableStrategies({ stageSpec = {}, multiWindowData = {}, eviden
     });
   }
 
-  // ── Rank strategies: prefer hinted chart type, avoid repeats ───────────
-  strategies.sort((a, b) => {
-    // Prefer the planner's hinted chart type
-    const aHint = a.chart_type === hintChart ? -2 : 0;
-    const bHint = b.chart_type === hintChart ? -2 : 0;
-    // Penalize already-used chart types
+  // ── Rank strategies: enforce planner's chartType, avoid repeats ─────────
+  // The planner decides which chart type each stage should use. The executor
+  // should respect that decision. Matching strategies are partitioned first;
+  // non-matching types are only available as fallbacks.
+  const rankFallbacks = (a, b) => {
     const aUsed = usedTypes.has(a.chart_type) ? 1 : 0;
     const bUsed = usedTypes.has(b.chart_type) ? 1 : 0;
-    return (aHint + aUsed) - (bHint + bUsed);
-  });
+    const aText = (a.chart_type === "list_summary" || a.chart_type === "composed_summary") ? 3 : 0;
+    const bText = (b.chart_type === "list_summary" || b.chart_type === "composed_summary") ? 3 : 0;
+    return (aUsed + aText) - (bUsed + bText);
+  };
+
+  if (hintChart) {
+    const matching = strategies.filter((s) => s.chart_type === hintChart);
+    const fallbacks = strategies.filter((s) => s.chart_type !== hintChart);
+    fallbacks.sort(rankFallbacks);
+    strategies.length = 0;
+    strategies.push(...matching, ...fallbacks);
+  } else {
+    strategies.sort(rankFallbacks);
+  }
 
   const result = strategies.slice(0, 6);
   strategyLog(`generated ${result.length} strategies`, {
@@ -317,12 +386,42 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
     case "bar": {
       const { labels, values } = extractDailySeries(allRows, primaryMetric);
       const avg = computeAverage(allRows, primaryMetric);
+
+      // For bar_anomaly_highlight: collect anomalous dates and mark them
+      let markPoints = undefined;
+      if (strategyId === "bar_anomaly_highlight") {
+        const anomalyDates = new Set();
+        const subAnalyses = evidenceBundle?.sub_analyses || {};
+        for (const saEvidence of Object.values(subAnalyses)) {
+          const metricEvidence = saEvidence?.metrics?.[primaryMetric];
+          if (Array.isArray(metricEvidence?.anomalies)) {
+            for (const anomaly of metricEvidence.anomalies) {
+              if (anomaly.date) anomalyDates.add(String(anomaly.date).slice(0, 10));
+            }
+          }
+        }
+        if (anomalyDates.size > 0) {
+          // Build markPoints array: { coord: [labelIndex, value], name: "Unusual" }
+          markPoints = [];
+          allRows
+            .sort((a, b) => String(a?.timestamp || "") < String(b?.timestamp || "") ? -1 : 1)
+            .forEach((row, idx) => {
+              const dateKey = String(row?.timestamp || "").slice(0, 10);
+              if (anomalyDates.has(dateKey)) {
+                const val = toNumber(row?.[primaryMetric]);
+                if (val !== null) markPoints.push({ coord: [idx, val], name: "Unusual" });
+              }
+            });
+        }
+      }
+
       return {
         chart_type: "bar",
         chart_data: {
           labels,
           series: [{ name: formatMetricName(primaryMetric), data: values }],
           ...(avg != null ? { reference_line: { value: avg, label: "Average" } } : {}),
+          ...(markPoints ? { markPoints } : {}),
           unit: deriveUnit(primaryMetric),
         },
       };
@@ -417,6 +516,48 @@ function buildChartFromStrategy(strategyId, multiWindowData, evidenceBundle, via
       };
     }
 
+    case "heatmap": {
+      // Determine which metrics to use and the x-mode
+      const heatmapMetrics = metrics.length >= 1 ? metrics.slice(0, 4) : (primaryMetric ? [primaryMetric] : []);
+      if (!heatmapMetrics.length) return buildFallbackChart(allRows, primaryMetric);
+      const xMode = strategyId === "heatmap_multi_metric" ? "day_of_week" : "day_of_week";
+      const { xLabels, yLabels, data } = extractHeatmapData(allRows, heatmapMetrics, xMode);
+      if (!data.length) return buildFallbackChart(allRows, primaryMetric);
+      return {
+        chart_type: "heatmap",
+        chart_data: {
+          xLabels,
+          yLabels,
+          data,
+          // Also provide axis-named fields for ECharts compatibility
+          xAxis: { data: xLabels },
+          yAxis: { data: yLabels },
+          series: [{ data }],
+          unit: deriveUnit(heatmapMetrics[0]),
+        },
+      };
+    }
+
+    case "donut": {
+      // Use sleep stage metrics as slices if available, otherwise single-metric center
+      const SLEEP_STAGE_COLS = ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"];
+      const availableStages = SLEEP_STAGE_COLS.filter((m) => allRows.some((r) => toNumber(r[m]) !== null));
+      const sliceMetrics = availableStages.length >= 2
+        ? availableStages
+        : (metrics.length >= 2 ? metrics.slice(0, 4) : null);
+      const { slices, centerValue, centerLabel, unit } = extractDonutData(allRows, primaryMetric, sliceMetrics);
+      if (!slices.length && centerValue == null) return buildFallbackChart(allRows, primaryMetric);
+      return {
+        chart_type: "donut",
+        chart_data: {
+          slices: slices.length ? slices : [{ name: centerLabel, value: centerValue }],
+          centerValue,
+          centerLabel,
+          unit,
+        },
+      };
+    }
+
     case "list_summary":
     case "composed_summary": {
       const { cards, items } = extractListSummaryCards(allRows, metrics.slice(0, 4));
@@ -473,7 +614,93 @@ function buildFallbackChart(rows, primaryMetric) {
   };
 }
 
+/**
+ * Build a columnar raw-data payload for a stage to send to the V4 LLM executor.
+ * The LLM receives this instead of viable_strategies and generates the full ECharts option.
+ *
+ * @param {object} stageSpec        - from planner: { sub_analysis_ids, focusMetrics, ... }
+ * @param {object} multiWindowData  - { [saId]: { normalizedTable, metrics_needed, window } }
+ * @param {object} evidenceBundle   - from evidenceComputer: { sub_analyses, ... }
+ * @returns {{ dates, metrics, stats, row_count, focus_metrics }}
+ */
+function buildRawDataPayload(stageSpec = {}, multiWindowData = {}, evidenceBundle = {}) {
+  const saIds = Array.isArray(stageSpec?.sub_analysis_ids)
+    ? stageSpec.sub_analysis_ids
+    : Object.keys(multiWindowData).slice(0, 2);
+
+  const focusMetrics = Array.isArray(stageSpec?.focusMetrics) && stageSpec.focusMetrics.length
+    ? stageSpec.focusMetrics.slice(0, 6)
+    : [];
+
+  // Collect all rows across referenced sub-analyses, sorted by timestamp
+  const allRows = [];
+  for (const saId of saIds) {
+    const sa = multiWindowData[saId];
+    if (!sa?.normalizedTable) continue;
+    allRows.push(...sa.normalizedTable);
+  }
+  // Deduplicate by timestamp and sort ascending
+  const seen = new Set();
+  const sortedAllRows = allRows
+    .filter((row) => {
+      const ts = String(row?.timestamp || "");
+      if (!ts || seen.has(ts)) return false;
+      seen.add(ts);
+      return true;
+    })
+    .sort((a, b) => {
+      const tsA = String(a?.timestamp || "");
+      const tsB = String(b?.timestamp || "");
+      return tsA < tsB ? -1 : tsA > tsB ? 1 : 0;
+    });
+
+  // Cap at 60 rows — if more, weekly grouping isn't needed here since the planner
+  // already constrains time windows; we just truncate to keep tokens reasonable.
+  const MAX_ROWS = 60;
+  const rows = sortedAllRows.slice(0, MAX_ROWS);
+
+  const dates = rows.map((row) => formatDateLabel(String(row?.timestamp || "")));
+
+  // Build columnar metrics — only focusMetrics (or all available if none specified)
+  const availableMetrics = focusMetrics.length
+    ? focusMetrics
+    : Array.from(new Set(rows.flatMap((row) => Object.keys(row).filter((k) => k !== "timestamp")))).slice(0, 6);
+
+  const metrics = {};
+  for (const metricKey of availableMetrics) {
+    metrics[metricKey] = rows.map((row) => toNumber(row?.[metricKey]));
+  }
+
+  // Pull pre-computed stats from evidenceBundle — no recomputation
+  const stats = {};
+  for (const metricKey of availableMetrics) {
+    // Look through all sub-analyses for stats on this metric
+    for (const saId of saIds) {
+      const saStats = evidenceBundle?.sub_analyses?.[saId]?.stats?.[metricKey];
+      if (saStats && typeof saStats === "object") {
+        stats[metricKey] = {
+          mean:  toNumber(saStats.mean),
+          min:   toNumber(saStats.min),
+          max:   toNumber(saStats.max),
+          trend: String(saStats.trend_direction || saStats.trend || "").trim() || null,
+          unit:  String(saStats.unit || "").trim() || null,
+        };
+        break;
+      }
+    }
+  }
+
+  return {
+    dates,
+    metrics,
+    stats,
+    row_count: rows.length,
+    focus_metrics: availableMetrics,
+  };
+}
+
 module.exports = {
   generateViableStrategies,
   buildChartFromStrategy,
+  buildRawDataPayload,
 };

@@ -14,7 +14,7 @@ const {
   PLANNER_SYSTEM_PROMPT_V2,
 } = require("../../configs/agentConfigs");
 
-const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
+const { resolveRequestedMetrics, expandMetricSetForQuestion } = require("../fitbit/metricResolver");
 const { createResponse } = require("./responsesClient");
 
 const PLANNER_DEBUG = process.env.QNA_PLANNER_DEBUG !== "false";
@@ -165,7 +165,7 @@ function buildFallbackStagesPlan(metrics, candidateStageTypes) {
         : idx === limited.length - 1
           ? "summary"
           : "deep_dive",
-    focusMetrics: Array.isArray(metrics) ? metrics.slice(0, 4) : [],
+    focusMetrics: Array.isArray(metrics) ? metrics.slice(0, 6) : [],
     chartType: STAGE_TYPE_TO_CHART_TYPE[stageType] || "bar",
     title: "",
     goal: "",
@@ -178,7 +178,10 @@ function buildFallbackPlan({ question, enrichedIntent = null }) {
     : [];
   const resolverMetrics = resolveRequestedMetrics(question);
   const heuristicMetrics = heuristicMetricsFromQuestion(question);
-  const metrics = [...new Set([...inheritedMetrics, ...heuristicMetrics, ...resolverMetrics])].slice(0, 6);
+  const metrics = expandMetricSetForQuestion(
+    question,
+    [...new Set([...inheritedMetrics, ...heuristicMetrics, ...resolverMetrics])].slice(0, 8)
+  ).slice(0, 8);
   const timeScope = sanitizeTimeScope(enrichedIntent?.time_range, null)
     || detectTimeScopeFallback(question, "last_7_days");
   const analysisGoal = sanitizeText(enrichedIntent?.rich_analysis_goal || question, 140, "Summarize recent health trends");
@@ -200,14 +203,15 @@ function normalizePlannerOutput(raw, fallback, forcedMetrics = null) {
   const metrics = Array.isArray(forcedMetrics) && forcedMetrics.length
     ? resolveRequestedMetrics([...forcedMetrics, ...baseMetrics])
     : baseMetrics;
+  const expandedMetrics = expandMetricSetForQuestion(fallback?.analysis_goal || fallback?.question || "", metrics).slice(0, 8);
   const timeScope = sanitizeTimeScope(source.time_scope, fallback.time_scope);
   const analysisGoal = sanitizeText(source.analysis_goal, 160, fallback.analysis_goal);
   const candidateStageTypes = sanitizeStageTypes(source.candidate_stage_types, fallback.candidate_stage_types);
   const stages_plan = sanitizeStagePlan(source.stages_plan, EXECUTOR_MAX_STAGE_COUNT)
-    || buildFallbackStagesPlan(metrics, candidateStageTypes);
+    || buildFallbackStagesPlan(expandedMetrics, candidateStageTypes);
 
   return {
-    metrics_needed: metrics,
+    metrics_needed: expandedMetrics,
     time_scope: timeScope,
     analysis_goal: analysisGoal,
     candidate_stage_types: candidateStageTypes,
@@ -337,7 +341,7 @@ async function runPlannerRequestV2({ question, enrichedIntent = null, userContex
     const subAnalyses = raw.sub_analyses.slice(0, 4).map((sa, idx) => ({
       id: String(sa.id || `sa_${idx}`).slice(0, 20),
       label: sanitizeText(sa.label, 80, ""),
-      metrics_needed: resolveRequestedMetrics(sa.metrics_needed || []).slice(0, 8),
+      metrics_needed: expandMetricSetForQuestion(question, resolveRequestedMetrics(sa.metrics_needed || []).slice(0, 8)).slice(0, 8),
       time_scope: sanitizeTimeScope(sa.time_scope, "last_7_days"),
       analysis_type: sanitizeText(sa.analysis_type, 40, "general"),
     }));

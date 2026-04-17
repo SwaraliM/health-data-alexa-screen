@@ -417,17 +417,186 @@ function buildCrossAnalysisEvidence(subAnalysisEvidences, multiWindowData) {
   return result;
 }
 
+// ─── Anomaly summary ──────────────────────────────────────────────────────────
+
+/**
+ * Aggregate anomalies across ALL sub-analyses into a single summary.
+ *
+ * @param {object} subAnalysisMap - { [saId]: buildSubAnalysisEvidence result }
+ * @returns {{ total_anomalies, flagged_metrics: [...], all_clear: boolean }}
+ */
+function computeAnomalySummary(subAnalysisMap) {
+  const allFlagged = [];
+
+  for (const saEvidence of Object.values(subAnalysisMap || {})) {
+    for (const [metricKey, metricEvidence] of Object.entries(saEvidence?.metrics || {})) {
+      const anomalies = Array.isArray(metricEvidence?.anomalies) ? metricEvidence.anomalies : [];
+      for (const anomaly of anomalies) {
+        const absZ = Math.abs(anomaly.zscore || 0);
+        let severity;
+        if (absZ >= 3) severity = "significant";
+        else if (absZ >= 2) severity = "notable";
+        else severity = "mild";
+
+        allFlagged.push({
+          metric: metricKey,
+          name: (metricEvidence.name) || metricKey,
+          date: anomaly.date,
+          value: anomaly.value,
+          zscore: anomaly.zscore,
+          direction: anomaly.direction,
+          severity,
+        });
+      }
+    }
+  }
+
+  // Sort by absolute zscore descending, keep top 5
+  allFlagged.sort((a, b) => Math.abs(b.zscore || 0) - Math.abs(a.zscore || 0));
+  const topFlagged = allFlagged.slice(0, 5);
+
+  return {
+    total_anomalies: allFlagged.length,
+    flagged_metrics: topFlagged,
+    all_clear: allFlagged.length === 0,
+  };
+}
+
+// ─── Health scorecard ─────────────────────────────────────────────────────────
+
+// Reference healthy ranges for scoring (conservative, non-diagnostic)
+const HEALTH_SCORE_RANGES = {
+  steps:            { ideal_min: 7500,  ideal_max: 12000, absolute_max: 20000 },
+  sleep_minutes:    { ideal_min: 420,   ideal_max: 540,   absolute_max: 600   },
+  sleep_efficiency: { ideal_min: 85,    ideal_max: 100,   absolute_max: 100   },
+  sleep_deep:       { ideal_min: 60,    ideal_max: 120,   absolute_max: 180   },
+  sleep_rem:        { ideal_min: 60,    ideal_max: 120,   absolute_max: 180   },
+  resting_hr:       { ideal_min: 50,    ideal_max: 70,    absolute_max: 100,  lower_is_better: true },
+  hrv:              { ideal_min: 30,    ideal_max: 80,    absolute_max: 120   },
+  spo2:             { ideal_min: 95,    ideal_max: 100,   absolute_max: 100   },
+  breathing_rate:   { ideal_min: 12,    ideal_max: 16,    absolute_max: 25,   lower_is_better: true },
+  calories:         { ideal_min: 1500,  ideal_max: 2800,  absolute_max: 4000  },
+  distance:         { ideal_min: 3,     ideal_max: 8,     absolute_max: 15    },
+  floors:           { ideal_min: 5,     ideal_max: 15,    absolute_max: 30    },
+};
+
+/**
+ * Produce a 0-100 health score for a metric based on where its mean falls
+ * relative to healthy reference ranges.
+ *
+ * @param {string} metric
+ * @param {number} mean
+ * @returns {number} 0-100
+ */
+function scoreMetric(metric, mean) {
+  const range = HEALTH_SCORE_RANGES[metric];
+  if (!range || mean == null) return null;
+
+  const { ideal_min, ideal_max, absolute_max, lower_is_better } = range;
+
+  if (lower_is_better) {
+    // For resting_hr and breathing_rate: lower is better within bounds
+    if (mean <= ideal_min) return 100;
+    if (mean <= ideal_max) {
+      // Linear scale: ideal_min → 100, ideal_max → 70
+      return Math.round(100 - ((mean - ideal_min) / (ideal_max - ideal_min)) * 30);
+    }
+    if (mean <= absolute_max) {
+      return Math.round(70 - ((mean - ideal_max) / (absolute_max - ideal_max)) * 70);
+    }
+    return 0;
+  } else {
+    if (mean < ideal_min) {
+      // Below ideal: 0 at 0, 60 at ideal_min
+      const floor = 0;
+      return Math.round(Math.max(0, (mean / ideal_min) * 60));
+    }
+    if (mean <= ideal_max) {
+      // In ideal range: 80-100
+      return Math.round(80 + ((mean - ideal_min) / (ideal_max - ideal_min)) * 20);
+    }
+    if (mean <= absolute_max) {
+      // Above ideal but below absolute max: 70-80
+      return Math.round(80 - ((mean - ideal_max) / (absolute_max - ideal_max)) * 10);
+    }
+    // Above absolute max — too high
+    return 60;
+  }
+}
+
+function ratingFromScore(score) {
+  if (score == null) return "unknown";
+  if (score >= 80) return "excellent";
+  if (score >= 60) return "good";
+  if (score >= 40) return "fair";
+  return "needs_attention";
+}
+
+/**
+ * Build a health scorecard from the already-computed sub-analysis evidence map.
+ *
+ * @param {object} subAnalysisMap - { [saId]: buildSubAnalysisEvidence result }
+ * @returns {{ metrics: [...], overall_score, overall_rating }}
+ */
+function computeHealthScorecard(subAnalysisMap) {
+  const scoredMetrics = [];
+
+  // Collect one entry per unique metric (prefer the one with most data)
+  const seen = new Map();
+  for (const saEvidence of Object.values(subAnalysisMap || {})) {
+    for (const [metricKey, metricEvidence] of Object.entries(saEvidence?.metrics || {})) {
+      const existing = seen.get(metricKey);
+      if (!existing || (metricEvidence?.count || 0) > (existing?.count || 0)) {
+        seen.set(metricKey, metricEvidence);
+      }
+    }
+  }
+
+  for (const [metricKey, metricEvidence] of seen.entries()) {
+    if (!HEALTH_SCORE_RANGES[metricKey]) continue; // only score known metrics
+    const mean = metricEvidence?.mean;
+    if (mean == null) continue;
+
+    const score = scoreMetric(metricKey, mean);
+    if (score == null) continue;
+
+    scoredMetrics.push({
+      metric: metricKey,
+      name: metricEvidence.name || metricKey,
+      score,
+      rating: ratingFromScore(score),
+      latest: metricEvidence.latest,
+      mean,
+      trend_direction: metricEvidence.trend_direction || "unknown",
+      unit: metricEvidence.unit || "",
+    });
+  }
+
+  // Sort by score descending for easy reading
+  scoredMetrics.sort((a, b) => b.score - a.score);
+
+  const overall_score = scoredMetrics.length
+    ? Math.round(scoredMetrics.reduce((s, m) => s + m.score, 0) / scoredMetrics.length)
+    : null;
+
+  return {
+    metrics: scoredMetrics,
+    overall_score,
+    overall_rating: ratingFromScore(overall_score),
+  };
+}
+
 // ─── Main bundle builder ──────────────────────────────────────────────────────
 
 /**
  * Build the full evidence bundle from multi-window data.
  *
  * @param {object} multiWindowData - { [saId]: { id, label, normalizedTable, metrics_needed, time_scope } }
- * @returns {object} { sub_analyses: { [saId]: evidence }, cross_analysis: { deltas, correlations } }
+ * @returns {object} { sub_analyses: { [saId]: evidence }, cross_analysis: { deltas, correlations }, anomaly_summary, health_scorecard }
  */
 function buildEvidenceBundle(multiWindowData) {
   if (!multiWindowData || typeof multiWindowData !== "object") {
-    return { sub_analyses: {}, cross_analysis: { deltas: {}, correlations: {} } };
+    return { sub_analyses: {}, cross_analysis: { deltas: {}, correlations: {} }, anomaly_summary: { total_anomalies: 0, flagged_metrics: [], all_clear: true }, health_scorecard: { metrics: [], overall_score: null, overall_rating: "unknown" } };
   }
 
   const saIds = Object.keys(multiWindowData);
@@ -442,10 +611,14 @@ function buildEvidenceBundle(multiWindowData) {
   }
 
   const crossAnalysis = buildCrossAnalysisEvidence(subAnalysisEvidences, multiWindowData);
+  const anomaly_summary = computeAnomalySummary(subAnalysisMap);
+  const health_scorecard = computeHealthScorecard(subAnalysisMap);
 
   return {
     sub_analyses: subAnalysisMap,
     cross_analysis: crossAnalysis,
+    anomaly_summary,
+    health_scorecard,
   };
 }
 
@@ -477,6 +650,10 @@ module.exports = {
   // Cross-metric / cross-period
   computeCorrelation,
   computeDelta,
+
+  // Aggregate summaries
+  computeAnomalySummary,
+  computeHealthScorecard,
 
   // Builders
   buildSubAnalysisEvidence,
