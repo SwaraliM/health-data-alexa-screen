@@ -422,19 +422,51 @@ function buildStagePayload({
     ? normalizeChartSpec(safeStage.chartSpec, safeStage.title || "Health insight", safeStage.spokenText || "", safeStage.screenText || "")
     : buildFallbackChartSpec(safeStage.title || "Health insight", safeStage.screenText || safeStage.spokenText || "No chart.");
 
-  const panel = {
-    panel_id: `stage_${normalizedCurrentIndex}`,
-    title: safeStage.title,
-    subtitle: "",
-    goal: "deep_dive",
-    metrics: resolveStageMetrics(safeStage, bundle),
-    visual_family: chartSpecForPanel?.chart_type || "list_summary",
-    chart_spec: chartSpecForPanel,
-  };
+  // ── Multi-panel grouping via display_group ────────────────────────────────
+  // When stages have display_group in their metadata (V4 path), stages sharing
+  // the same group index are shown simultaneously on screen.
+  // Group 0 stages → shown together as screen 0; group 1 → screen 1; etc.
+  const stageDisplayGroups = stages.map((s) => {
+    const group = s?.metadata?.display_group;
+    return Number.isFinite(Number(group)) ? Number(group) : Number(s?.stageIndex || 0);
+  });
+  const currentDisplayGroup = stageDisplayGroups[
+    stages.findIndex((s) => Number(s?.stageIndex || 0) === normalizedCurrentIndex)
+  ] ?? normalizedCurrentIndex;
+
+  // Stages that belong to the same display_group as the current stage
+  const groupStages = stages.filter((s, i) => stageDisplayGroups[i] === currentDisplayGroup);
+  const isMultiPanel = groupStages.length > 1;
+
+  // Build a panel for each stage in the group
+  const panels = groupStages.map((groupStage) => {
+    const groupChartSpec = (groupStage.chartSpec && typeof groupStage.chartSpec === "object")
+      ? normalizeChartSpec(groupStage.chartSpec, groupStage.title || "Health insight", groupStage.spokenText || "", groupStage.screenText || "")
+      : buildFallbackChartSpec(groupStage.title || "Health insight", groupStage.screenText || groupStage.spokenText || "No chart.");
+    return {
+      panel_id: `stage_${Number(groupStage.stageIndex || 0)}`,
+      title: groupStage.title,
+      subtitle: "",
+      goal: "deep_dive",
+      metrics: resolveStageMetrics(groupStage, bundle),
+      visual_family: groupChartSpec?.chart_type || "list_summary",
+      chart_spec: groupChartSpec,
+    };
+  });
+
+  const panel = panels[0]; // primary panel (used for single-panel backwards compat fields)
+
+  // Determine layout based on panel count in the group
+  const groupLayout = panels.length >= 4 ? "four_panel_grid"
+    : panels.length === 3 ? "two_up_plus_footer"
+    : panels.length === 2 ? "two_up"
+    : "single_focus";
 
   const bundleComplete = safeStage.moreAvailable === false;
 
   // Position context for voice — prefer the caller-supplied count (actual generated stages)
+  // For display purposes, count distinct display_groups (number of screens)
+  const uniqueDisplayGroups = [...new Set(stageDisplayGroups)];
   const stageCount = stageCountOverride != null
     ? Math.max(1, Number(stageCountOverride))
     : (() => {
@@ -448,6 +480,7 @@ function buildStagePayload({
   const allStagesAvailable = stages.length >= stageCount && stageCount > 1;
   const autoAdvance = allStagesAvailable && normalizedCurrentIndex === 0;
 
+  // For multi-panel groups, combine narration for the group stages
   let fullVoiceAnswer;
   let chartAdvanceSchedule = [];
   if (autoAdvance) {
@@ -458,7 +491,12 @@ function buildStagePayload({
     const completionOffer = bundleComplete
       ? " That covers everything I found. Feel free to ask me another question anytime."
       : "";
-    fullVoiceAnswer = safeStage.spokenText + completionOffer;
+    if (isMultiPanel) {
+      // Combine narration for all stages in this display group
+      fullVoiceAnswer = groupStages.map((s) => s.spokenText).filter(Boolean).join(" ") + completionOffer;
+    } else {
+      fullVoiceAnswer = safeStage.spokenText + completionOffer;
+    }
   }
 
   // When all stages are ready, send every panel simultaneously so the screen
@@ -529,9 +567,12 @@ function buildStagePayload({
       summary: sanitizeText(item?.screenText, 240, ""),
       title: sanitizeText(item?.title, 120, "Health insight"),
       stageIndex: Number(item?.stageIndex || idx),
+      display_group: stageDisplayGroups[idx] ?? Number(item?.stageIndex || idx),
     })),
     stageCount,
+    screenCount: uniqueDisplayGroups.length,
     activeStageIndex: normalizedCurrentIndex,
+    activeDisplayGroup: currentDisplayGroup,
     activePanelId: panel.panel_id,
     chartContext: {
       requestId: requestId || safeStage.requestId || null,

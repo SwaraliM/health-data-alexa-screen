@@ -24,6 +24,7 @@ const {
   extractHeatmapData,
   extractDonutData,
   computeAverage,
+  formatDateLabel,
   formatMetricName,
   deriveUnit,
   deriveMax,
@@ -725,7 +726,93 @@ function buildFallbackChart(rows, primaryMetric) {
   };
 }
 
+/**
+ * Build a columnar raw-data payload for a stage to send to the V4 LLM executor.
+ * The LLM receives this instead of viable_strategies and generates the full ECharts option.
+ *
+ * @param {object} stageSpec        - from planner: { sub_analysis_ids, focusMetrics, ... }
+ * @param {object} multiWindowData  - { [saId]: { normalizedTable, metrics_needed, window } }
+ * @param {object} evidenceBundle   - from evidenceComputer: { sub_analyses, ... }
+ * @returns {{ dates, metrics, stats, row_count, focus_metrics }}
+ */
+function buildRawDataPayload(stageSpec = {}, multiWindowData = {}, evidenceBundle = {}) {
+  const saIds = Array.isArray(stageSpec?.sub_analysis_ids)
+    ? stageSpec.sub_analysis_ids
+    : Object.keys(multiWindowData).slice(0, 2);
+
+  const focusMetrics = Array.isArray(stageSpec?.focusMetrics) && stageSpec.focusMetrics.length
+    ? stageSpec.focusMetrics.slice(0, 6)
+    : [];
+
+  // Collect all rows across referenced sub-analyses, sorted by timestamp
+  const allRows = [];
+  for (const saId of saIds) {
+    const sa = multiWindowData[saId];
+    if (!sa?.normalizedTable) continue;
+    allRows.push(...sa.normalizedTable);
+  }
+  // Deduplicate by timestamp and sort ascending
+  const seen = new Set();
+  const sortedAllRows = allRows
+    .filter((row) => {
+      const ts = String(row?.timestamp || "");
+      if (!ts || seen.has(ts)) return false;
+      seen.add(ts);
+      return true;
+    })
+    .sort((a, b) => {
+      const tsA = String(a?.timestamp || "");
+      const tsB = String(b?.timestamp || "");
+      return tsA < tsB ? -1 : tsA > tsB ? 1 : 0;
+    });
+
+  // Cap at 60 rows — if more, weekly grouping isn't needed here since the planner
+  // already constrains time windows; we just truncate to keep tokens reasonable.
+  const MAX_ROWS = 60;
+  const rows = sortedAllRows.slice(0, MAX_ROWS);
+
+  const dates = rows.map((row) => formatDateLabel(String(row?.timestamp || "")));
+
+  // Build columnar metrics — only focusMetrics (or all available if none specified)
+  const availableMetrics = focusMetrics.length
+    ? focusMetrics
+    : Array.from(new Set(rows.flatMap((row) => Object.keys(row).filter((k) => k !== "timestamp")))).slice(0, 6);
+
+  const metrics = {};
+  for (const metricKey of availableMetrics) {
+    metrics[metricKey] = rows.map((row) => toNumber(row?.[metricKey]));
+  }
+
+  // Pull pre-computed stats from evidenceBundle — no recomputation
+  const stats = {};
+  for (const metricKey of availableMetrics) {
+    // Look through all sub-analyses for stats on this metric
+    for (const saId of saIds) {
+      const saStats = evidenceBundle?.sub_analyses?.[saId]?.stats?.[metricKey];
+      if (saStats && typeof saStats === "object") {
+        stats[metricKey] = {
+          mean:  toNumber(saStats.mean),
+          min:   toNumber(saStats.min),
+          max:   toNumber(saStats.max),
+          trend: String(saStats.trend_direction || saStats.trend || "").trim() || null,
+          unit:  String(saStats.unit || "").trim() || null,
+        };
+        break;
+      }
+    }
+  }
+
+  return {
+    dates,
+    metrics,
+    stats,
+    row_count: rows.length,
+    focus_metrics: availableMetrics,
+  };
+}
+
 module.exports = {
   generateViableStrategies,
   buildChartFromStrategy,
+  buildRawDataPayload,
 };
