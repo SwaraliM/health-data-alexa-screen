@@ -37,7 +37,7 @@ const AuthCallback = () => {
           body: new URLSearchParams({
             client_id: clientId,
             grant_type: "authorization_code",
-            redirect_uri: "https://noncryptical-weston-entomophagous.ngrok-free.dev/auth-callback",
+            redirect_uri: "https://health-data-alexa-screen.onrender.com/auth-callback",
             code: code,
           }),
         });

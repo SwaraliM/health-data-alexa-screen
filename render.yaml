@@ -14,8 +14,6 @@ services:
         sync: false
       - key: FITBIT_CLIENT_SECRET
         sync: false
-      - key: API_URL
-        sync: false
       - key: USE_LLM_OPTION_GENERATION
         value: "true"
       - key: OPENAI_EXECUTOR_V4_MODEL
