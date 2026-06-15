@@ -1,11 +1,14 @@
 "use strict";
 
+const { classifyChartFollowup } = require("./chartQnaClassifier");
+
 const POLL_UTTERANCES = new Set([
   "yes", "resume", "wait", "ok", "okay", "sure", "alright", "yeah", "yep",
   "go ahead", "continue", "keep going", "go on",
 ]);
 
-const HEALTH_KEYWORD_PATTERN = /\b(sleep|heart|steps|calories|weight|activity|exercise|blood|pressure|rate|oxygen|spo2|walk|run|distance|floor|bmi|stress|breath|respiratory|resting|deep|rem|light|awake|health|fitbit|data|trend|average|goal|hrv|pulse|wellness|recovery)\b/i;
+// Include common verb forms (e.g. "slept" != "sleep") or long questions get mis-classified as ignore_chatter.
+const HEALTH_KEYWORD_PATTERN = /\b(sleep|slept|sleeping|heart|steps|calories|weight|activity|exercise|blood|pressure|rate|oxygen|spo2|walk|walked|walking|run|ran|running|distance|floor|floors|bmi|stress|breath|respiratory|resting|deep|rem|light|awake|health|fitbit|data|trend|average|goal|hrv|pulse|wellness|recovery|compare|compared|comparison)\b/i;
 const HEALTH_QUESTION_PREFIX_PATTERN = /^(what|how|when|why|where|which|who|tell|show|give|compare|analy[sz]e|summari[sz]e|explain|did|does|do|is|are|was|were|can|could|should|would|will)\b/i;
 const HEALTH_QUESTION_CONTEXT_PATTERN = /\b(my|last|this|today|yesterday|week|month|trend|average|compare|chart|data|report|summary|insight|score)\b/i;
 const SMALL_TALK_ACK_PATTERN = /^(thanks|thank you|okay thanks|ok thanks|sounds good|got it|i'm good|i am good|haha|ha ha|lol|nice|cool|great|alright thanks|appreciate it)$/i;
@@ -104,6 +107,17 @@ function isSmallTalkAck(text = "") {
   return false;
 }
 
+const CHART_VISIBLE_MODES = new Set(["ready_to_deliver", "awaiting_continue", "complete"]);
+const QUESTION_PREFIX_PATTERN = /^(what|why|which|how|when|tell|show|explain|is|are|did|does|do)\b/i;
+
+function looksLikeQuestion(text = "") {
+  const cleaned = normalizeUtterance(text);
+  if (!cleaned) return false;
+  if (cleaned.split(" ").length < 3) return false;
+  if (/\?/.test(String(text || ""))) return true;
+  return QUESTION_PREFIX_PATTERN.test(cleaned);
+}
+
 function hasRemainingStages(interaction = null) {
   if (!interaction) return false;
   const currentIndex = Math.max(0, Number(interaction.currentStageIndex) || 0);
@@ -111,10 +125,11 @@ function hasRemainingStages(interaction = null) {
   return stageCount > 0 && currentIndex < stageCount - 1;
 }
 
-function resolveAlexaTurn({
+async function resolveAlexaTurn({
   utterance = "",
   isPolling = false,
   interaction = null,
+  chartContext = null,
 } = {}) {
   const resolvedUtterance = sanitizeText(utterance, 320, "");
   const normalizedUtterance = normalizeUtterance(resolvedUtterance);
@@ -190,6 +205,37 @@ function resolveAlexaTurn({
     };
   }
 
+  // Chart follow-up detection: when a chart is visible and the utterance
+  // looks like a question, ask the LLM classifier before deciding whether
+  // to start a new pipeline or answer in-context.
+  if (
+    hasActiveInteraction &&
+    CHART_VISIBLE_MODES.has(mode) &&
+    chartContext &&
+    looksLikeQuestion(normalizedUtterance) &&
+    !SMALL_TALK_ACK_PATTERN.test(normalizedUtterance)
+  ) {
+    try {
+      const classification = await classifyChartFollowup(normalizedUtterance, {
+        ...chartContext,
+        original_question: interaction.originalQuestion || "",
+      });
+      if (classification.turn_type === "chart_qna" || classification.turn_type === "chart_qna_with_fetch") {
+        return {
+          kind: "chart_qna",
+          action: "chart_qna",
+          interruptsActiveInteraction: false,
+          resolvedUtterance,
+          supplementalMetrics: Array.isArray(classification.supplemental_metrics)
+            ? classification.supplemental_metrics
+            : [],
+        };
+      }
+    } catch (_) {
+      // Classifier failed — fall through to existing logic
+    }
+  }
+
   if (isExplicitHealthQuestion(normalizedUtterance)) {
     return {
       kind: "new_health_question",
@@ -249,6 +295,7 @@ module.exports = {
   detectNavigationAction,
   hasHealthSignal,
   isExplicitHealthQuestion,
+  looksLikeQuestion,
   normalizeControlAction,
   normalizeUtterance,
   resolveAlexaTurn,

@@ -34,8 +34,25 @@ const MAX_TAKEAWAY = 220;
 const MAX_FOLLOW_UP = 4;
 const MAX_SERIES = 4;
 const MAX_LIST_ITEMS = 8;
-const TIME_AXIS_LABEL_RE = /^(?:\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\s?(?:AM|PM))$/i;
+
+// Accent colours for metric card values (mirrors echartsTheme PALETTE)
+const CARD_COLORS = [
+  "#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#06B6D4",
+];
+
+// Formats a decimal-hours value as "x h y min" (e.g. 7.2 → "7 h 12 min", 8.0 → "8 h")
+const formatHoursAsHMin = (val) => {
+  if (typeof val !== "number" || !Number.isFinite(val)) return String(val ?? "");
+  const h = Math.floor(val);
+  const m = Math.round((val - h) * 60);
+  if (m === 0) return `${h} h`;
+  return `${h} h ${m} min`;
+};
+const TIME_AXIS_LABEL_RE = /^(?:\d{1,2}:\d{2}(?::\d{2})?(?:\s?(?:AM|PM))?|\d{1,2}\s?(?:AM|PM))$/i;
 const ZERO_ONLY_LABEL_RE = /^0(?:\.0+)?$/;
+const SLEEP_WORD_RE = /(sleep|wake|deep|light|rem)/i;
+const MINUTE_WORD_RE = /\b(min|mins|minute|minutes)\b/i;
+const HOURS_WORD_RE = /\b(h|hr|hrs|hour|hours)\b/i;
 
 const toNum = (value, fallback = 0) => {
   const n = Number(value);
@@ -52,7 +69,7 @@ const sanitizeStringArray = (values, maxItems = MAX_POINTS, maxLen = 24) => {
   return values.map((value) => sanitizeText(value, maxLen, "")).filter(Boolean).slice(0, maxItems);
 };
 
-const sanitizeAxisLabels = (values, desiredLength, maxLen = 24) => {
+const sanitizeAxisLabels = (values, desiredLength, maxLen = 32) => {
   if (!Array.isArray(values) || !values.length) return [];
   const safeLength = Number.isFinite(desiredLength) && desiredLength > 0
     ? Math.min(MAX_POINTS, desiredLength)
@@ -69,6 +86,64 @@ const sanitizeAxisLabels = (values, desiredLength, maxLen = 24) => {
 const sanitizeFollowUps = (values) => {
   if (!Array.isArray(values)) return [];
   return values.map((value) => sanitizeText(value, 80, "")).filter(Boolean).slice(0, MAX_FOLLOW_UP);
+};
+
+const shouldConvertSleepMinutesToHours = ({ title, yAxisName, seriesNames }) => {
+  const yAxisText = String(yAxisName || "");
+
+  // If the y-axis already says "hours/hrs/h" the data has been converted — never re-convert.
+  if (HOURS_WORD_RE.test(yAxisText)) return false;
+
+  // Sleep-word detection uses all available context (title can say "Sleep …").
+  const titleText = String(title || "");
+  const namesText = (Array.isArray(seriesNames) ? seriesNames : []).join(" ");
+  const hasSleepContext = SLEEP_WORD_RE.test(`${titleText} ${yAxisText} ${namesText}`);
+  if (!hasSleepContext) return false;
+
+  // Minute-word detection must NOT include the title: titles often retain "minutes"
+  // even after the data has already been converted, which would trigger a second
+  // divide-by-60 pass and produce values like "0 h 7 min".
+  const minuteChecks = `${yAxisText} ${namesText}`;
+  return MINUTE_WORD_RE.test(minuteChecks) || /\bmin\b/i.test(minuteChecks);
+};
+
+const convertSeriesValuesToHours = (series = [], chartType) => {
+  if (!Array.isArray(series)) return [];
+  if (chartType === "scatter") {
+    return series.map((item) => ({
+      ...item,
+      data: Array.isArray(item?.data)
+        ? item.data.map((point) => (
+          Array.isArray(point) && point.length >= 2
+            ? [point[0], Number.isFinite(Number(point[1])) ? Number(point[1]) / 60 : point[1]]
+            : point
+        ))
+        : item?.data,
+    }));
+  }
+  return series.map((item) => ({
+    ...item,
+    data: Array.isArray(item?.data)
+      ? item.data.map((value) => (Number.isFinite(Number(value)) ? Number(value) / 60 : value))
+      : item?.data,
+  }));
+};
+
+const inferXAxisName = ({ xLabels = [], rawXAxis = {} }) => {
+  if (sanitizeText(rawXAxis?.name, 32, "")) return sanitizeText(rawXAxis.name, 32, "");
+  const hasTimeAxis = xLabels.filter((label) => TIME_AXIS_LABEL_RE.test(label)).length >= 2;
+  return hasTimeAxis ? "Time" : "Date";
+};
+
+const inferYAxisName = ({ existingName, rawOption, convertToHours }) => {
+  const sanitizedExisting = sanitizeText(existingName, 32, "");
+  if (convertToHours && MINUTE_WORD_RE.test(sanitizedExisting)) return "Hours";
+  if (sanitizedExisting) return sanitizedExisting;
+  if (convertToHours) return "Hours";
+
+  const unit = sanitizeText(rawOption?.unit || rawOption?.yUnit, 20, "");
+  if (unit) return unit;
+  return "Value";
 };
 
 function fallbackChartSpec(title = "Your Health Data", takeaway = "I could not prepare that chart safely.") {
@@ -114,25 +189,84 @@ function sanitizeSeries(series = [], type = "line") {
 }
 
 function sanitizeListSummaryOption(rawOption = {}, spec = {}) {
-  const items = (Array.isArray(rawOption.items) ? rawOption.items : Array.isArray(spec.items) ? spec.items : [])
+  // Prefer structured cards (label + value + subvalue) from the backend option.
+  // Fall back to parsing "Label: Value" strings from items when cards are absent.
+  const rawCards = Array.isArray(rawOption.cards) ? rawOption.cards
+    : Array.isArray(spec.cards) ? spec.cards : [];
+  const cards = rawCards
+    .map((c) => ({
+      label: sanitizeText(c?.label, 48, ""),
+      value: sanitizeText(c?.value, 32, ""),
+      sub: sanitizeText(c?.subvalue, 32, ""),
+    }))
+    .filter((c) => c.label || c.value)
+    .slice(0, 6);
+
+  const rawItems = (Array.isArray(rawOption.items) ? rawOption.items
+    : Array.isArray(spec.items) ? spec.items : [])
     .map((item) => sanitizeText(item, 96, ""))
     .filter(Boolean)
     .slice(0, MAX_LIST_ITEMS);
-  const text = items.length ? items.map((item) => `• ${item}`).join("\n") : "• No details available";
-  return {
-    items,
-    graphic: [{
-      type: "text",
-      left: "5%",
-      top: "10%",
-      style: {
-        text,
-        fontSize: 16,
-        lineHeight: 28,
-        fill: "#1E293B",
-      },
-    }],
-  };
+
+  const displayCards = cards.length > 0
+    ? cards
+    : rawItems.length > 0
+      ? rawItems.map((item) => {
+          const ci = item.indexOf(":");
+          return ci > -1
+            ? { label: item.slice(0, ci).trim(), value: item.slice(ci + 1).trim(), sub: "" }
+            : { label: item, value: "", sub: "" };
+        })
+      : [{ label: "No data available", value: "", sub: "" }];
+
+  // Grid layout: 1 → single centered; 2 → side-by-side; 3-6 → 2-column grid
+  const count = displayCards.length;
+  const cols = count === 1 ? 1 : 2;
+  const rows = Math.ceil(count / cols);
+
+  // Font sizes scale with the number of cards so they fill the available space
+  const labelSize = count === 1 ? 24 : count <= 2 ? 20 : 17;
+  const valueSize = count === 1 ? 64 : count <= 2 ? 52 : count <= 4 ? 44 : 36;
+  const subSize = count === 1 ? 16 : 13;
+  const lineGap = count === 1 ? 14 : 10;
+
+  const graphic = displayCards.map((card, idx) => {
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+
+    // Centre of this cell as percentages of the canvas
+    const left = `${5 + (col + 0.5) * (90 / cols)}%`;
+    const top  = `${10 + (row + 0.5) * (80 / rows)}%`;
+    const accentColor = CARD_COLORS[idx % CARD_COLORS.length];
+
+    // Build text nodes and compute total height for vertical centering
+    const nodes = [];
+    if (card.label) nodes.push({ text: card.label.toUpperCase(), size: labelSize, weight: 600, color: "#94A3B8" });
+    if (card.value) nodes.push({ text: card.value, size: valueSize, weight: 700, color: accentColor });
+    if (!card.value && nodes.length) {
+      // Label-only item: use bigger font and stronger colour
+      nodes[0].size  = Math.round(valueSize * 0.55);
+      nodes[0].color = "#1E293B";
+      nodes[0].weight = 500;
+    }
+    if (card.sub) nodes.push({ text: card.sub, size: subSize, weight: 400, color: "#CBD5E1" });
+
+    const totalH = nodes.reduce((sum, n, i) => sum + n.size + (i < nodes.length - 1 ? lineGap : 0), 0);
+    let y = -Math.round(totalH / 2);
+
+    const children = nodes.map((n) => {
+      const el = {
+        type: "text",
+        style: { text: n.text, fontSize: n.size, fontWeight: n.weight, fill: n.color, textAlign: "center", x: 0, y },
+      };
+      y += n.size + lineGap;
+      return el;
+    });
+
+    return { type: "group", left, top, children };
+  });
+
+  return { items: rawItems, graphic };
 }
 
 function sanitizeGaugeOption(rawOption = {}) {
@@ -182,8 +316,15 @@ function sanitizePieOption(rawOption = {}) {
   };
 }
 
+function sanitizeSingleYAxis(rawYAxis = {}) {
+  return {
+    ...(rawYAxis && typeof rawYAxis === "object" ? rawYAxis : {}),
+    type: rawYAxis?.type || "value",
+    name: sanitizeText(rawYAxis?.name, 32, ""),
+  };
+}
+
 function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
-  const yAxisName = sanitizeText(rawOption?.yAxis?.name, 20, "");
   const typeMap = {
     bar: "bar",
     grouped_bar: "bar",
@@ -205,7 +346,7 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
   const rawXAxis = rawOption?.xAxis && typeof rawOption.xAxis === "object" ? { ...rawOption.xAxis } : {};
   const rawAxisLabels = Array.isArray(rawXAxis.data) ? rawXAxis.data : [];
   const xLabels = rawAxisLabels.length
-    ? sanitizeAxisLabels(rawAxisLabels, maxSeriesLength, 22)
+    ? sanitizeAxisLabels(rawAxisLabels, maxSeriesLength, 32)
     : Array.from({ length: maxSeriesLength }, (_, idx) => String(idx + 1));
   const hasTimeAxis = xLabels.filter((label) => TIME_AXIS_LABEL_RE.test(label)).length >= 2;
   const axisLabel = rawXAxis.axisLabel && typeof rawXAxis.axisLabel === "object" ? { ...rawXAxis.axisLabel } : undefined;
@@ -213,17 +354,83 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
     rawXAxis.axisLabel = {
       ...(axisLabel || {}),
       hideOverlap: axisLabel?.hideOverlap ?? true,
+      rotate: axisLabel?.rotate ?? (xLabels.length > 12 ? 30 : 0),
+    };
+  } else if (xLabels.some((l) => l.length > 10) && xLabels.length > 5) {
+    rawXAxis.axisLabel = {
+      ...(axisLabel || {}),
+      rotate: axisLabel?.rotate ?? 25,
     };
   }
 
   const series = parsedSeries.map((item) => ({
     ...item,
     stack: chartType === "stacked_bar" ? item.stack || "total" : undefined,
-    areaStyle: chartType === "area" || chartType === "timeline" ? { opacity: 0.16 } : item.areaStyle,
+    areaStyle: chartType === "area" || chartType === "timeline" ? { opacity: 0.16 } : undefined,
   }));
 
+  const seriesNames = series.map((item) => sanitizeText(item?.name, 40, "")).filter(Boolean);
+  const primaryYAxisName = Array.isArray(rawOption?.yAxis)
+    ? rawOption?.yAxis?.[0]?.name
+    : rawOption?.yAxis?.name;
+  const convertSleepMinutesToHours = shouldConvertSleepMinutesToHours({
+    title: rawOption?.title || "",
+    yAxisName: primaryYAxisName,
+    seriesNames,
+  });
+
+  // Support dual-axis: yAxis can be an array (e.g. two metrics with different scales)
+  const rawYAxis = rawOption?.yAxis;
+  // Formatter applied to y-axis tick labels and tooltip when sleep minutes are converted to hours.
+  // Displays decimal hours as "x h y min" (e.g. 7.2 → "7 h 12 min").
+  const sleepHourFormatter = convertSleepMinutesToHours ? formatHoursAsHMin : undefined;
+  const buildYAxis = (ax) => {
+    const sanitized = sanitizeSingleYAxis(ax);
+    const result = {
+      ...sanitized,
+      name: inferYAxisName({ existingName: sanitized.name, rawOption, convertToHours: convertSleepMinutesToHours }),
+      axisLabel: sanitized.axisLabel,
+    };
+    if (sleepHourFormatter) {
+      result.axisLabel = { ...(result.axisLabel || {}), formatter: sleepHourFormatter };
+    }
+    return result;
+  };
+  const yAxis = Array.isArray(rawYAxis)
+    ? rawYAxis.slice(0, 2).map(buildYAxis)
+    : buildYAxis(rawYAxis || {});
+
+  const xAxisName = inferXAxisName({ xLabels, rawXAxis });
+  const xAxisWithName = chartType === "scatter"
+    ? {
+      ...(rawOption?.xAxis || {}),
+      type: "value",
+      name: sanitizeText(rawOption?.xAxis?.name, 32, "") || "Value",
+    }
+    : { ...rawXAxis, type: "category", data: xLabels, name: xAxisName };
+
+  const normalizedSeries = (convertSleepMinutesToHours
+    ? convertSeriesValuesToHours(series, chartType)
+    : series
+  ).map((s) => {
+    if (!convertSleepMinutesToHours) return s;
+    // Apply "x h y min" formatter to bar/line data-point labels so they match the axis
+    return {
+      ...s,
+      label: {
+        ...(s.label || {}),
+        formatter: (params) => formatHoursAsHMin(
+          Array.isArray(params?.value) ? params.value[1] : params?.value
+        ),
+      },
+    };
+  });
+
   return {
-    tooltip: { trigger: chartType === "scatter" ? "item" : "axis" },
+    tooltip: {
+      trigger: chartType === "scatter" ? "item" : "axis",
+      ...(sleepHourFormatter ? { valueFormatter: sleepHourFormatter } : {}),
+    },
     color: Array.isArray(rawOption?.color) ? rawOption.color.slice(0, 10) : undefined,
     legend: rawOption?.legend && typeof rawOption.legend === "object"
       ? { ...rawOption.legend }
@@ -231,11 +438,9 @@ function sanitizeCartesianOption(rawOption = {}, chartType = "bar") {
         ? { top: 8 }
         : undefined,
     grid: rawOption?.grid && typeof rawOption.grid === "object" ? { ...rawOption.grid } : undefined,
-    xAxis: chartType === "scatter"
-      ? { ...(rawOption?.xAxis || {}), type: "value", name: sanitizeText(rawOption?.xAxis?.name, 20, "") }
-      : { ...rawXAxis, type: "category", data: xLabels },
-    yAxis: { ...(rawOption?.yAxis || {}), type: rawOption?.yAxis?.type || "value", name: yAxisName },
-    series,
+    xAxis: xAxisWithName,
+    yAxis,
+    series: normalizedSeries,
   };
 }
 
@@ -332,7 +537,7 @@ function sanitizeCandlestickOption(rawOption = {}) {
   return {
     tooltip: { trigger: "axis" },
     xAxis: { type: "category", data: labels },
-    yAxis: { type: "value", name: sanitizeText(rawOption?.yAxis?.name, 20, "") },
+    yAxis: { type: "value", name: sanitizeText(rawOption?.yAxis?.name, 32, "") },
     series: [{ type: "candlestick", data }],
   };
 }

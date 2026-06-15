@@ -312,10 +312,34 @@ async function handleLambdaRequest(req, res) {
   }
 
   const interaction = await orchestrator.getInteractionState(username);
-  const resolvedTurn = resolveAlexaTurn({
+
+  // Build chart context for the chart_qna classifier when a stage is visible
+  let chartContext = null;
+  if (interaction.mode && interaction.mode !== "idle" && interaction.bundleId) {
+    try {
+      const runtime = await orchestrator.getActiveRuntime(username);
+      const currentStage = runtime?.stages?.[runtime?.currentIndex] || null;
+      if (currentStage) {
+        chartContext = {
+          title: currentStage.title || "",
+          chart_type: currentStage.chartSpec?.chart_type || currentStage.chart_spec?.chart_type || "",
+          metrics: currentStage.metadata?.stageMetrics
+            || currentStage.chartSpec?.focusMetrics
+            || [],
+          time_scope: interaction.originalQuestion || "",
+          stage_index: runtime.currentIndex,
+          stage_count: runtime.stages.length || interaction.stageCount || 1,
+          spoken_text: currentStage.spokenText || currentStage.spoken_text || "",
+        };
+      }
+    } catch (_) { /* best-effort */ }
+  }
+
+  const resolvedTurn = await resolveAlexaTurn({
     utterance: rawText,
     isPolling,
     interaction,
+    chartContext,
   });
 
   routerLog("lambda", "resolved turn", {
@@ -349,6 +373,23 @@ async function handleLambdaRequest(req, res) {
       routerError("lambda", "navigation failed", error);
       return lambdaReply("I had trouble navigating. Please try again.");
     }
+  }
+
+  if (resolvedTurn.kind === "chart_qna") {
+    try {
+      const result = await orchestrator.answerChartQuestion({
+        username,
+        question: rawText,
+        supplementalMetrics: resolvedTurn.supplementalMetrics || [],
+      });
+      if (result?.voice_answer) {
+        return lambdaReply(result.voice_answer);
+      }
+    } catch (error) {
+      routerError("lambda", "chart_qna failed", error);
+    }
+    // Fallback: treat as resume so user isn't left hanging
+    return lambdaReply("I'm not sure about that from this chart. You can say next chart, or ask a new health question.");
   }
 
   if (resolvedTurn.kind === "resume_pending" || resolvedTurn.kind === "small_talk_ack" || resolvedTurn.kind === "ignore_chatter") {

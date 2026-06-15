@@ -201,6 +201,32 @@ describe("Smart screen page smoke tests", () => {
     expect(document.querySelector(".hd-ready-banner.slow")).toBeTruthy();
   });
 
+  test("hides completed and ready_to_resume status banners", async () => {
+    render(
+      <MemoryRouter>
+        <QnAPage />
+      </MemoryRouter>
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("visualStatusUpdate", {
+        detail: { type: "completed", message: "Your health analysis is ready." },
+      }));
+    });
+
+    expect(screen.queryByText("Your health analysis is ready.")).toBeNull();
+    expect(document.querySelector(".hd-ready-banner")).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("visualStatusUpdate", {
+        detail: { type: "ready_to_resume", message: "Ask me anything about your results." },
+      }));
+    });
+
+    expect(screen.queryByText("Ask me anything about your results.")).toBeNull();
+    expect(document.querySelector(".hd-ready-resume-page")).toBeNull();
+  });
+
   test("auto-speaks a ready answer once per request", async () => {
     jest.useFakeTimers();
     sessionStorage.setItem(
@@ -435,9 +461,8 @@ describe("Smart screen page smoke tests", () => {
     expect(screen.getAllByTestId("mock-echart")).toHaveLength(1);
     expect(document.querySelector(".hd-main-single-panel")).toBeTruthy();
     expect(document.querySelector(".hd-panel-grid-single_focus")).toBeTruthy();
-    expect(screen.getByText("Chart 3 of 3")).toBeTruthy();
-    expect(screen.getByText("Say: show more")).toBeTruthy();
-    expect(screen.getByText("Say: go back")).toBeTruthy();
+    expect(screen.queryByText(/Chart \d+ of \d+/)).toBeNull();
+    expect(document.querySelector(".hd-voice-hints")).toBeNull();
   });
 
   test("renders four-panel payload with panel-count-aware grid class", async () => {

@@ -13,19 +13,20 @@
  *
  * Layout budget for single-panel mode (px):
  * Shell padding (top+bottom)   32
- * Topbar                      56
- * Main padding (top+bottom)   28
- * Ready banner (buffer)       48
- * Report header              120
- * Voice hints                 62
- * Gaps (3 x 12)               36
+ * Topbar                       56
+ * Main padding (top+bottom)    28
+ * Report header (title+desc)   90  (stage counter removed)
+ * Gap (1 x 12)                 12
  * ------------------------------
- * Chrome total               382
- * Chart area                 calc(100vh - 382px)
+ * Chrome total                218
+ * Chart area                  calc(100vh - 218px)
+ *
+ * Note: voice hints (62px), ready banner buffer (48px), and stage counter
+ * were removed from the UI in a prior change, reducing chrome from 382px.
  */
 
 .hd-main-single-panel {
-  --hd-single-panel-chrome: 382px;
+  --hd-single-panel-chrome: 220px;
   --hd-single-panel-chart-height: calc(100vh - var(--hd-single-panel-chrome));
   --hd-single-panel-min-chart: 420px;
 }

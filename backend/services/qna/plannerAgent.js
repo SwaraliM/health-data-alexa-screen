@@ -35,6 +35,16 @@ function normalizeStageTypes(stageTypes = []) {
   return out.length ? out : ["overview", "trend", "takeaway"];
 }
 
+function ensureDisplayGroup(stagesPlan = []) {
+  return (Array.isArray(stagesPlan) ? stagesPlan : []).map((stage, idx) => ({
+    ...stage,
+    stageIndex: Number.isFinite(Number(stage?.stageIndex)) ? Number(stage.stageIndex) : idx,
+    display_group: Number.isFinite(Number(stage?.display_group))
+      ? Number(stage.display_group)
+      : (Number.isFinite(Number(stage?.displayGroup)) ? Number(stage.displayGroup) : idx),
+  }));
+}
+
 function fallbackPlannerResult({ question, enrichedIntent }) {
   const metrics = expandMetricSetForQuestion(question, resolveRequestedMetrics(question)).slice(0, 8);
   const timeScope = sanitizeText(enrichedIntent?.time_range, 40, "last_7_days") || "last_7_days";
@@ -101,7 +111,7 @@ async function planQuestion({ question, username, enrichedIntent = null, userCon
     const expandedMetrics = expandMetricSetForQuestion(safeQuestion, normalizedMetrics).slice(0, 8);
 
     const stagesPlan = Array.isArray(plan.stages_plan || plan.stagesPlan) && (plan.stages_plan || plan.stagesPlan).length
-      ? (plan.stages_plan || plan.stagesPlan)
+      ? ensureDisplayGroup(plan.stages_plan || plan.stagesPlan)
       : fallbackPlannerResult({ question: safeQuestion, enrichedIntent }).stagesPlan;
 
     const result = {

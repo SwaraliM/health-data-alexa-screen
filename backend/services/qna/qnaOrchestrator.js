@@ -16,12 +16,15 @@ const User = require("../../models/Users");
 const { classifyIntent } = require("./intentClassifierService");
 const { planQuestion } = require("./plannerAgent");
 const { generateAllStages } = require("./executorAgent");
-const { fetchAndComputeEvidence } = require("./dataFetchService");
+const { fetchAndComputeEvidence, fetchMultiWindowData } = require("./dataFetchService");
+const { buildEvidenceBundle } = require("../analytics/evidenceComputer");
 const {
   buildStageResult,
   buildPendingResponse,
   buildTerminalResponse,
+  buildChartQnaResult,
 } = require("./responseBuilder");
+const { answerChartQuestion: chartQnaAgentAnswer } = require("./chartQnaAgent");
 const {
   appendStage,
   archiveOlderActiveBundles,
@@ -632,6 +635,130 @@ async function resumePending(username) {
   return null;
 }
 
+// ── answerChartQuestion: voice-only follow-up about the current chart ────────
+
+/**
+ * Answer a follow-up question about the currently displayed chart.
+ * Does NOT mutate stage index, bundle state, or emit any frontend events.
+ *
+ * When supplementalMetrics is provided, fetches those 1-2 extra metrics
+ * from the same time window as the current stage, merges them into the
+ * existing evidence, and persists the enriched data back to the bundle
+ * so future chart_qna turns also benefit.
+ *
+ * @param {object} opts
+ * @param {string} opts.username
+ * @param {string} opts.question
+ * @param {string[]} [opts.supplementalMetrics] - 1-2 extra metric keys to fetch
+ * @returns {Promise<object>} { ok, voice_answer, chart_qna, ... }
+ */
+async function answerChartQuestion({ username, question, supplementalMetrics = [] } = {}) {
+  const safeUsername = normalizeUsername(username);
+  const safeQuestion = sanitizeText(question, 320, "");
+  const { job, bundle, stages, currentIndex } = await getActiveRuntime(safeUsername);
+
+  if (!bundle?.bundleId || !stages.length) {
+    return buildChartQnaResult({
+      voiceAnswer: "I don't have a chart to reference right now. Ask a health question first.",
+    });
+  }
+
+  const stage = stages[currentIndex] || stages[0];
+
+  // Load stored evidence and multiWindowData from the bundle document
+  const fullBundle = await getBundleById(bundle.bundleId);
+  let evidenceBundle = fullBundle?.evidenceBundle || null;
+  let multiWindowData = fullBundle?.multiWindowData || null;
+
+  // Supplemental fetch: bring in 1-2 extra metrics from the same time window
+  const metricsToFetch = Array.isArray(supplementalMetrics)
+    ? supplementalMetrics.filter(Boolean).slice(0, 2)
+    : [];
+
+  if (metricsToFetch.length > 0) {
+    // Determine time window: use the first stored sub-analysis window as the reference
+    const existingSa = multiWindowData ? Object.values(multiWindowData)[0] : null;
+    const timeScope = existingSa?.time_scope || fullBundle?.plannerOutput?.time_scope || "last_7_days";
+
+    // Filter out metrics already in the bundle
+    const existingMetrics = new Set(
+      Object.values(multiWindowData || {}).flatMap((sa) => sa.metrics_needed || [])
+    );
+    const newMetrics = metricsToFetch.filter((m) => !existingMetrics.has(m));
+
+    if (newMetrics.length > 0) {
+      try {
+        log("supplemental fetch for chart QnA", {
+          metrics: newMetrics,
+          timeScope,
+          bundleId: bundle.bundleId,
+        });
+
+        const { multiWindowData: supplementData } = await fetchMultiWindowData({
+          bundle: fullBundle,
+          username: safeUsername,
+          subAnalyses: [{
+            id: "chart_qna_supplement",
+            label: "Chart follow-up supplemental",
+            metrics_needed: newMetrics,
+            time_scope: timeScope,
+            analysis_type: "chart_qna_supplement",
+          }],
+        });
+
+        if (supplementData && Object.keys(supplementData).length > 0) {
+          // Merge into existing multiWindowData
+          const mergedWindowData = { ...(multiWindowData || {}), ...supplementData };
+          // Recompute evidence from the merged data
+          const mergedEvidence = buildEvidenceBundle(mergedWindowData);
+
+          // Persist enriched data back to the bundle so subsequent turns benefit
+          await saveBundlePatch(bundle.bundleId, {
+            multiWindowData: mergedWindowData,
+            evidenceBundle: mergedEvidence,
+          }).catch((err) => {
+            warn("could not persist supplemental data to bundle", {
+              message: err?.message || String(err),
+            });
+          });
+
+          multiWindowData = mergedWindowData;
+          evidenceBundle = mergedEvidence;
+        }
+      } catch (err) {
+        warn("supplemental fetch failed, proceeding with existing data", {
+          message: err?.message || String(err),
+          metrics: newMetrics,
+        });
+      }
+    }
+  }
+
+  const result = await chartQnaAgentAnswer({
+    question: safeQuestion,
+    stage,
+    evidenceBundle,
+    multiWindowData,
+  });
+
+  // Update lastTurnType without touching mode, stageIndex, or stageCount
+  if (job) {
+    ensureJobInteraction(job, { lastTurnType: "chart_qna" });
+  }
+
+  if (result?.ok && result?.voice_answer) {
+    return buildChartQnaResult({
+      voiceAnswer: result.voice_answer,
+      requestId: job?.interaction?.requestId || null,
+    });
+  }
+
+  return buildChartQnaResult({
+    voiceAnswer: "I'm not sure about that from this chart.",
+    requestId: job?.interaction?.requestId || null,
+  });
+}
+
 // ── clearRuntimeState: cleanup ───────────────────────────────────────────────
 
 function clearRuntimeState(username = null) {
@@ -645,9 +772,11 @@ function clearRuntimeState(username = null) {
 // ── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
+  getActiveRuntime,
   getInteractionState,
   handleQuestion,
   handleNavigation,
+  answerChartQuestion,
   markStageDelivered,
   resumePending,
   clearRuntimeState,

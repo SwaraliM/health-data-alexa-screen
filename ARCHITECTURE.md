@@ -27,7 +27,7 @@ Intent Classifier (GPT)         configs/agentConfigs.js: INTENT_CLASSIFIER_SYSTE
     ↓ enrichedIntent { inferred_metrics, time_range, display_label, ... }
 Planner V2 (GPT)                services/qna/plannerAgent.js
     ↓ sub_analyses [ { id, label, metrics_needed, time_scope, analysis_type } ]
-    ↓ stages_plan [ { stageIndex, sub_analysis_ids, visualization_intent, chartType, title, goal } ]
+    ↓ stages_plan [ { stageIndex, sub_analysis_ids, visualization_intent, chartType, title, goal, display_group } ]
 Multi-Window Fetch + Evidence   services/qna/dataFetchService.js → fetchAndComputeEvidence()
     ↓ multiWindowData { [saId]: { normalizedTable, window, metrics } }
     ↓ evidenceBundle { sub_analyses: { stats, anomalies }, cross_analysis: { deltas, correlations } }
@@ -47,11 +47,13 @@ Response to Alexa               routers/alexaRouter.js
 | File | Role |
 |---|---|
 | `backend/routers/alexaRouter.js` | Lambda/browser compat router — resolves Alexa turns, starts/resumes/navigation-dispatches, and performs atomic chart+narration delivery |
-| `backend/services/qna/qnaOrchestrator.js` | 3-step pipeline coordinator plus per-user interaction state; exports `handleQuestion`, `handleNavigation`, `resumePending`, `getInteractionState`, `markStageDelivered` |
-| `backend/services/qna/alexaTurnResolver.js` | Alexa-only turn classification: `new_health_question`, `resume_pending`, `navigation`, `small_talk_ack`, `ignore_chatter`, `cancel_reset`, `no_active_context_fallback` |
+| `backend/services/qna/qnaOrchestrator.js` | 3-step pipeline coordinator plus per-user interaction state; exports `handleQuestion`, `handleNavigation`, `answerChartQuestion`, `resumePending`, `getInteractionState`, `getActiveRuntime`, `markStageDelivered` |
+| `backend/services/qna/alexaTurnResolver.js` | Alexa-only turn classification (async): `new_health_question`, `resume_pending`, `navigation`, `small_talk_ack`, `ignore_chatter`, `cancel_reset`, `no_active_context_fallback`, `chart_qna`. When a chart is visible and the utterance looks like a question, calls the chart QnA classifier LLM before routing. Health signals include common verb forms (e.g. **slept**, **walking**) so phrases like “how I slept this week” are not misclassified as `ignore_chatter`. |
+| `backend/services/qna/chartQnaClassifier.js` | LLM classifier (GPT-4o-mini) that decides whether a follow-up utterance is about the current chart (`chart_qna`) or a new health question. Falls back to `new_health_question` on any failure. |
+| `backend/services/qna/chartQnaAgent.js` | Lightweight LLM agent that answers chart follow-up questions using the stage's chart_data plus the bundle's stored evidence. No Fitbit fetch, no chart generation, no stage mutation. |
 | `backend/services/qna/dataFetchService.js` | All Fitbit data fetching + evidence computation; exports `fetchAndComputeEvidence()` |
-| `backend/services/qna/responseBuilder.js` | Response formatting; exports `buildStageResult`, `buildPendingResponse`, `buildTerminalResponse`, `buildLambdaResponse` |
-| `backend/services/qna/plannerAgent.js` | Runs planner LLM (V2 query decomposition); returns `sub_analyses[]` + soft `stages_plan[]` guidance and expands broad-domain metric bundles |
+| `backend/services/qna/responseBuilder.js` | Response formatting; exports `buildStageResult`, `buildPendingResponse`, `buildTerminalResponse`, `buildChartQnaResult`, `buildLambdaResponse` |
+| `backend/services/qna/plannerAgent.js` | Runs planner LLM (V2 query decomposition); returns `sub_analyses[]` + soft `stages_plan[]` guidance, then applies `ensureDisplayGroup` (integer normalization only — no grouping override). All chart layout decisions are made by the LLM via prompt examples. |
 | `backend/services/qna/executorAgent.js` | Generates one authored multi-chart bundle from evidence+strategy candidates, then normalizes it into ordered backend-owned stages |
 | `backend/services/qna/stageService.js` | Stage normalization, payload building, chart spec hydration, speech timing estimation, `chartAdvanceSchedule` generation. Each `chartAdvanceSchedule` entry now includes `narration_text` (the stage's `spokenText`) for frontend voice/screen sync. |
 | `backend/configs/agentConfigs.js` | All LLM prompts, JSON schemas, and shared constants |
@@ -116,11 +118,11 @@ The router is a pure request→response translator. All state lives in the orche
 
 Resolver outcomes:
 ```javascript
-resolveAlexaTurn(...) => {
+await resolveAlexaTurn(...) => {
   kind: "new_health_question" | "resume_pending" | "navigation" |
         "small_talk_ack" | "ignore_chatter" | "cancel_reset" |
-        "no_active_context_fallback",
-  action: "show_more" | "back" | "start_over" | "resume_pending" | "",
+        "no_active_context_fallback" | "chart_qna",
+  action: "show_more" | "back" | "start_over" | "resume_pending" | "chart_qna" | "",
 }
 ```
 
@@ -200,6 +202,36 @@ Alexa turns are resolved in the backend with active interaction context, not by 
 - explicit health-data language => starts a new bundle and interrupts the current one
 - `cancel`, `stop`, `never mind` => clear active interaction
 
+### Chart Q&A (Voice-Only Follow-up)
+
+While a chart is on screen, users can ask follow-up questions about it (e.g. "what do those points show", "which day had the most activity", "why did Wednesday spike", "did my heart rate drop on nights I slept well?"). These are answered with voice only — the chart on screen stays unchanged, and the stage index is not modified.
+
+**Classifier categories:** `chartQnaClassifier.js` returns one of three categories:
+- `chart_qna` — fully answerable from existing stored data
+- `chart_qna_with_fetch` — same chart context but requires 1-2 extra metrics from the same time window; classifier also returns `supplemental_metrics: string[]` (up to 2 canonical keys)
+- `new_health_question` — different topic/scope; triggers the full pipeline
+
+**Detection flow:**
+1. `resolveAlexaTurn` receives `chartContext` describing the current stage (title, chart_type, metrics, spoken_text).
+2. When all of the following are true, the LLM classifier is invoked:
+   - Active interaction with `mode` in `ready_to_deliver | awaiting_continue | complete`
+   - Utterance looks like a question (starts with what/why/which/how/etc. and is 3+ words)
+   - Not a navigation phrase, cancel, or small-talk acknowledgement
+3. `chartQnaClassifier.js` calls GPT-4o-mini and returns `chart_qna`, `chart_qna_with_fetch`, or `new_health_question`. Both chart-follow-up categories resolve to `kind: "chart_qna"` on the turn object; `chart_qna_with_fetch` additionally carries `supplementalMetrics: []` on the resolved turn.
+4. On `chart_qna`, the router calls `orchestrator.answerChartQuestion({ username, question, supplementalMetrics })` which:
+   - Loads the current stage + stored `evidenceBundle` + `multiWindowData` from MongoDB
+   - If `supplementalMetrics` is non-empty and those metrics are not already in the bundle, calls `fetchMultiWindowData` for those metrics using the current stage's time scope (no full pipeline, no planner, no chart generation)
+   - Merges the fetched data into the stored `multiWindowData` and recomputes `evidenceBundle` using `buildEvidenceBundle`
+   - Persists the enriched data back to the bundle (so subsequent follow-ups also benefit)
+   - Calls `chartQnaAgent.js` with the merged evidence to generate a 1-3 sentence voice answer
+   - Returns voice-only (no chart emit, no `markStageDelivered`, no stage index change)
+5. On classifier failure or timeout, defaults to `new_health_question` (no regression).
+6. If the supplemental fetch fails, the agent answers from the data it already has.
+
+**Supplemental metric allowlist:** `sleep_minutes`, `sleep_deep`, `sleep_rem`, `sleep_light`, `sleep_awake`, `sleep_efficiency`, `resting_hr`, `hrv`, `steps`, `calories`, `distance`, `floors`. Any metric outside this list returned by the classifier is silently dropped.
+
+**State invariants:** `activeJobs[user].currentChartIndex`, `bundle.currentStageIndex`, `userLastDeliveredStage`, and `userPollState` are all untouched during a chart_qna turn. Only `multiWindowData` and `evidenceBundle` in the MongoDB bundle document may be extended.
+
 ### Browser Path (Unchanged)
 
 Browser-originated requests (`POST /browser-query`) still use auto-advance with browser TTS. The `chartAdvanceSchedule` is stripped at the router level. `buildCombinedVoiceAnswer()` and timer-based chart advancement in `QnAPage.js` remain available for browser use.
@@ -219,6 +251,90 @@ At least one stage in a 3-4 stage plan explores a **relationship** between healt
 The executor uses evidence bundle correlations (pearson_r, interpretation) to narrate cross-domain insights:
 - "On days you were more active, your sleep tended to be deeper and more restorative."
 - "Your resting heart rate was noticeably lower after nights with 7+ hours of sleep."
+
+---
+
+## Multi-Panel Display (`display_group`)
+
+Stages with the same `display_group` integer are shown simultaneously on one screen as a multi-panel layout. Side-by-side panels are reserved for **genuinely different metric types** (e.g. sleep stages stacked_bar + efficiency gauge). For **comparison questions** (today vs yesterday, week 1 vs week 2), the planner uses a single combined chart with both time periods on the x-axis — it does NOT create separate per-period stages.
+
+### Combined Charts vs Side-by-Side Panels
+
+- **Combined chart (preferred for comparisons):** One stage with both time periods as x-axis categories (e.g. stacked_bar with "Apr 19" and "Apr 20"). Each metric set appears in at most one stage. This avoids duplication.
+- **Side-by-side panels (for different metrics):** Multiple stages with the same `display_group`, used when metrics are incompatible (e.g. sleep stages + sleep efficiency). Each stage shows different metrics — never the same metrics repeated.
+
+### Flow
+
+1. **Planner** assigns `display_group` to each stage in `stages_plan`. Stages sharing a group appear together; stages with different groups appear on separate screens. The planner's grouping is trusted — no deterministic override.
+2. **`ensureDisplayGroup`** in `plannerAgent.js` normalizes `display_group` to a valid integer (falls back to stage index) but does not rewrite the planner's grouping decisions.
+3. **Executor (V3)** propagates `display_group` from `candidate.stage_spec` to `stage.metadata.display_group` in `normalizeAuthoredBundleStages`.
+4. **`stageService.buildStagePayload`** groups stages by `metadata.display_group`, builds a `panels[]` array for each group, and sets `voice_navigation_only: false` when a group has multiple stages.
+5. **Auto-advance guard:** `autoAdvance` is disabled for multi-panel groups so side-by-side panels remain visible instead of collapsing back to sequential single-chart playback.
+6. **Frontend** (`QnAPage.js`) renders all panels in `visiblePanels` when `voice_navigation_only` is `false`, using CSS grid layouts (`two_up`, `two_up_plus_footer`, `four_panel_grid`). Single-panel fallback now only applies to `autoAdvance` when `voice_navigation_only` is not explicitly `false`.
+
+### Layouts
+
+| Panels in group | Layout | Description |
+|---|---|---|
+| 1 | `single_focus` | Full-screen single chart |
+| 2 | `two_up` | Side-by-side panels |
+| 3 | `two_up_plus_footer` | Hero chart top + two smaller below |
+| 4 | `four_panel_grid` | 2x2 grid |
+
+### Metric Compatibility Rules
+
+Metrics with incompatible units or vastly different scales must NOT share a single stage/chart. Instead, they are split into separate stages with the same `display_group` for side-by-side display:
+
+- **Forbidden:** percentage metrics (sleep_efficiency, spo2) with absolute metrics (minutes, steps, calories)
+- **Forbidden:** metrics with >5x scale difference (steps ~10k vs floors ~10)
+- **Correct:** sleep stages (stacked_bar) alongside sleep efficiency (gauge) — same `display_group`, separate stages
+- **Correct:** steps (bar) alongside resting HR (line) — same `display_group`, separate stages
+
+### No-Duplication Rules
+
+- Each metric set appears in at most **one stage**. The planner never creates separate stages for the same `focusMetrics` split by time period.
+- Comparison questions use one combined chart per metric group with both periods on the x-axis.
+
+---
+
+## QnA Frontend UI (`frontend/src/pages/QnAPage.js`)
+
+The QnA screen shows a top bar (time, title, username) followed by the report title and takeaway description, then the chart panel grid.
+
+**Removed elements:** Voice hint chips, "Chart X of Y" stage counter, and the "Your health analysis is ready" banner are no longer rendered.
+
+**Status notices:** Only non-completed status messages (`slow`, `error`, `info`) appear as a banner. Messages with type `completed` or `ready_to_resume` are suppressed in the UI.
+
+**Chart axis readability** (`echartsTheme.js`, `chartSpec.js`):
+- Grid always uses `containLabel: true` with enforced minimum margins (left 72, right 36, top 44, bottom 68). These minimums are large enough to accommodate axis tick labels (16 px font) and axis name labels on all four sides without clipping.
+- Axis label defaults: font size 16px, color `#1E293B`, margin 12px.
+- Axis names use `nameLocation: 'middle'` (centers the label along the axis away from the edges) with role-specific `nameGap`: 40 px for x-axis (clears tick label height below the axis line) and 32 px for y-axis (pushes the rotated label left of tick values). Name text style: fontSize 14, fontWeight 500, color `#334155`.
+- Axis label and name truncation limits raised to 32 characters. Long category labels auto-rotate 25 degrees when >5 labels exceed 10 chars. Time-axis labels with >12 points rotate 30 degrees.
+- Line-series defaults now emphasize distinct points (`showSymbol: true`, circular markers) and no longer add implicit area-fill.
+- Sleep minute-based series (e.g., `sleep_minutes`, sleep stage minutes, `wake_minutes`) are converted to hour display values in chart specs; y-axis naming prefers `Hours` when minute-based sleep context is detected.
+- Cartesian charts ensure both axis names are present even when omitted upstream (`Time`/`Date` defaults for x-axis, `Value` fallback for y-axis). The Executor V4 is expected to always provide meaningful `xAxis.name`/`yAxis.name` values directly in `chart_option`; these frontend fallbacks only apply when the executor omits them.
+
+**`list_summary` / `composed_summary` rendering** (`chartSpec.js`):
+- `sanitizeListSummaryOption` now renders a full-canvas metric card grid using ECharts `graphic` elements instead of a tiny bullet list.
+- Structured `cards` (`{ label, value, subvalue }`) from the backend option are preferred over plain text `items`. When only `items` are present, they are split on `":"` to extract label and value.
+- Layout adapts to card count: 1 card → single centred column; 2 cards → side-by-side; 3-6 cards → 2-column grid.
+- Font sizes scale with count: value labels range from 36 px (6 cards) to 64 px (1 card). Metric names are uppercased, muted (`#94A3B8`). Values are large and coloured using the shared accent palette.
+- Each card's content is vertically centred around its grid cell midpoint.
+- When no data is available a single "NO DATA AVAILABLE" card is shown rather than a fallback chart.
+
+**`list_summary` V4 compatibility** (`optionValidator.js`, `agentConfigs.js`):
+- `validateLLMGeneratedOption` no longer requires a `series` array for `list_summary` and `composed_summary` (they render via `graphic`, not series). These types now join `radar` in the no-series exception list.
+- `ECHARTS_SKELETON_GUIDE` now includes a `LIST_SUMMARY` skeleton with `items` + `cards` structure.
+- `EXECUTOR_SYSTEM_PROMPT_V4` OUTPUT FIELDS chart_type list and CHART TYPE SELECTION section now include `list_summary` with guidance on when to use it (latest-value snapshot, daily overview, sparse data).
+
+**Single-panel chrome budget** (`tabletSingleView.css`):
+- The chart grid in single-panel mode uses `calc(100vh - 220px)` (was 382 px). The 162 px reduction reflects the removal of voice hints (62 px), the ready-banner buffer (48 px), and the stage counter line from the report header (~20 px), plus reduced gap count (from 3×12 to 1×12).
+- Minimum chart height remains 420 px to prevent blank renders on short screens.
+
+**Executor V4 axis name requirement** (`agentConfigs.js`):
+- `EXECUTOR_SYSTEM_PROMPT_V4` now explicitly requires `xAxis.name` and `yAxis.name` in every generated `chart_option`.
+- `ECHARTS_SKELETON_GUIDE` skeletons for BAR, LINE, AREA, MULTI_LINE, STACKED_BAR, and GROUPED_BAR now include `name` placeholders (e.g., `"<x-axis label e.g. Date>"`, `"<metric + unit e.g. Steps per Day>"`).
+- The axis name is the one-line on-screen explanation for what each axis represents, making charts immediately interpretable for older users without needing to read the legend.
 
 ---
 
@@ -359,7 +475,41 @@ Extracted from orchestrator — all Fitbit fetching logic:
       "visualization_intent": "side-by-side comparison of two nights",
       "chartType": "grouped_bar",
       "title": "",
-      "goal": ""
+      "goal": "",
+      "display_group": 0
+    }
+  ]
+}
+```
+
+## Planner Schema (PLANNER_TEXT_FORMAT — V1, active)
+
+```json
+{
+  "metrics_needed": ["sleep_minutes", "sleep_deep", "sleep_efficiency"],
+  "time_scope": "last_night",
+  "analysis_goal": "string",
+  "candidate_stage_types": ["sleep_stages", "sleep_detail"],
+  "stages_plan": [
+    {
+      "stageIndex": 0,
+      "stageType": "sleep_stages",
+      "stageRole": "primary",
+      "focusMetrics": ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"],
+      "chartType": "stacked_bar",
+      "title": "Sleep Stages Breakdown",
+      "goal": "Show composition of sleep stages",
+      "display_group": 0
+    },
+    {
+      "stageIndex": 1,
+      "stageType": "sleep_detail",
+      "stageRole": "deep_dive",
+      "focusMetrics": ["sleep_efficiency"],
+      "chartType": "gauge",
+      "title": "Sleep Efficiency",
+      "goal": "Show sleep efficiency percentage as a clear dial",
+      "display_group": 0
     }
   ]
 }
@@ -408,6 +558,7 @@ The Lambda sends raw JSON-string bodies (`JSON.stringify(question)`) with `Conte
 - **Coherence is prompt-owned.** The executor prompt is responsible for making the stages feel like one answer arc instead of isolated chart captions.
 - **Inference is preserved.** Each stage must not only describe the current chart but also explain the inferred pattern and why that metric matters in plain language.
 - **Cross-metric inference.** Broad questions trigger cross-domain analysis with correlation-based narration.
+- **Metric compatibility & no duplication.** Metrics with incompatible units or vastly different scales are split into separate stages with the same `display_group` for side-by-side display. Comparison questions use combined charts (both periods on one x-axis) — never separate per-period stages for the same metrics.
 - **Single pipeline.** No V2/V3 split. One flow for all questions.
 - **No duplicate responses.** Single pipeline await, single state store, single resume check.
 - **Planner guidance is soft.** The planner still provides stage coverage and chart hints, but the authored bundle executor decides the final chart sequence and narration as one story.

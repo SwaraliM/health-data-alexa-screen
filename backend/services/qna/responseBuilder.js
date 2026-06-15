@@ -99,6 +99,22 @@ function buildTerminalResponse({ bundle = null, requestId = null, stageCount = n
 }
 
 /**
+ * Build a voice-only response for chart follow-up questions.
+ * No payload, no stage mutation — just a voice answer.
+ */
+function buildChartQnaResult({ voiceAnswer = "", requestId = null } = {}) {
+  return {
+    ok: true,
+    status: "chart_qna_answer",
+    answer_ready: true,
+    voice_answer: sanitizeText(voiceAnswer, 400, "I'm not sure about that from this chart."),
+    requestId: requestId || null,
+    payload: null,
+    chart_qna: true,
+  };
+}
+
+/**
  * Format the orchestrator result into the Lambda response shape.
  * Lambda expects: { GPTresponse: string, smallTalk: string }
  */
@@ -119,6 +135,7 @@ module.exports = {
   buildStageResult,
   buildPendingResponse,
   buildTerminalResponse,
+  buildChartQnaResult,
   buildLambdaResponse,
   sanitizeText,
 };

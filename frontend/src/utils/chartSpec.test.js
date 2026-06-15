@@ -63,3 +63,105 @@ test("stacked sleep timelines keep bucket alignment and suppress bogus zero-only
   expect(spec.option.xAxis.data).toEqual(["23:00", "", "23:30", "", "00:00"]);
   expect(spec.option.xAxis.axisLabel.hideOverlap).toBe(true);
 });
+
+test("line charts default to distinct point markers without implicit area fill", () => {
+  const spec = validateChartSpec({
+    chart_type: "line",
+    title: "Heart rate trend",
+    option: {
+      xAxis: { data: ["Mon", "Tue", "Wed"] },
+      yAxis: { type: "value" },
+      series: [{ type: "line", data: [62, 64, 63] }],
+    },
+  }, "Heart rate trend");
+
+  expect(spec.option.series[0].type).toBe("line");
+  expect(spec.option.series[0].showSymbol).toBe(true);
+  expect(spec.option.series[0].areaStyle).toBeUndefined();
+});
+
+test("sleep minute metrics are displayed in hours with axis and tooltip formatting", () => {
+  const spec = validateChartSpec({
+    chart_type: "line",
+    title: "Sleep duration trend",
+    option: {
+      xAxis: { data: ["10:00 PM", "11:00 PM", "12:00 AM"] },
+      yAxis: { type: "value", name: "minutes" },
+      series: [{ type: "line", name: "sleep_minutes", data: [420, 450, 390] }],
+    },
+  }, "Sleep duration trend");
+
+  expect(spec.option.xAxis.name).toBe("Time");
+  expect(spec.option.yAxis.name).toBe("Hours");
+  expect(spec.option.series[0].data).toEqual([7, 7.5, 6.5]);
+});
+
+test("sleep y-axis formatter displays decimal hours as 'x h y min'", () => {
+  // Backend sends yAxis.name "minutes" + series named after a sleep metric
+  const spec = validateChartSpec({
+    chart_type: "bar",
+    title: "Sleep duration",
+    option: {
+      xAxis: { data: ["Mon", "Tue", "Wed", "Thu"] },
+      yAxis: { type: "value", name: "minutes" },
+      series: [{ type: "bar", name: "sleep_minutes", data: [480, 450, 390, 510] }],
+    },
+  }, "Sleep duration");
+
+  const fmt = spec.option.yAxis.axisLabel?.formatter;
+  expect(typeof fmt).toBe("function");
+  // 480 min → 8.0 h → "8 h"
+  expect(fmt(8)).toBe("8 h");
+  // 450 min → 7.5 h → "7 h 30 min"
+  expect(fmt(7.5)).toBe("7 h 30 min");
+  // 390 min → 6.5 h → "6 h 30 min"
+  expect(fmt(6.5)).toBe("6 h 30 min");
+  // 7.2 h → "7 h 12 min"
+  expect(fmt(7.2)).toBe("7 h 12 min");
+
+  // Tooltip valueFormatter should match
+  const tooltipFmt = spec.option.tooltip?.valueFormatter;
+  expect(typeof tooltipFmt).toBe("function");
+  expect(tooltipFmt(7.5)).toBe("7 h 30 min");
+
+  // Bar label formatter should also use "x h y min"
+  const labelFmt = spec.option.series[0].label?.formatter;
+  expect(typeof labelFmt).toBe("function");
+  expect(labelFmt({ value: 8 })).toBe("8 h");
+  expect(labelFmt({ value: 7.5 })).toBe("7 h 30 min");
+  expect(labelFmt({ value: 7.2 })).toBe("7 h 12 min");
+});
+
+test("sleep data already in hours is not double-converted when title contains 'minutes'", () => {
+  // Simulates a chart that was already converted: data in decimal hours, yAxis "Hours",
+  // but the chart title still says "Sleep Minutes".
+  const spec = validateChartSpec({
+    chart_type: "bar",
+    title: "Sleep Minutes — Last 7 Days",
+    option: {
+      xAxis: { data: ["Mon", "Tue", "Wed"] },
+      yAxis: { type: "value", name: "Hours" },
+      series: [{ type: "bar", name: "sleep_minutes", data: [7.0, 7.5, 6.5] }],
+    },
+  }, "Sleep Minutes — Last 7 Days");
+
+  // Values must stay as-is — dividing by 60 would give ~0.12 ("0 h 7 min")
+  expect(spec.option.series[0].data).toEqual([7.0, 7.5, 6.5]);
+  // No formatter should be applied (data is already in hours, no conversion)
+  expect(spec.option.yAxis.axisLabel?.formatter).toBeUndefined();
+});
+
+test("cartesian charts get default axis labels when names are omitted", () => {
+  const spec = validateChartSpec({
+    chart_type: "grouped_bar",
+    title: "Weekly activity",
+    option: {
+      xAxis: { data: ["Mon", "Tue", "Wed"] },
+      yAxis: { type: "value" },
+      series: [{ type: "bar", name: "Steps", data: [6000, 6500, 6200] }],
+    },
+  }, "Weekly activity");
+
+  expect(spec.option.xAxis.name).toBe("Date");
+  expect(spec.option.yAxis.name).toBe("Value");
+});

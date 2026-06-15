@@ -29,7 +29,15 @@ const PALETTE = [
     Wake: "#FB923C",
   };
   
-  const deepClone = (obj) => JSON.parse(JSON.stringify(obj || {}));
+  // Recursive clone that preserves functions (needed for axis/tooltip formatters).
+  const deepClone = (obj) => {
+    if (typeof obj === "function") return obj;
+    if (obj === null || typeof obj !== "object") return obj;
+    if (Array.isArray(obj)) return obj.map(deepClone);
+    const clone = {};
+    for (const key of Object.keys(obj)) clone[key] = deepClone(obj[key]);
+    return clone;
+  };
   
   const ensureArray = (v) => (Array.isArray(v) ? v : []);
   
@@ -58,26 +66,54 @@ const PALETTE = [
   
     // Grid + axes (only apply if cartesian)
     if (option.xAxis || option.yAxis) {
-      option.grid = option.grid ?? { left: 46, right: 24, top: 22, bottom: 42, containLabel: true };
+      // Increased minimums to accommodate axis tick labels (fontSize 16) + axis names.
+      // left: 90 gives room for the y-axis name (nameGap 58) to sit left of the tick numbers.
+      const GRID_MINS = { left: 90, right: 36, top: 44, bottom: 68 };
+      const grid = option.grid && typeof option.grid === "object" ? { ...option.grid } : {};
+      grid.containLabel = true;
+      grid.left = Math.max(Number(grid.left) || 0, GRID_MINS.left);
+      grid.right = Math.max(Number(grid.right) || 0, GRID_MINS.right);
+      grid.top = Math.max(Number(grid.top) || 0, GRID_MINS.top);
+      grid.bottom = Math.max(Number(grid.bottom) || 0, GRID_MINS.bottom);
+      option.grid = grid;
   
-      const upgradeAxis = (axis) => {
+      // role: 'x' or 'y' — controls nameGap so names clear their respective tick labels
+      const upgradeAxis = (axis, role = "x") => {
         if (!axis) return axis;
         const ax = deepClone(axis);
         ax.axisLine = ax.axisLine ?? { lineStyle: { color: "#CBD5E1", width: 2 } };
         ax.axisTick = ax.axisTick ?? { show: false };
         ax.splitLine = ax.splitLine ?? { lineStyle: { color: "#E2E8F0" } };
         ax.axisLabel = ax.axisLabel ?? {};
-        ax.axisLabel.color = ax.axisLabel.color ?? "#334155";
-        ax.axisLabel.fontSize = ax.axisLabel.fontSize ?? 15;
-        ax.axisLabel.margin = ax.axisLabel.margin ?? 10;
+        ax.axisLabel.color = ax.axisLabel.color ?? "#1E293B";
+        ax.axisLabel.fontSize = ax.axisLabel.fontSize ?? 16;
+        ax.axisLabel.margin = ax.axisLabel.margin ?? 12;
+        if (ax.name) {
+          if (role === "y") {
+            // 'middle' centres the name vertically along the axis.
+            // nameGap 58 pushes it left of the tick number labels (which sit ~40px from the axis line).
+            ax.nameLocation = ax.nameLocation ?? "middle";
+            ax.nameGap = ax.nameGap ?? 58;
+          } else {
+            // 'middle' centres the name below the x-axis, away from the right-edge clip.
+            ax.nameLocation = ax.nameLocation ?? "middle";
+            ax.nameGap = ax.nameGap ?? 40;
+          }
+          ax.nameTextStyle = {
+            fontSize: 14,
+            fontWeight: 500,
+            color: "#334155",
+            ...ax.nameTextStyle,
+          };
+        }
         return ax;
       };
   
-      if (Array.isArray(option.xAxis)) option.xAxis = option.xAxis.map(upgradeAxis);
-      else option.xAxis = upgradeAxis(option.xAxis);
+      if (Array.isArray(option.xAxis)) option.xAxis = option.xAxis.map((a) => upgradeAxis(a, "x"));
+      else option.xAxis = upgradeAxis(option.xAxis, "x");
   
-      if (Array.isArray(option.yAxis)) option.yAxis = option.yAxis.map(upgradeAxis);
-      else option.yAxis = upgradeAxis(option.yAxis);
+      if (Array.isArray(option.yAxis)) option.yAxis = option.yAxis.map((a) => upgradeAxis(a, "y"));
+      else option.yAxis = upgradeAxis(option.yAxis, "y");
     }
   
     // Tooltip (important for "tap-to-understand")
@@ -136,15 +172,13 @@ const PALETTE = [
   
       if (type === "line") {
         series.smooth = series.smooth ?? true;
-        series.showSymbol = series.showSymbol ?? false;
+        series.showSymbol = series.showSymbol ?? true;
         series.symbol = series.symbol ?? "circle";
-        series.symbolSize = series.symbolSize ?? 10;
+        series.symbolSize = series.symbolSize ?? 8;
         series.lineStyle = { width: 4, ...series.lineStyle };
         series.lineStyle.color = series.lineStyle.color ?? seriesColor;
         series.itemStyle = { ...series.itemStyle };
         series.itemStyle.color = series.itemStyle.color ?? seriesColor;
-        // Soft area fill for readability
-        series.areaStyle = series.areaStyle ?? { opacity: 0.12, color: seriesColor };
       }
   
       if (type === "pie") {

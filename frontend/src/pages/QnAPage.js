@@ -264,7 +264,6 @@ const QnAPage = () => {
     if (!payload?.autoAdvance || stages.length <= 1) return undefined;
     if (payload.loading || chartLoading || !payload.answer_ready) return undefined;
 
-    // Dedup — don't re-run if we already handled this payload
     const speechKey = getPayloadSpeechKey(payload);
     if (speechKey && spokenRequestRef.current === speechKey) return undefined;
     spokenRequestRef.current = speechKey;
@@ -273,9 +272,6 @@ const QnAPage = () => {
     let cancelled = false;
     const schedule = Array.isArray(payload?.chartAdvanceSchedule) ? payload.chartAdvanceSchedule : [];
 
-    // ── Alexa-narrated: advance charts on pre-computed schedule ──────────
-    // Alexa speaks the combined SSML; we advance charts at estimated offsets.
-    // 1.5s initial delay accounts for Alexa processing before speech starts.
     if (schedule.length > 1) {
       const ALEXA_PROCESSING_DELAY = 1500;
       const timers = schedule.map(({ stageIndex, offsetMs }) =>
@@ -290,7 +286,6 @@ const QnAPage = () => {
       };
     }
 
-    // ── Browser TTS fallback: advance charts driven by speech events ────
     const hasTTS = typeof window !== "undefined" && window.speechSynthesis
       && typeof window.SpeechSynthesisUtterance === "function";
 
@@ -355,10 +350,10 @@ const QnAPage = () => {
   }, [panels, payload?.activePanelId, allStagePanels, autoAdvanceIndex]);
 
   const shouldShowSinglePanel = payload?.voice_navigation_only === true
-    || payload?.interaction_mode === "voice_first"
+    || (payload?.voice_navigation_only !== false && payload?.interaction_mode === "voice_first")
     || payload?.response_mode === "single_view"
     || payload?.stagedFlow
-    || payload?.autoAdvance;
+    || (payload?.voice_navigation_only !== false && payload?.autoAdvance);
   const visiblePanels = shouldShowSinglePanel
     ? (activePanel ? [activePanel] : panels.slice(0, 1))
     : panels;
@@ -366,12 +361,13 @@ const QnAPage = () => {
   const isSinglePanel = panelCount === 1;
   const renderedLayout = isSinglePanel ? "single_focus" : (payload?.layout || "single_focus");
   const gridHeroClass = panelCount === 2 && visiblePanels[0]?.emphasis === "hero" ? "hd-grid-hero-first" : "";
-  const activeStageNumber = payload?.autoAdvance
-    ? autoAdvanceIndex + 1
-    : (toNonNegativeInt(payload?.activeStageIndex, 0) || 0) + 1;
-  const stageCount = Math.max(1, toNonNegativeInt(payload?.stageCount, panels.length || 1) || 1);
-  const bundleComplete = payload?.bundle_complete === true || (payload?.autoAdvance && autoAdvanceIndex >= stageCount - 1);
+
+  // Full-page takeover when the pipeline has finished but is waiting for Alexa to deliver.
   const showReadyResumePage = statusNotice?.type === "ready_to_resume" && Boolean(statusNotice?.message);
+  // Smaller banner for transient notices (slow, error, info). Suppress completed + ready_to_resume.
+  const showStatusBanner = !showReadyResumePage
+    && statusNotice?.message
+    && statusNotice.type !== "completed";
 
   return (
     <div className="hd-shell">
@@ -383,75 +379,61 @@ const QnAPage = () => {
         </header>
 
         <main className={`hd-main hd-main-chart-only hd-layout-${renderedLayout} ${isSinglePanel ? "hd-main-single-panel" : ""} ${showReadyResumePage ? "hd-main-ready-resume" : ""}`.trim()}>
+
           {showReadyResumePage ? (
             <section className="hd-ready-resume-page" aria-live="polite" aria-label="Answer ready">
               <div className="hd-ready-resume-card">
                 <p className="hd-ready-resume-eyebrow">Your answer is ready</p>
                 <h2 className="hd-ready-resume-title">Alexa is ready to continue</h2>
                 <p className="hd-ready-resume-message">{statusNotice.message}</p>
-                <p className="hd-ready-resume-instruction">Say, “Alexa, continue” when you are ready.</p>
+                <p className="hd-ready-resume-instruction">Say, &ldquo;Alexa, continue&rdquo; when you are ready.</p>
               </div>
             </section>
-          ) : statusNotice?.message ? (
-            <div className={`hd-ready-banner ${statusNotice.type}`}>
-              {statusNotice.message}
-            </div>
-          ) : null}
+          ) : (
+            <>
+              {showStatusBanner ? (
+                <div className={`hd-ready-banner ${statusNotice.type}`}>
+                  {statusNotice.message}
+                </div>
+              ) : null}
 
-          {!showReadyResumePage ? (
-          <section className={`hd-report-header hd-report-header-compact ${isSinglePanel ? "hd-report-header-single-panel" : ""}`.trim()}>
-            <div>
-              <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
-              <p className="hd-stage-counter">Chart {activeStageNumber} of {stageCount}</p>
-            </div>
-            <p className="hd-report-takeaway">{payload?.takeaway || summary}</p>
-          </section>
-          ) : null}
+              <section className={`hd-report-header hd-report-header-compact ${isSinglePanel ? "hd-report-header-single-panel" : ""}`.trim()}>
+                <h2 className="hd-report-title">{payload?.report_title || "Health report"}</h2>
+                <p className="hd-report-takeaway">{payload?.takeaway || summary}</p>
+              </section>
 
-          {!showReadyResumePage ? (
-          <section className="hd-voice-hints" aria-label="Voice commands">
-            <div className="hd-voice-hints-row">
-              {!bundleComplete && (
-                <span className="hd-voice-hint-chip hd-hint-primary">Say "next" for next chart</span>
-              )}
-              <span className="hd-voice-hint-chip">Say "go deeper" for analysis</span>
-              <span className="hd-voice-hint-chip">Ask any question about this chart</span>
-            </div>
-          </section>
-          ) : null}
-
-          {!showReadyResumePage ? (
-          <section className={`hd-panel-grid hd-panel-grid-${renderedLayout} hd-panel-count-${panelCount} ${gridHeroClass} ${isSinglePanel ? "hd-panel-grid-single-panel" : ""}`.trim()}>
-            {chartLoading ? (
-              <div className="hd-chart-loading hd-loading-panel">
-                <div className="hd-loading-bar"><div className="hd-loading-fill" /></div>
-                <p className="hd-loading-message">Preparing chart view.</p>
-              </div>
-            ) : (
-              visiblePanels.map((panel, index) => (
-                <article
-                  key={panel.panel_id || index}
-                  className={`hd-panel-card hd-panel-slot-${index + 1} hd-panel-emphasis-${panel.emphasis || "standard"} ${panel.panel_id === payload?.activePanelId ? "is-active" : ""} ${isSinglePanel ? "hd-panel-card-single-panel" : ""}`.trim()}
-                  style={{
-                    "--hd-panel-accent": panel?.chart_spec?.panel_theme?.accentColor || "",
-                    "--hd-panel-border": panel?.chart_spec?.panel_theme?.borderColor || "",
-                    "--hd-panel-bg": panel?.chart_spec?.panel_theme?.backgroundColor || "",
-                  }}
-                >
-                  {!isSinglePanel ? (
-                    <div className="hd-panel-copy">
-                      <h3>{panel.title}</h3>
-                      {panel.subtitle ? <p>{panel.subtitle}</p> : null}
-                    </div>
-                  ) : null}
-                  <div className={`hd-panel-chart ${isSinglePanel ? "hd-panel-chart-single-panel" : ""}`.trim()}>
-                    <EChartCard chartSpec={panel.chart_spec} className={isSinglePanel ? "hd-echart-single-panel" : ""} />
+              <section className={`hd-panel-grid hd-panel-grid-${renderedLayout} hd-panel-count-${panelCount} ${gridHeroClass} ${isSinglePanel ? "hd-panel-grid-single-panel" : ""}`.trim()}>
+                {chartLoading ? (
+                  <div className="hd-chart-loading hd-loading-panel">
+                    <div className="hd-loading-bar"><div className="hd-loading-fill" /></div>
+                    <p className="hd-loading-message">Preparing chart view.</p>
                   </div>
-                </article>
-              ))
-            )}
-          </section>
-          ) : null}
+                ) : (
+                  visiblePanels.map((panel, index) => (
+                    <article
+                      key={panel.panel_id || index}
+                      className={`hd-panel-card hd-panel-slot-${index + 1} hd-panel-emphasis-${panel.emphasis || "standard"} ${panel.panel_id === payload?.activePanelId ? "is-active" : ""} ${isSinglePanel ? "hd-panel-card-single-panel" : ""}`.trim()}
+                      style={{
+                        "--hd-panel-accent": panel?.chart_spec?.panel_theme?.accentColor || "",
+                        "--hd-panel-border": panel?.chart_spec?.panel_theme?.borderColor || "",
+                        "--hd-panel-bg": panel?.chart_spec?.panel_theme?.backgroundColor || "",
+                      }}
+                    >
+                      {!isSinglePanel ? (
+                        <div className="hd-panel-copy">
+                          <h3>{panel.title}</h3>
+                          {panel.subtitle ? <p>{panel.subtitle}</p> : null}
+                        </div>
+                      ) : null}
+                      <div className={`hd-panel-chart ${isSinglePanel ? "hd-panel-chart-single-panel" : ""}`.trim()}>
+                        <EChartCard chartSpec={panel.chart_spec} className={isSinglePanel ? "hd-echart-single-panel" : ""} />
+                      </div>
+                    </article>
+                  ))
+                )}
+              </section>
+            </>
+          )}
 
         </main>
       </div>

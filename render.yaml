@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: health-data-alexa-screen
+    runtime: node
+    plan: free
+    buildCommand: npm install && cd backend && npm install && cd ../frontend && npm install && npm run build
+    startCommand: node server.js
+    envVars:
+      - key: MONGODB_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: FITBIT_CLIENT_ID
+        sync: false
+      - key: FITBIT_CLIENT_SECRET
+        sync: false
+      - key: API_URL
+        sync: false
+      - key: USE_LLM_OPTION_GENERATION
+        value: "true"
+      - key: OPENAI_EXECUTOR_V4_MODEL
+        value: "gpt-4.1"
+      - key: OPENAI_EXECUTOR_V4_TIMEOUT_MS
+        value: "0"

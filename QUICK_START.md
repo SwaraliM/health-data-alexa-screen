@@ -116,3 +116,7 @@ curl -X POST http://localhost:5001/api/alexa/ \
 - **Anchor highlighting not working**: Verify `anchorKey` in WebSocket message
 
 For detailed test procedures, see `WORKSHOP_SMOKE_TESTS.md`.
+
+#Commands to kill terminal
+kill $(lsof -ti:5001)
+kill -9 <PID>
