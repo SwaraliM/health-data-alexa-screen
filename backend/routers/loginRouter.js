@@ -79,17 +79,17 @@ loginRouter.post("/fitbit-exchange", async (req, res) => {
     return res.status(400).json({ message: "code and username are required." });
   }
 
-  const clientId = process.env.FITBIT_CLIENT_ID;
-  const clientSecret = process.env.FITBIT_CLIENT_SECRET;
+  const clientId = (process.env.FITBIT_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.FITBIT_CLIENT_SECRET || "").trim();
   if (!clientId || !clientSecret) {
     return res.status(500).json({ message: "Fitbit credentials not configured on server." });
   }
 
-  const redirectUri = process.env.FITBIT_REDIRECT_URI || `${req.protocol}://${req.get("host")}/auth-callback`;
+  const redirectUri = (process.env.FITBIT_REDIRECT_URI || `${req.protocol}://${req.get("host")}/auth-callback`).trim();
 
   try {
-    const fetch = require("node-fetch");
     const encodedCredentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+    console.log("[fitbit-exchange] clientId:", clientId, "redirectUri:", redirectUri);
     const tokenRes = await fetch("https://api.fitbit.com/oauth2/token", {
       method: "POST",
       headers: {
