@@ -75,15 +75,27 @@ function detectNavigationAction(text = "") {
   if (/\b(start over|restart|from the (start|beginning)|reset|first chart)\b/.test(cleaned)) {
     return "start_over";
   }
-  if (/\b(go deeper|dig deeper|explain|what does (this|that) mean|tell me more|more detail)\b/.test(cleaned)) {
-    return "go_deeper";
-  }
+  // NOTE: "explain / what does this mean / tell me more / go deeper" are NOT navigation —
+  // they are clarifications about the current chart, handled via looksLikeClarification →
+  // chart_qna. Keeping them here would route them to a no-op navigation action.
 
   const action = normalizeControlAction(cleaned);
-  if (["show_more", "back", "start_over", "go_deeper", "explain", "compare"].includes(action)) {
+  if (["show_more", "back", "start_over", "compare"].includes(action)) {
     return action;
   }
   return null;
+}
+
+// Conversational clarification / "explain this" utterances about the current chart.
+// These are NOT phrased as wh-questions, so looksLikeQuestion() misses them — but when a
+// chart is on screen they should be answered as a chart follow-up (explain), not treated
+// as navigation or a brand-new analysis.
+const CLARIFICATION_PATTERN = /\b(do(es)?n'?t|did'?n?t|cannot|can'?t)\s+(understand|get|catch|follow)\b|\b(i'?m\s+)?confus(ed|ing)\b|\bwhat\s+(was|is|are|do(es)?|did)\s+(that|this|those|these|it|they|.*\bmean)\b|\bwhat\s+do(es)?\b.*\bmean\b|\bexplain\b|\bbreak\s+(it|that|this)\s+down\b|\bin\s+plain\b|\bsimpler\b|\bdumb(ed)?\s+it\s+down\b|\blost\s+me\b|\bno\s+idea\b|\b(not\s+clear|unclear)\b|^huh\b|\bcome\s+again\b|\bsay\s+(that|it)\s+again\b|\brepeat\b|\btell\s+me\s+more\b|\b(go|dig)\s+deeper\b|\bmore\s+detail\b|\bwhat\s+am\s+i\s+looking\s+at\b|\bdon'?t\s+follow\b/i;
+
+function looksLikeClarification(text = "") {
+  const cleaned = normalizeUtterance(text);
+  if (!cleaned) return false;
+  return CLARIFICATION_PATTERN.test(cleaned);
 }
 
 function hasHealthSignal(text = "") {
@@ -205,6 +217,25 @@ async function resolveAlexaTurn({
     };
   }
 
+  // Clarification / "explain this" while a chart is visible → answer about the
+  // current chart. Short-circuit WITHOUT the LLM classifier so it is robust even
+  // if the classifier errors or times out. Runs before isExplicitHealthQuestion so
+  // "I didn't understand the exercise metrics" explains instead of starting anew.
+  if (
+    hasActiveInteraction &&
+    CHART_VISIBLE_MODES.has(mode) &&
+    chartContext &&
+    looksLikeClarification(normalizedUtterance)
+  ) {
+    return {
+      kind: "chart_qna",
+      action: "explain",
+      interruptsActiveInteraction: false,
+      resolvedUtterance,
+      supplementalMetrics: [],
+    };
+  }
+
   // Chart follow-up detection: when a chart is visible and the utterance
   // looks like a question, ask the LLM classifier before deciding whether
   // to start a new pipeline or answer in-context.
@@ -296,6 +327,7 @@ module.exports = {
   hasHealthSignal,
   isExplicitHealthQuestion,
   looksLikeQuestion,
+  looksLikeClarification,
   normalizeControlAction,
   normalizeUtterance,
   resolveAlexaTurn,

@@ -202,6 +202,9 @@ Alexa turns are resolved in the backend with active interaction context, not by 
 - explicit health-data language => starts a new bundle and interrupts the current one
 - `cancel`, `stop`, `never mind` => clear active interaction
 
+### Follow-up Clarifications ("explain this" / "I didn't understand")
+`alexaTurnResolver.resolveAlexaTurn` routes conversational clarifications to chart Q&A even when they are NOT phrased as wh-questions. `looksLikeClarification()` matches confusion/explain phrases ("I didn't understand…", "what was that", "explain that", "I'm confused", "what do these mean", "tell me more", "go deeper", "huh", "say that again") and — when a chart is visible (`CHART_VISIBLE_MODES`) — **short-circuits to `kind:"chart_qna"` without calling the LLM classifier**, so it works even if the classifier errors. This runs before `isExplicitHealthQuestion`, so "I didn't understand the exercise metrics" explains the current chart instead of starting a new analysis. Note: "explain/tell me more/go deeper" were removed from `detectNavigationAction`'s `go_deeper` branch (a no-op in `handleNavigation`). The chart-QnA answer agent (`CHART_QNA_SYSTEM_PROMPT`) has an explanation rule + plain-language metric glossary (Active Zone Minutes, Walk/HIIT minutes, HRV, resting HR, SpO₂, sleep stages). Navigation ("go back"/"next"/"start over") is unchanged.
+
 ### Chart Q&A (Voice-Only Follow-up)
 
 While a chart is on screen, users can ask follow-up questions about it (e.g. "what do those points show", "which day had the most activity", "why did Wednesday spike", "did my heart rate drop on nights I slept well?"). These are answered with voice only — the chart on screen stays unchanged, and the stage index is not modified.

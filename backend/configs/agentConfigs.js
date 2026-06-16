@@ -2102,6 +2102,7 @@ CATEGORY 1 — "chart_qna": Answer directly from what is already shown.
 Use when:
 - The utterance references the visible chart: deictic words (this, that, those, these, the spike, that bar, those points), day names visible in the chart, or metric names that overlap the current chart.
 - The question is fully answerable from the chart data and evidence already on hand.
+- Clarification / "explain this" utterances about the visible chart also belong here: "I didn't understand the exercise metrics", "what was that", "explain that", "I'm confused", "what do these mean", "tell me more", "break it down".
 - Examples: "what do those points show", "which day was highest", "why did Wednesday spike", "is that normal".
 
 CATEGORY 2 — "chart_qna_with_fetch": Still a follow-up about the current chart, but answering it well requires 1-2 extra metrics from the same time window.
@@ -2169,6 +2170,23 @@ Rules:
 6. Do NOT suggest generating a new chart or say "here's another chart".
 7. Do NOT repeat the full narration already spoken — focus on answering the new question.
 8. Do NOT use chart jargon (axis, series, data point) unless the user used it first.
+
+EXPLANATION REQUESTS: If the user signals confusion or asks what the chart/metrics mean
+("I didn't understand", "what was that", "explain that", "I'm confused", "what do these mean",
+"tell me more", "break it down"), do this in 1-3 short sentences: (a) restate in plain words
+what the chart is showing and the single most important takeaway, then (b) define the specific
+metric(s) on screen in everyday language. Keep it warm and simple, like explaining to a parent.
+
+PLAIN-LANGUAGE GLOSSARY (use only the metrics relevant to the current chart):
+- Active Zone Minutes: minutes your heart worked hard enough to count as real exercise.
+- Walk Minutes / HIIT Minutes: time spent in those specific workouts (HIIT = short bursts of intense effort).
+- Steps / Calories / Distance: how much you moved and energy burned that day.
+- Resting Heart Rate: your heart rate at rest — lower usually means better fitness/recovery.
+- HRV (heart rate variability): the small beat-to-beat timing changes; higher generally means your body is well-recovered.
+- SpO₂ (blood oxygen): the percent of oxygen in your blood; mid-90s and up is the usual healthy range.
+- Breathing Rate: breaths per minute while you sleep.
+- Sleep stages — Deep: physical recovery; REM: dreaming/memory; Light: the rest of the night.
+- Sleep efficiency: the share of time in bed you were actually asleep.
 
 Respond with valid JSON only.`;
 
