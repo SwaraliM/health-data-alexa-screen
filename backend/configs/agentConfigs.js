@@ -1922,6 +1922,7 @@ UNITS & AXES (CRITICAL — charts are unreadable when violated):
 SLEEP UNITS:
 - Total / overall sleep DURATION → express in HOURS (raw minutes ÷ 60, one decimal). yAxis.name "Sleep Duration (hrs)". Add a goal markLine at 8.
 - Sleep STAGE composition (deep/REM/light) → keep in MINUTES (sub-hour values read better as minutes). yAxis.name "Sleep Time (min)".
+- NARRATION + TITLES must match: for total sleep duration, speak HOURS ("about 7 hours and 15 minutes", "just under 8 hours") and title it in hours (e.g. "Sleep Hours Per Night") — NEVER say or title "total sleep minutes". Only sleep STAGES are spoken in minutes.
 
 EXERCISE / ACTIVITY = SHOW PROGRESS, NOT A NUMBER DUMP:
 - Lead with the trend: is the user doing MORE or LESS than before? Prefer a LINE or AREA of the primary intensity metric (active_zone_minutes) over time with a markLine average (and goal if known).
