@@ -1898,9 +1898,13 @@ CHART_TYPE MUST MATCH THE OPTION YOU AUTHOR:
 - Set chart_type to what you actually build. If the option has an xAxis plus plotted series (bars/lines/scatter), the chart_type is bar/line/grouped_bar/stacked_bar/area/scatter (or "line" for a dual-axis bar+line) — NEVER "list_summary". If the option series is a pie, chart_type is "pie". Use "list_summary" ONLY when the option has items/cards and NO xAxis or plotted series.
 
 SMART CHART CHOICES:
+- TIME RANGE drives the chart: for ~14 days or fewer, BAR (one bar per day) is clear. For LONGER ranges (about 3+ weeks, e.g. last 30 days), do NOT use ~30 daily bars — it looks cluttered. Instead plot ALL the daily values as a LINE or AREA chart (smooth: true): every day is still shown, but as a clean trend. Add a markLine average for context. (No data is dropped — same daily points, just a line instead of many bars.)
+- SINGLE-metric long range → line/area of the daily values (full detail, no clutter).
+- MULTI-series / composition over a long range (e.g. a month of sleep stages, or several activity types): do NOT draw 30 stacked nightly bars — that is cluttered and error-prone. Instead AGGREGATE into WEEKLY buckets: x-axis = "Week 1".."Week 4/5", values = that week's average, as a stacked_bar or grouped_bar (4-5 bars). This keeps the composition story without clutter. (Use the weekly means; the daily detail is still available via a separate single-metric trend line if needed.)
 - Comparing two time windows of the same metric (e.g. week 1 vs week 2 steps): use ONE chart with both periods on the x-axis (e.g. stacked_bar or bar with "Week 1" and "Week 2" as categories) — do NOT create separate charts per period
-- Sleep stage breakdown: STACKED_BAR is clearest; DONUT is good for a single night
-- Activity trend: BAR with a markLine average is most readable for older adults
+- Sleep stage breakdown: STACKED_BAR per night for a WEEK; for a MONTH use WEEKLY-AVERAGE stacked bars (4-5 bars), not 30 nightly stacks; DONUT is good for a single night
+- Activity trend: BAR with a markLine average for a week; LINE/AREA for a month
+- IMPORTANT: when you aggregate to weekly buckets, the xAxis labels and EVERY series must all have the same small length (one value per week). Keep series arrays equal to the number of week buckets.
 - Cross-domain relationship (steps vs sleep): DUAL-AXIS or GROUPED_BAR depending on scale difference
 
 ANNOTATION GUIDANCE:
