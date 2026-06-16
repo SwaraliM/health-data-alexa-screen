@@ -18,6 +18,8 @@ services:
         sync: false
       - key: REACT_APP_FITBIT_CLIENT_SECRET
         sync: false
+      - key: REACT_APP_FITBIT_AUTH_URL
+        sync: false
       - key: USE_LLM_OPTION_GENERATION
         value: "true"
       - key: OPENAI_EXECUTOR_V4_MODEL
