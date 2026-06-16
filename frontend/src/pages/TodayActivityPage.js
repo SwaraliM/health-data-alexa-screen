@@ -26,7 +26,7 @@ const TodayActivityPage = () => {
       // Use localhost for local development, ngrok URL only for production/external access
       // Check if we're running locally (development mode)
       const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      const baseUrl = isLocalDev ? 'http://localhost:5001' : (process.env.REACT_APP_FETCH_DATA_URL || 'http://localhost:5001');
+      const baseUrl = isLocalDev ? 'http://localhost:5001' : window.location.origin;
       const url = `${baseUrl}/api/fitbit/${username}/activities/summary/${date}`;
       console.log("Fetching today's data from:", url);
       console.log("Using base URL:", baseUrl, "(isLocalDev:", isLocalDev, ")");
@@ -96,7 +96,7 @@ Error: ${error.message}`);
       const date = getCurrentDate();
       // Use localhost for local development, ngrok URL only for production/external access
       const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      const baseUrl = isLocalDev ? 'http://localhost:5001' : (process.env.REACT_APP_FETCH_DATA_URL || 'http://localhost:5001');
+      const baseUrl = isLocalDev ? 'http://localhost:5001' : window.location.origin;
       const url = `${baseUrl}/api/fitbit/${username}/activities/period/steps/date/${date}/7d`;
       console.log("Fetching weekly step data from:", url);
       const response = await fetch(url, {

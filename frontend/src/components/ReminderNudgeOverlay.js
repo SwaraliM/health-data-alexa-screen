@@ -4,7 +4,7 @@ import ReminderVisual from './ReminderVisual';
 
 const getBaseUrl = () => {
   const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  return isLocalDev ? 'http://localhost:5001' : (process.env.REACT_APP_FETCH_DATA_URL || 'http://localhost:5001');
+  return isLocalDev ? 'http://localhost:5001' : window.location.origin;
 };
 
 const ReminderNudgeOverlay = () => {

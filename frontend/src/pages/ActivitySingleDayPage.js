@@ -32,11 +32,10 @@ function ActivitySingleDayPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        console.log(
-          `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit/${username}/activities/summary/${date}`
-        );
+        const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+        const baseUrl = isLocalDev ? "http://localhost:5001" : window.location.origin;
         const response = await fetch(
-          `${process.env.REACT_APP_FETCH_DATA_URL}/api/fitbit//${username}/activities/summary/${date}`
+          `${baseUrl}/api/fitbit/${username}/activities/summary/${date}`
         );
         if (!response.ok) {
           throw new Error("Network response was not ok");

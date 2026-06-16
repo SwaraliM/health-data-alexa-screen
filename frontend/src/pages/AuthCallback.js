@@ -14,7 +14,8 @@ const AuthCallback = () => {
     // get Access Token with authcode — exchange happens server-side to avoid CORS
     const fetchToken = async (code) => {
       try {
-        const apiBase = process.env.REACT_APP_FETCH_DATA_URL || window.location.origin;
+        // Always use same-origin in the browser; the backend serves this app.
+        const apiBase = window.location.origin;
         const response = await fetch(
           `${apiBase.replace(/\/$/, "")}/api/login/fitbit-exchange`,
           {
