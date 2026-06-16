@@ -164,11 +164,17 @@ function fallbackChartSpec(title = "Your Health Data", takeaway = "I could not p
   };
 }
 
+const ALLOWED_SERIES_TYPES = new Set(["bar", "line", "scatter", "effectScatter"]);
+
 function sanitizeSeries(series = [], type = "line") {
   return (Array.isArray(series) ? series : [])
     .slice(0, MAX_SERIES)
     .map((item, idx) => ({
-      type,
+      // Preserve the per-series type when valid (so dual-axis bar+line combos keep
+      // their line series instead of all collapsing to the chart-level type).
+      type: ALLOWED_SERIES_TYPES.has(item?.type) ? item.type : type,
+      // Preserve yAxisIndex so dual-axis series bind to the correct y-axis.
+      yAxisIndex: Number(item?.yAxisIndex) === 1 ? 1 : undefined,
       name: sanitizeText(item?.name, 24, `Series ${idx + 1}`),
       stack: sanitizeText(item?.stack, 20, ""),
       itemStyle: item?.itemStyle && typeof item.itemStyle === "object" ? { ...item.itemStyle } : undefined,
@@ -593,10 +599,31 @@ function sanitizeDonutOption(rawOption = {}) {
   };
 }
 
+function resolveEffectiveChartType(declared, opt) {
+  if (declared !== "list_summary" && declared !== "composed_summary") return declared;
+  const series = Array.isArray(opt?.series) ? opt.series : [];
+  const s0 = series[0] || {};
+  const hasCards = (Array.isArray(opt?.cards) && opt.cards.length > 0)
+    || (Array.isArray(opt?.items) && opt.items.length > 0);
+  // A genuine summary has cards/items and no real chart series — keep it.
+  if (hasCards && !series.length) return declared;
+  if (s0.type === "pie") return "pie";
+  if (s0.type === "gauge") return "gauge";
+  if (s0.type === "radar" || opt?.radar) return "radar";
+  const xData = (Array.isArray(opt?.xAxis) ? opt.xAxis[0] : opt?.xAxis)?.data;
+  const hasCartesianSeries = series.some(
+    (s) => ["bar", "line", "area", "scatter"].includes(s?.type) && Array.isArray(s?.data) && s.data.length > 0
+  );
+  if (Array.isArray(xData) && xData.length > 0 && hasCartesianSeries) {
+    return series.every((s) => s?.type === "scatter") ? "scatter" : "bar";
+  }
+  return declared;
+}
+
 function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   if (!input || typeof input !== "object") return fallbackChartSpec(fallbackTitle);
 
-  const chart_type = SUPPORTED_CHART_TYPES.has(String(input.chart_type || "").toLowerCase())
+  const declaredType = SUPPORTED_CHART_TYPES.has(String(input.chart_type || "").toLowerCase())
     ? String(input.chart_type).toLowerCase()
     : "bar";
 
@@ -605,6 +632,11 @@ function validateChartSpec(input, fallbackTitle = "Your Health Data") {
   const takeaway = sanitizeText(input.takeaway, MAX_TAKEAWAY, "");
   const suggested_follow_up = sanitizeFollowUps(input.suggested_follow_up || input.suggestedFollowUp);
   const rawOption = parseOption(input.option);
+
+  // The executor sometimes mislabels a real chart as "list_summary"/"composed_summary"
+  // (e.g. a dual-axis bar+line or a pie) even though the option carries axes/series and
+  // no cards. Re-derive the true type from the option so it renders as the chart it is.
+  const chart_type = resolveEffectiveChartType(declaredType, rawOption);
 
   let option = null;
   if (chart_type === "gauge") option = sanitizeGaugeOption(rawOption);

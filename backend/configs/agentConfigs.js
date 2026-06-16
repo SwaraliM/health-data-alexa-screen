@@ -1894,6 +1894,9 @@ CHART TYPE SELECTION — choose the type that best reveals the insight:
 - HEATMAP: day-of-week pattern or multi-metric cross-day view
 - LIST_SUMMARY: latest-value snapshot of 2-6 distinct metrics (no time series) — use for daily health overview, multi-metric summary, or when data is too sparse for a chart
 
+CHART_TYPE MUST MATCH THE OPTION YOU AUTHOR:
+- Set chart_type to what you actually build. If the option has an xAxis plus plotted series (bars/lines/scatter), the chart_type is bar/line/grouped_bar/stacked_bar/area/scatter (or "line" for a dual-axis bar+line) — NEVER "list_summary". If the option series is a pie, chart_type is "pie". Use "list_summary" ONLY when the option has items/cards and NO xAxis or plotted series.
+
 SMART CHART CHOICES:
 - Comparing two time windows of the same metric (e.g. week 1 vs week 2 steps): use ONE chart with both periods on the x-axis (e.g. stacked_bar or bar with "Week 1" and "Week 2" as categories) — do NOT create separate charts per period
 - Sleep stage breakdown: STACKED_BAR is clearest; DONUT is good for a single night
