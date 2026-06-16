@@ -25,6 +25,8 @@ services:
       - key: USE_LLM_OPTION_GENERATION
         value: "true"
       - key: OPENAI_EXECUTOR_V4_MODEL
-        value: "gpt-4.1"
+        value: "gpt-5.4"
+      - key: OPENAI_QNA_MODEL
+        value: "gpt-5.4-mini"
       - key: OPENAI_EXECUTOR_V4_TIMEOUT_MS
         value: "0"

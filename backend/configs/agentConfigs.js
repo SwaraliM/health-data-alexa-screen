@@ -1576,7 +1576,7 @@ const EXECUTOR_MIN_STAGE_COUNT = clampInteger(
 const AGENT_CONFIGS = {
   planner: {
     version: "phase2-shadow-v1",
-    model: process.env.OPENAI_PLANNER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+    model: process.env.OPENAI_PLANNER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
     temperature: asNumber(process.env.OPENAI_PLANNER_TEMPERATURE, 0.1),
     systemPrompt: ENHANCED_PLANNER_SYSTEM_PROMPT,
     textFormat: PLANNER_TEXT_FORMAT,
@@ -1586,7 +1586,7 @@ const AGENT_CONFIGS = {
   },
   executor: {
     version: "phase7-executor-hardened-v1",
-    model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+    model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
     temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.2),
     maxToolTurns: 0, // V2 template-fill uses no tools
     systemPrompt: null, // set below after prompts are defined
@@ -1663,7 +1663,7 @@ const AGENT_CONFIGS = {
 // Add executorV2 config to AGENT_CONFIGS (must be after ENHANCED_EXECUTOR_SYSTEM_PROMPT_V2 is defined)
 AGENT_CONFIGS.executorV2 = {
   version: "phase8-template-fill-v1",
-  model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
   temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.2),
   systemPrompt: asBoolean(process.env.USE_ENHANCED_EXECUTOR_PROMPT, true)
     ? ENHANCED_EXECUTOR_SYSTEM_PROMPT_V2
@@ -1680,7 +1680,7 @@ AGENT_CONFIGS.executor.textFormat = EXECUTOR_TEXT_FORMAT_V3;
 // V2 planner config (query decomposition with independent time windows)
 AGENT_CONFIGS.plannerV2 = {
   version: "phase3-decomposition-v1",
-  model: process.env.OPENAI_PLANNER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  model: process.env.OPENAI_PLANNER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
   temperature: asNumber(process.env.OPENAI_PLANNER_TEMPERATURE, 0.1),
   systemPrompt: PLANNER_SYSTEM_PROMPT_V2,
   textFormat: PLANNER_TEXT_FORMAT_V2,
@@ -1690,7 +1690,7 @@ AGENT_CONFIGS.plannerV2 = {
 // V3 executor config (evidence-based strategy selection)
 AGENT_CONFIGS.executorV3 = {
   version: "phase3-evidence-strategy-v1",
-  model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  model: process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
   temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.2),
   systemPrompt: EXECUTOR_SYSTEM_PROMPT_V3,
   textFormat: EXECUTOR_TEXT_FORMAT_V3,
@@ -1931,7 +1931,10 @@ EXERCISE / ACTIVITY = SHOW PROGRESS, NOT A NUMBER DUMP:
 
 DATA RULES:
 - Use ONLY values from raw_data.metrics arrays. Do NOT invent or estimate numbers.
-- null means missing data for that day — preserve as null in series.data
+- COPY each raw_data.metrics[key] array into series.data EXACTLY as given — element for element, in the SAME order. It is already aligned position-by-position with raw_data.dates (and with xAxis.data).
+- CRITICAL — NEVER drop, skip, remove, or "compact" null entries. If raw_data gives [null, null, 19, null, 42, null, 37], your series.data MUST be [null, null, 19, null, 42, null, 37] — NOT [19, 42, 37]. Dropping nulls shifts every value onto the wrong day and produces a misaligned, wrong chart. A sparse metric (e.g. walk_minutes / hiit_minutes that only happen some days) keeps its nulls so the bars sit on the correct dates.
+- Therefore every series.data.length MUST equal xAxis.data.length (and raw_data.dates.length). If they differ, you dropped nulls — fix it.
+- COMPARISON (this period vs last period, e.g. "this week vs last week"): use xAxis.data = the shared day labels (e.g. Mon–Sun, 7 entries) with TWO series ("This Week" and "Last Week"), each EXACTLY 7 values. Do NOT concatenate both weeks onto a 14-day axis (that leaves one week's bars empty).
 - Max 90 total data points across all series (backend truncates if exceeded)
 - chart_option must be a plain JSON object — no functions, no CSS, no event handlers
 
@@ -2077,7 +2080,7 @@ AGENT_CONFIGS.executorV4 = {
   version: "v4-llm-option-generation",
   // V4 uses a separate model env var so generation quality can be upgraded independently.
   // OPENAI_EXECUTOR_V4_MODEL takes priority; falls back to the shared executor / QnA model.
-  model: process.env.OPENAI_EXECUTOR_V4_MODEL || process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4.1",
+  model: process.env.OPENAI_EXECUTOR_V4_MODEL || process.env.OPENAI_EXECUTOR_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4",
   temperature: asNumber(process.env.OPENAI_EXECUTOR_TEMPERATURE, 0.15),
   systemPrompt: EXECUTOR_SYSTEM_PROMPT_V4,
   textFormat: EXECUTOR_TEXT_FORMAT_V4,
@@ -2210,7 +2213,7 @@ const CHART_QNA_TEXT_FORMAT = {
 // Add intentClassifier config to AGENT_CONFIGS
 AGENT_CONFIGS.intentClassifier = {
   version: "v1-natural-language-classifier",
-  model: process.env.OPENAI_INTENT_CLASSIFIER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  model: process.env.OPENAI_INTENT_CLASSIFIER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
   temperature: asNumber(process.env.OPENAI_INTENT_CLASSIFIER_TEMPERATURE, 0.1),
   systemPrompt: INTENT_CLASSIFIER_SYSTEM_PROMPT,
   textFormat: INTENT_CLASSIFIER_TEXT_FORMAT,
@@ -2221,8 +2224,8 @@ AGENT_CONFIGS.intentClassifier = {
 
 AGENT_CONFIGS.chartQna = {
   version: "v1-chart-qna",
-  classifierModel: process.env.OPENAI_CHART_QNA_CLASSIFIER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
-  answerModel: process.env.OPENAI_CHART_QNA_ANSWER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-4o-mini",
+  classifierModel: process.env.OPENAI_CHART_QNA_CLASSIFIER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
+  answerModel: process.env.OPENAI_CHART_QNA_ANSWER_MODEL || process.env.OPENAI_QNA_MODEL || "gpt-5.4-mini",
   temperature: asNumber(process.env.OPENAI_CHART_QNA_TEMPERATURE, 0.15),
   classifierSystemPrompt: CHART_QNA_CLASSIFIER_SYSTEM_PROMPT,
   classifierTextFormat: CHART_QNA_CLASSIFIER_TEXT_FORMAT,

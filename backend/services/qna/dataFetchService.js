@@ -85,6 +85,17 @@ function formatDate(date) {
   return `${y}-${m}-${d}`;
 }
 
+function enumerateDates(startDate, endDate) {
+  const out = [];
+  let d = new Date(`${startDate}T12:00:00`);
+  const end = new Date(`${endDate}T12:00:00`);
+  while (d <= end) {
+    out.push(formatDate(d));
+    d = new Date(d.getTime() + 86400000);
+  }
+  return out;
+}
+
 function computeDateWindow(timeScope = "last_7_days") {
   const key = String(timeScope || "last_7_days").toLowerCase();
   const config = TIME_SCOPE_DAY_CONFIG[key] || TIME_SCOPE_DAY_CONFIG.last_7_days;
@@ -264,7 +275,21 @@ async function fetchMultiWindowData({ bundle, username, subAnalyses, fetchTimeou
         });
         try {
           const exRaw = await fetchJsonWithTimeout(exUrl, fetchTimeoutMs || FETCH_TIMEOUT_MS);
-          const exPoints = adaptExerciseSessionsRange(exRaw);
+          const rawExPoints = adaptExerciseSessionsRange(exRaw);
+          // Densify: per-type workout minutes are sparse (only logged on session days).
+          // A day with no session = 0 minutes of that workout, NOT missing. Emit a point
+          // for EVERY date in the window (0 when absent) so the series is full-length and
+          // aligns to the date axis — the executor can't drop/compact nulls and misplace bars.
+          const valueByKey = new Map();
+          for (const p of rawExPoints) valueByKey.set(`${p.metric}|${p.timestamp}`, p.value);
+          const windowDates = enumerateDates(window.startDate, window.endDate);
+          const exPoints = [];
+          for (const exMetric of EXERCISE_SESSION_METRICS) {
+            for (const d of windowDates) {
+              const v = valueByKey.get(`${exMetric}|${d}`);
+              exPoints.push({ timestamp: d, label: d, metric: exMetric, value: v == null ? 0 : v, meta: {} });
+            }
+          }
           for (const exMetric of EXERCISE_SESSION_METRICS) {
             const key = `${exMetric}:${window.startDate}:${window.endDate}`;
             fetchedWindows.set(key, exPoints);

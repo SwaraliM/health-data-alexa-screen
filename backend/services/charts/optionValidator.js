@@ -152,137 +152,6 @@ function sanitizeAxisLabels(axis) {
   return result;
 }
 
-// ─── Cartesian normalization (axis/series readability guardrails) ─────────────
-
-// Cartesian category charts we normalize. Others (scatter pairs, radar, pie,
-// donut, gauge, heatmap, list/composed summary) are left untouched.
-const NORMALIZABLE_CHART_TYPES = new Set([
-  "bar", "line", "area", "stacked_bar", "grouped_bar", "multi_line", "dual_axis",
-]);
-
-// Ordered unit inference from a series name. First match wins.
-const UNIT_RULES = [
-  { unit: "%", label: "Percent (%)", re: /%|percent|efficiency|spo|oxygen|saturation/i },
-  { unit: "hrs", label: "Hours (hrs)", re: /\b(hours?|hrs?)\b|\(h(rs)?\)/i },
-  { unit: "min", label: "Minutes (min)", re: /\bmin(ute)?s?\b|\bminutes\b|zone minutes|asleep|awake|deep|rem|light/i },
-  { unit: "bpm", label: "Heart Rate (bpm)", re: /\bbpm\b|heart rate|resting hr|pulse/i },
-  { unit: "ms", label: "HRV (ms)", re: /\bhrv\b|\bms\b|variability|rmssd/i },
-  { unit: "br", label: "Breaths/min", re: /breath|respiration/i },
-  { unit: "steps", label: "Steps", re: /\bsteps?\b/i },
-  { unit: "cal", label: "Calories", re: /\bcal(orie)?s?\b|energy|burn/i },
-  { unit: "mi", label: "Distance (mi)", re: /\b(miles?|mi|km|distance)\b/i },
-  { unit: "floors", label: "Floors", re: /\bfloors?\b|stairs|flights/i },
-];
-
-function inferUnit(seriesName) {
-  const name = String(seriesName || "");
-  for (const rule of UNIT_RULES) {
-    if (rule.re.test(name)) return rule;
-  }
-  return { unit: "value", label: "Value", re: null };
-}
-
-function hasCategoryXAxis(option) {
-  const x = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
-  return Array.isArray(x?.data) && x.data.length > 0;
-}
-
-/**
- * Make every flat numeric series the same length as the category x-axis
- * (pad with null, truncate if longer). Leaves [x,y]-pair series alone.
- */
-function alignSeriesToAxis(option) {
-  const x = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
-  const len = Array.isArray(x?.data) ? x.data.length : null;
-  if (!len || !Array.isArray(option.series)) return option;
-  const series = option.series.map((s) => {
-    if (!s || !Array.isArray(s.data)) return s;
-    if (s.data.some((d) => Array.isArray(d))) return s; // [x,y] pairs — skip
-    let data = s.data.slice(0, len);
-    while (data.length < len) data.push(null);
-    return { ...s, data };
-  });
-  return { ...option, series };
-}
-
-/**
- * Enforce readable units-per-axis:
- *  - group series by inferred unit; rank groups by (#series desc, first appearance)
- *  - 1 group  → single y-axis
- *  - 2 groups → dual y-axis (group2 → yAxisIndex 1)
- *  - 3+ groups → keep the top 2 groups (dual axis), drop the rest
- * Stacked bars (single unit) are unaffected.
- */
-function enforceUnitAxes(option) {
-  if (!Array.isArray(option.series) || option.series.length <= 1) return option;
-  // scatter pair series are excluded upstream; here all series are flat.
-  const groupsOrder = [];
-  const groups = new Map(); // unit -> { label, indices: [] }
-  option.series.forEach((s, i) => {
-    const { unit, label } = inferUnit(s?.name);
-    if (!groups.has(unit)) {
-      groups.set(unit, { label, indices: [] });
-      groupsOrder.push(unit);
-    }
-    groups.get(unit).indices.push(i);
-  });
-
-  if (groups.size <= 1) return option; // single unit — nothing to do
-
-  // Rank: more series first, then earlier appearance.
-  const ranked = [...groups.entries()].sort((a, b) => {
-    const d = b[1].indices.length - a[1].indices.length;
-    if (d !== 0) return d;
-    return groupsOrder.indexOf(a[0]) - groupsOrder.indexOf(b[0]);
-  });
-  const keep = ranked.slice(0, 2);
-  const keepUnits = new Set(keep.map(([u]) => u));
-  const axisIndexForUnit = new Map(keep.map(([u], idx) => [u, idx]));
-
-  // Keep only series in the top-2 unit groups; assign yAxisIndex by group.
-  const newSeries = [];
-  const namesByAxis = [[], []];
-  option.series.forEach((s) => {
-    const { unit } = inferUnit(s?.name);
-    if (!keepUnits.has(unit)) return; // drop 3rd+ unit group
-    const axisIdx = axisIndexForUnit.get(unit);
-    newSeries.push({ ...s, yAxisIndex: axisIdx });
-    namesByAxis[axisIdx].push(s?.name);
-  });
-
-  // Label each axis from its OWN series (never from the author's positional
-  // names, which can be mismatched): a single-series axis takes the series
-  // name (e.g. "Resting HR (bpm)"); a multi-series axis takes the unit label
-  // (e.g. "Minutes (min)").
-  const buildAxis = (groupEntry, idx) => {
-    const names = namesByAxis[idx] || [];
-    const name = names.length === 1 ? names[0] : groupEntry[1].label;
-    return { type: "value", name };
-  };
-
-  const result = { ...option, series: newSeries };
-  if (keep.length === 2) {
-    result.yAxis = [buildAxis(keep[0], 0), buildAxis(keep[1], 1)];
-  } else {
-    result.yAxis = buildAxis(keep[0], 0);
-  }
-  return result;
-}
-
-/**
- * Apply cartesian readability normalization for category charts only.
- */
-function normalizeCartesianOption(option, chartType) {
-  if (!NORMALIZABLE_CHART_TYPES.has(String(chartType).toLowerCase())) return option;
-  if (!hasCategoryXAxis(option)) return option;
-  // Skip if any series uses [x,y] pairs (defensive — shouldn't happen for these types).
-  const series = Array.isArray(option.series) ? option.series : [];
-  if (series.some((s) => Array.isArray(s?.data) && s.data.some((d) => Array.isArray(d)))) return option;
-  let out = alignSeriesToAxis(option);
-  out = enforceUnitAxes(out);
-  return out;
-}
-
 /**
  * Validate and sanitize an LLM-generated ECharts option object.
  *
@@ -318,9 +187,10 @@ function validateLLMGeneratedOption(rawOption, chartType = "") {
   // 4. Truncate data points
   option = truncateDataPoints(option);
 
-  // 4b. Cartesian readability: align series to x-axis length; cap to <=2 unit
-  // groups via dual y-axis (drop 3rd+ unit group). Keeps charts legible.
-  option = normalizeCartesianOption(option, chartType);
+  // NOTE: chart STRUCTURE (axes, series, units) is authored by the executor LLM and
+  // left intact here — we only sanitize/cap, never reshape. (A previous deterministic
+  // normalization step was removed: it padded sparse series with trailing nulls
+  // (misaligning values to wrong dates) and dropped/rebuilt axes, breaking charts.)
 
   // 5. Must have series for chart types that require it.
   // Graphic-first types (radar, list_summary, composed_summary) render via ECharts

@@ -471,15 +471,16 @@ New canonical metrics (`metricResolver.js`): `active_zone_minutes`, `walk_minute
 
 ---
 
-## Chart Readability Normalization (`backend/services/charts/optionValidator.js`)
+## Chart authoring = GPT-controlled (`backend/services/charts/optionValidator.js`)
 
-The V4 executor LLM authors the full ECharts `option`. It is inconsistent about units/axes, so `validateLLMGeneratedOption` deterministically normalizes cartesian category charts (bar/line/area/stacked_bar/grouped_bar/multi_line/dual_axis) via `normalizeCartesianOption`:
-- **Series↔axis alignment** (`alignSeriesToAxis`): every flat `series.data` is padded with `null` / truncated to match `xAxis.data.length` (fixes sparse per-type series like walk/HIIT minutes misaligning with the date axis).
-- **Units-per-axis** (`enforceUnitAxes`): series are grouped by a unit inferred from their name (min/steps/cal/mi/bpm/ms/%/hrs/floors). 1 group → single y-axis; 2 groups → dual y-axis (`yAxisIndex` 0/1); **3+ groups → keep the top-2 groups (dual axis) and drop the rest** so small series stay legible (e.g. exercise: minutes-family left, calories right, steps dropped). Axis names come from the actual series (single-series axis → series name like "Resting HR (bpm)"; multi-series axis → unit label like "Minutes (min)"), never the LLM's positional names (which can be mismatched). Stacked sleep stages (one unit) are untouched.
+The V4 executor LLM authors the full ECharts `option` (axes, series, units). **Chart STRUCTURE is left to GPT** — `validateLLMGeneratedOption` only sanitizes (strips unknown keys, removes functions/injection, caps total data points). An earlier deterministic `normalizeCartesianOption` step was **removed**: it padded sparse series with trailing nulls (misaligning values to the wrong dates), and dropped/rebuilt axes (causing some charts not to render). Quality is now driven by (a) a stronger model and (b) prompt guidance.
 
-**Important fix:** `chartSpecService.sanitizeAxis` previously did `{ ...axis }`, which corrupted a dual-axis ARRAY into a numeric-keyed object `{0:…,1:…}` (broke ECharts dual-axis). It now maps over arrays.
+- **Model:** executor → `gpt-5.4` (`OPENAI_EXECUTOR_V4_MODEL`); planner / intent classifier / chart-QnA → `gpt-5.4-mini` (`OPENAI_QNA_MODEL`). The retired `gpt-4.1` default was a source of failures. Code defaults in `agentConfigs.js` updated to match.
+- **Prompt guidance** (`agentConfigs.js` V4 `ECHARTS_SKELETON_GUIDE` / DATA RULES): ≤2 units per chart (dual-axis for 2); **copy `raw_data.metrics` arrays EXACTLY, never drop/compact nulls** (every `series.data.length` == `xAxis.data.length`); week-vs-week comparison uses a shared 7-day x-axis with two equal-length series (never a 14-day axis with one week empty); total sleep DURATION in hours (goal line @8), sleep STAGES in minutes.
+- **Genuine bugfix kept:** `chartSpecService.sanitizeAxis` now maps over dual-axis ARRAYS (previously `{ ...axis }` corrupted them into `{0:,1:}`, breaking ECharts dual-axis). This preserves GPT-authored dual-axis charts.
+- **Sparse exercise metrics densified at the data layer** (`dataFetchService.js`): `walk_minutes`/`hiit_minutes` are emitted for EVERY date in the window (0 when no session that day), so the series are full-length and align to the date axis regardless of how GPT copies them. "No session" = 0 minutes, which is semantically correct.
 
-Executor prompt (`agentConfigs.js` V4 `ECHARTS_SKELETON_GUIDE`) also instructs: ≤2 units per chart (dual-axis for 2), equal series length (null-pad), total sleep DURATION in **hours** (goal line @8) but sleep STAGES in **minutes**, and exercise framed as **progress/trend** (primary intensity metric with avg/goal markLine) rather than a multi-metric number dump. Frontend `chartSpec.js` keeps a sleep-minutes→hours display backstop.
+Frontend `chartSpec.js` keeps a sleep-minutes→hours display backstop.
 
 ---
 
