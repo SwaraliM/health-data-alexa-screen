@@ -24,7 +24,15 @@ function connectWebSocket(username, navigate) {
   if (socket) return;
 
   const normalizedUsername = normalizeUsername(username);
-  const websocketUrl = process.env.REACT_APP_BACKEND_URL;
+  // Derive the WebSocket URL from the page origin. `new WebSocket()` requires the
+  // ws:// or wss:// scheme — using REACT_APP_BACKEND_URL (often "https://…") throws
+  // and silently breaks live chart updates. The backend serves both the app and the
+  // WS server on the same host/port, so same-origin is always correct in production.
+  const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const websocketUrl = isLocalDev
+    ? "ws://localhost:5001"
+    : `${wsProtocol}//${window.location.host}`;
   console.log("[frontend websocket] connecting", {
     websocketUrl,
     username: normalizedUsername,
