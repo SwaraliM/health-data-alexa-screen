@@ -1913,6 +1913,21 @@ Include the unit in parentheses where applicable.
 Examples: "Date", "Day of Week", "Steps per Day", "Sleep Duration (hrs)", "Resting Heart Rate (bpm)", "HRV Score", "SpO₂ (%)", "Calories Burned".
 These labels are displayed prominently along the axes on screen — they are the one-line explanation that helps older users understand what they are looking at without needing to read the legend.
 
+UNITS & AXES (CRITICAL — charts are unreadable when violated):
+- All series in ONE chart must share ONE unit, OR use EXACTLY TWO y-axes via yAxisIndex for EXACTLY TWO unit groups (e.g. minutes on the left, % on the right). Set yAxis to an array of two when you do this and give each its own unit name.
+- NEVER put 3+ different units/scales in one chart (e.g. steps ~10000 + calories ~1500 + minutes ~20 together) — the small series become invisible. If a question spans 3+ units, pick the most relevant ONE or TWO, or split into separate stages.
+- Treat steps, calories, minutes (active zone / walk / HIIT), distance, bpm, ms, %, hours, floors as DISTINCT units — do not combine more than two of them on shared axes.
+- EVERY series.data array MUST be exactly the same length as xAxis.data. For days with no value use null (e.g. a workout type with no session that day is null, not a shorter array).
+
+SLEEP UNITS:
+- Total / overall sleep DURATION → express in HOURS (raw minutes ÷ 60, one decimal). yAxis.name "Sleep Duration (hrs)". Add a goal markLine at 8.
+- Sleep STAGE composition (deep/REM/light) → keep in MINUTES (sub-hour values read better as minutes). yAxis.name "Sleep Time (min)".
+
+EXERCISE / ACTIVITY = SHOW PROGRESS, NOT A NUMBER DUMP:
+- Lead with the trend: is the user doing MORE or LESS than before? Prefer a LINE or AREA of the primary intensity metric (active_zone_minutes) over time with a markLine average (and goal if known).
+- Do NOT cram many raw daily metrics into one chart. One coherent intensity story per chart.
+- Narration must open with the progress takeaway ("Your active minutes are trending up vs last week…"), not a recitation of each day's numbers.
+
 DATA RULES:
 - Use ONLY values from raw_data.metrics arrays. Do NOT invent or estimate numbers.
 - null means missing data for that day — preserve as null in series.data

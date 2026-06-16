@@ -465,6 +465,18 @@ New canonical metrics (`metricResolver.js`): `active_zone_minutes`, `walk_minute
 
 ---
 
+## Chart Readability Normalization (`backend/services/charts/optionValidator.js`)
+
+The V4 executor LLM authors the full ECharts `option`. It is inconsistent about units/axes, so `validateLLMGeneratedOption` deterministically normalizes cartesian category charts (bar/line/area/stacked_bar/grouped_bar/multi_line/dual_axis) via `normalizeCartesianOption`:
+- **Series↔axis alignment** (`alignSeriesToAxis`): every flat `series.data` is padded with `null` / truncated to match `xAxis.data.length` (fixes sparse per-type series like walk/HIIT minutes misaligning with the date axis).
+- **Units-per-axis** (`enforceUnitAxes`): series are grouped by a unit inferred from their name (min/steps/cal/mi/bpm/ms/%/hrs/floors). 1 group → single y-axis; 2 groups → dual y-axis (`yAxisIndex` 0/1); **3+ groups → keep the top-2 groups (dual axis) and drop the rest** so small series stay legible (e.g. exercise: minutes-family left, calories right, steps dropped). Axis names come from the actual series (single-series axis → series name like "Resting HR (bpm)"; multi-series axis → unit label like "Minutes (min)"), never the LLM's positional names (which can be mismatched). Stacked sleep stages (one unit) are untouched.
+
+**Important fix:** `chartSpecService.sanitizeAxis` previously did `{ ...axis }`, which corrupted a dual-axis ARRAY into a numeric-keyed object `{0:…,1:…}` (broke ECharts dual-axis). It now maps over arrays.
+
+Executor prompt (`agentConfigs.js` V4 `ECHARTS_SKELETON_GUIDE`) also instructs: ≤2 units per chart (dual-axis for 2), equal series length (null-pad), total sleep DURATION in **hours** (goal line @8) but sleep STAGES in **minutes**, and exercise framed as **progress/trend** (primary intensity metric with avg/goal markLine) rather than a multi-metric number dump. Frontend `chartSpec.js` keeps a sleep-minutes→hours display backstop.
+
+---
+
 ## Data Fetch Service (`backend/services/qna/dataFetchService.js`)
 
 Extracted from orchestrator — all Fitbit fetching logic:

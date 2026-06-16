@@ -76,6 +76,10 @@ function sanitizeGraphicNode(item) {
 }
 
 function sanitizeAxis(axis = {}, fallbackName = "") {
+  // Dual-axis charts pass an ARRAY of axes — map over it (spreading an array
+  // with { ...axis } would corrupt it into a numeric-keyed object and break
+  // ECharts dual-axis rendering).
+  if (Array.isArray(axis)) return axis.slice(0, 2).map((ax) => sanitizeAxis(ax, fallbackName));
   if (!axis || typeof axis !== "object") return { type: "value", name: fallbackName };
   const cloned = { ...axis };
   if (Array.isArray(cloned.data)) cloned.data = cloned.data.slice(0, 60).map((v) => sanitizeText(v, "", 40));
