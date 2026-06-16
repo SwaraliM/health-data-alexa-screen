@@ -73,6 +73,62 @@ loginRouter.post("/save-token", async (req, res) => {
   }
 });
 
+loginRouter.post("/fitbit-exchange", async (req, res) => {
+  const { code, username } = req.body;
+  if (!code || !username) {
+    return res.status(400).json({ message: "code and username are required." });
+  }
+
+  const clientId = process.env.FITBIT_CLIENT_ID;
+  const clientSecret = process.env.FITBIT_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return res.status(500).json({ message: "Fitbit credentials not configured on server." });
+  }
+
+  const redirectUri = process.env.FITBIT_REDIRECT_URI || `${req.protocol}://${req.get("host")}/auth-callback`;
+
+  try {
+    const fetch = require("node-fetch");
+    const encodedCredentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+    const tokenRes = await fetch("https://api.fitbit.com/oauth2/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${encodedCredentials}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+        code,
+      }).toString(),
+    });
+
+    const data = await tokenRes.json();
+    if (!tokenRes.ok) {
+      return res.status(400).json({ message: "Fitbit token exchange failed.", error: data });
+    }
+
+    const { access_token, refresh_token, expires_in } = data;
+    const name = String(username).trim();
+    const nameRegex = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+    const user = await User.findOneAndUpdate(
+      { username: nameRegex },
+      { accessToken: access_token, refreshToken: refresh_token, tokenExpiry: expires_in, isAuthorized: true },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: USER_NOT_FOUNT });
+    }
+
+    res.status(200).json({ message: TOKEN_SAVE_SUCCESS });
+  } catch (error) {
+    console.error("Fitbit exchange error:", error);
+    res.status(500).json({ message: SERVER_ERROR });
+  }
+});
+
 loginRouter.get("/authorized-users", async (req, res) => {
   try {
     // search for all authorized users

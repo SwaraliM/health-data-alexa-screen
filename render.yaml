@@ -14,6 +14,8 @@ services:
         sync: false
       - key: FITBIT_CLIENT_SECRET
         sync: false
+      - key: FITBIT_REDIRECT_URI
+        value: "https://health-data-alexa-screen.onrender.com/auth-callback"
       - key: REACT_APP_FITBIT_CLIENT_ID
         sync: false
       - key: REACT_APP_FITBIT_CLIENT_SECRET
