@@ -90,7 +90,7 @@ function detectNavigationAction(text = "") {
 // These are NOT phrased as wh-questions, so looksLikeQuestion() misses them — but when a
 // chart is on screen they should be answered as a chart follow-up (explain), not treated
 // as navigation or a brand-new analysis.
-const CLARIFICATION_PATTERN = /\b(do(es)?n'?t|did'?n?t|cannot|can'?t)\s+(understand|get|catch|follow)\b|\b(i'?m\s+)?confus(ed|ing)\b|\bwhat\s+(was|is|are|do(es)?|did)\s+(that|this|those|these|it|they|.*\bmean)\b|\bwhat\s+do(es)?\b.*\bmean\b|\bexplain\b|\bbreak\s+(it|that|this)\s+down\b|\bin\s+plain\b|\bsimpler\b|\bdumb(ed)?\s+it\s+down\b|\blost\s+me\b|\bno\s+idea\b|\b(not\s+clear|unclear)\b|^huh\b|\bcome\s+again\b|\bsay\s+(that|it)\s+again\b|\brepeat\b|\btell\s+me\s+more\b|\b(go|dig)\s+deeper\b|\bmore\s+detail\b|\bwhat\s+am\s+i\s+looking\s+at\b|\bdon'?t\s+follow\b/i;
+const CLARIFICATION_PATTERN = /\b(don'?t|doesn'?t|didn'?t|did\s+not|do\s+not|does\s+not|cannot|can'?t|couldn'?t)\s+(?:\w+\s+){0,2}(understand|get|catch|follow|know\s+what)\b|\b(i'?m\s+)?confus(ed|ing)\b|\bwhat\s+(was|is|are|do(es)?|did)\s+(that|this|those|these|it|they|.*\bmean)\b|\bwhat\s+do(es)?\b.*\bmean\b|\bexplain\b|\bbreak\s+(it|that|this)\s+down\b|\bin\s+plain\b|\bsimpler\b|\bdumb(ed)?\s+it\s+down\b|\blost\s+me\b|\bno\s+idea\b|\b(not\s+clear|unclear)\b|^huh\b|\bcome\s+again\b|\bsay\s+(that|it)\s+again\b|\brepeat\b|\btell\s+me\s+more\b|\b(go|dig)\s+deeper\b|\bmore\s+detail\b|\bwhat\s+am\s+i\s+looking\s+at\b|\b(don'?t|didn'?t)\s+follow\b/i;
 
 function looksLikeClarification(text = "") {
   const cleaned = normalizeUtterance(text);
