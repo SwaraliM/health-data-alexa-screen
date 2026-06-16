@@ -53,6 +53,15 @@ function formatDateLabel(ts) {
  * Humanize a snake_case metric key → "Resting Hr"
  */
 function formatMetricName(key) {
+  const special = {
+    active_zone_minutes: "Active Zone Minutes",
+    walk_minutes: "Walk Minutes",
+    hiit_minutes: "HIIT Minutes",
+    hrv: "HRV",
+    spo2: "SpO2",
+    resting_hr: "Resting HR",
+  };
+  if (special[key]) return special[key];
   return String(key || "")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -378,6 +387,7 @@ function deriveMax(metricKey, currentValue = null) {
     calories: 3000, sleep_minutes: 600, sleep_efficiency: 100,
     wake_minutes: 120, breathing_rate: 20, spo2: 100,
     weight: 200, body_fat: 50, resting_hr: 120, hrv: 100,
+    active_zone_minutes: 120, walk_minutes: 180, hiit_minutes: 60,
   };
   if (known[metricKey] != null) return known[metricKey];
   if (currentValue != null && currentValue > 0) return Math.ceil(currentValue * 1.5);
@@ -393,6 +403,7 @@ function deriveUnit(metricKey) {
     calories: "cal", sleep_minutes: "min", sleep_efficiency: "%",
     wake_minutes: "min", breathing_rate: "br/min", spo2: "%",
     weight: "lbs", body_fat: "%", resting_hr: "bpm", hrv: "ms",
+    active_zone_minutes: "min", walk_minutes: "min", hiit_minutes: "min",
   };
   return units[metricKey] || "";
 }

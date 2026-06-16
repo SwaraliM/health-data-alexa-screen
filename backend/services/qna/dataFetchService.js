@@ -23,6 +23,8 @@ const {
   adaptSleepStagesRange,
   adaptBreathingRateRange,
   adaptSpo2Range,
+  adaptAzmRange,
+  adaptExerciseSessionsRange,
 } = require("../fitbit/endpointAdapters");
 const { resolveRequestedMetrics } = require("../fitbit/metricResolver");
 const { buildNormalizedTable } = require("../fitbit/normalizeSeries");
@@ -52,6 +54,9 @@ const SLEEP_STAGE_METRICS = new Set([
   "sleep_awake",
   "sleep_efficiency",
 ]);
+
+// Per-type exercise-session minute metrics — all sourced from ONE exercise-log fetch.
+const EXERCISE_SESSION_METRICS = new Set(["walk_minutes", "hiit_minutes"]);
 
 function fetchLog(msg, data = null) {
   if (!FETCH_DEBUG) return;
@@ -156,6 +161,8 @@ function buildFitbitInternalUrl({ username, metricKey, startDate, endDate, timeS
   if (metricKey === "floors") return `${base}/api/fitbit/${user}/activities/range/floors/date/${startDate}/${endDate}`;
   if (metricKey === "elevation") return `${base}/api/fitbit/${user}/activities/range/elevation/date/${startDate}/${endDate}`;
   if (metricKey === "hrv") return `${base}/api/fitbit/${user}/hrv/range/date/${startDate}/${endDate}`;
+  if (metricKey === "active_zone_minutes") return `${base}/api/fitbit/${user}/activities/azm/range/date/${startDate}/${endDate}`;
+  if (EXERCISE_SESSION_METRICS.has(metricKey)) return `${base}/api/fitbit/${user}/activities/log/range/date/${startDate}/${endDate}`;
   return `${base}/api/fitbit/${user}/activities/range/steps/date/${startDate}/${endDate}`;
 }
 
@@ -171,6 +178,8 @@ function mapMetricPayload(metric, payload) {
   if (metricKey === "hrv") return adaptHrvRange(payload);
   if (metricKey === "heart_intraday") return adaptIntradayHeart(payload);
   if (SLEEP_STAGE_METRICS.has(metricKey)) return adaptSleepStagesRange(payload);
+  if (EXERCISE_SESSION_METRICS.has(metricKey)) return adaptExerciseSessionsRange(payload);
+  if (metricKey === "active_zone_minutes") return adaptAzmRange(payload);
   if (metricKey === "breathing_rate") return adaptBreathingRateRange(payload);
   if (metricKey === "spo2") return adaptSpo2Range(payload);
   if (metricKey.endsWith("_intraday")) {
@@ -240,6 +249,35 @@ async function fetchMultiWindowData({ bundle, username, subAnalyses, fetchTimeou
           fetchedWindows.set(sleepCacheKey, sleepStagePoints);
         } catch (error) {
           fetchWarn("sleep stage fetch failed", { saId, message: error?.message || String(error) });
+        }
+      }
+    }
+
+    // Exercise-session dedup: walk_minutes + hiit_minutes come from ONE exercise-log fetch.
+    const exerciseRequested = metrics.filter((m) => EXERCISE_SESSION_METRICS.has(m));
+    if (exerciseRequested.length > 0) {
+      const exCacheKey = `exercise_log:${window.startDate}:${window.endDate}`;
+      if (!fetchedWindows.has(exCacheKey)) {
+        const exUrl = buildFitbitInternalUrl({
+          username, metricKey: "walk_minutes",
+          startDate: window.startDate, endDate: window.endDate, timeScope: window.timeScope,
+        });
+        try {
+          const exRaw = await fetchJsonWithTimeout(exUrl, fetchTimeoutMs || FETCH_TIMEOUT_MS);
+          const exPoints = adaptExerciseSessionsRange(exRaw);
+          for (const exMetric of EXERCISE_SESSION_METRICS) {
+            const key = `${exMetric}:${window.startDate}:${window.endDate}`;
+            fetchedWindows.set(key, exPoints);
+            existingCache[`${saId}_${exMetric}`] = {
+              metric: exMetric, timeScope: window.timeScope,
+              startDate: window.startDate, endDate: window.endDate,
+              fetchedAt: new Date().toISOString(), sourceUrl: exUrl,
+              raw: exRaw, adaptedPoints: exPoints,
+            };
+          }
+          fetchedWindows.set(exCacheKey, exPoints);
+        } catch (error) {
+          fetchWarn("exercise log fetch failed", { saId, message: error?.message || String(error) });
         }
       }
     }

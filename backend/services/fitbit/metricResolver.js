@@ -38,6 +38,10 @@ const CANONICAL_METRICS = new Set([
   // NEW: respiratory metrics
   "breathing_rate",
   "spo2",
+  // NEW: exercise metrics
+  "active_zone_minutes",
+  "walk_minutes",
+  "hiit_minutes",
 ]);
 
 const METRIC_ALIASES = {
@@ -63,6 +67,10 @@ const METRIC_ALIASES = {
   // NEW: respiratory aliases
   breathing_rate: ["breathing rate", "breathing", "respiration", "respiration rate", "breaths per minute"],
   spo2: ["spo2", "blood oxygen", "oxygen saturation", "o2 levels", "oxygen levels", "blood o2"],
+  // NEW: exercise aliases
+  active_zone_minutes: ["active zone minutes", "azm", "zone minutes", "exercise minutes", "exercise intensity", "workout minutes", "active minutes"],
+  walk_minutes: ["walk minutes", "walking minutes", "walk workout", "walk session", "walk sessions"],
+  hiit_minutes: ["hiit", "high intensity", "high intensity interval", "interval training"],
 };
 
 const CONCEPT_TO_METRICS = {
@@ -76,11 +84,17 @@ const CONCEPT_TO_METRICS = {
   "sleep breakdown": ["sleep_deep", "sleep_light", "sleep_rem", "sleep_awake"],
   "respiratory health": ["breathing_rate", "spo2"],
   "overnight health": ["sleep_minutes", "sleep_efficiency", "breathing_rate", "spo2", "resting_hr"],
+  // NEW: exercise concepts
+  exercise: ["active_zone_minutes", "walk_minutes", "hiit_minutes", "calories"],
+  workout: ["active_zone_minutes", "walk_minutes", "hiit_minutes"],
+  workouts: ["active_zone_minutes", "walk_minutes", "hiit_minutes"],
+  "exercise intensity": ["active_zone_minutes"],
 };
 
 const DOMAIN_METRIC_BUNDLES = {
   sleep: ["sleep_minutes", "sleep_efficiency", "sleep_deep", "sleep_rem", "sleep_awake", "resting_hr"],
   activity: ["steps", "calories", "distance", "floors", "resting_hr"],
+  exercise: ["active_zone_minutes", "walk_minutes", "hiit_minutes", "calories"],
   "heart health": ["resting_hr", "hrv", "sleep_minutes", "steps"],
   "overall health": ["steps", "calories", "sleep_minutes", "sleep_efficiency", "sleep_deep", "resting_hr", "hrv"],
 };
@@ -214,7 +228,8 @@ function expandMetricSetForQuestion(question = "", metrics = []) {
 
   const isEvaluative = /\b(has|have|had|is|am|are|was|were|improv|better|worse|normal|enough|declin|increase|decrease|changed)\b/.test(normalizedQuestion);
   const isBroadSleepQuestion = includes(/\b(sleep|slept|sleeping|sleep quality|sleep stages|rest)\b/);
-  const isBroadActivityQuestion = includes(/\b(activity|active|steps|walking|exercise|move)\b/);
+  const isBroadActivityQuestion = includes(/\b(activity|active|steps|walking|move)\b/);
+  const isExerciseQuestion = includes(/\b(exercise|workout|workouts|gym|hiit|active zone|zone minutes|training)\b/);
   const isBroadHeartQuestion = includes(/\b(heart|hrv|resting heart|pulse|recovery)\b/);
   const isOverallHealthQuestion = includes(/\b(overall health|health report|how am i doing|wellness|summary of my health)\b/);
 
@@ -223,6 +238,9 @@ function expandMetricSetForQuestion(question = "", metrics = []) {
   }
   if (isBroadActivityQuestion && (isEvaluative || metricSet.has("steps"))) {
     addBundle("activity");
+  }
+  if (isExerciseQuestion) {
+    addBundle("exercise");
   }
   if (isBroadHeartQuestion) {
     addBundle("heart health");

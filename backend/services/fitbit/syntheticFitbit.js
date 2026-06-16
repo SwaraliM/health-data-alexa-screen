@@ -106,6 +106,22 @@ const DIST_PER_STEP = 0.000623; // miles per step (from real ratio)
 const FLOORS = { mean: 9, sd: 6, min: 2, max: 28 };
 const ELEV_PER_FLOOR = 3.0; // feet per floor (from real ratio)
 
+// Active Zone Minutes — derived from amy's real window: median 9, mean 22, heavily
+// right-skewed (occasional spikes to ~236), fat-burn dominant, cardio occasional, peak rare.
+const AZM = { lnMean: 2.2, lnSd: 0.85, min: 1, max: 240 };
+
+// Named exercise sessions — derived from amy's REAL logged sessions (Mar 23–May 10):
+// only Walk (59%) and HIIT (41%) have real data, so ONLY these two real types are used.
+// Per-day: ~30% of days are active; on active days 1–8 sessions (avg ~3), weekend-skewed.
+const EXERCISE_TYPES = [
+  // Walk: real ~22min, ~94cal, ~0.8mi, ~1416 steps per session
+  { name: "Walk", activityId: 90013, weight: 0.59, durMean: 21.6, durSd: 8, durMin: 6, durMax: 48, calPerMin: 4.35, stepsPerMin: 65, milesPerMin: 0.037, hasDistance: true },
+  // HIIT: real ~5min, ~25cal, no distance, ~125 steps per session
+  { name: "HIIT", activityId: 91040, weight: 0.41, durMean: 4.9, durSd: 1.3, durMin: 3, durMax: 8, calPerMin: 5.0, stepsPerMin: 25, milesPerMin: 0, hasDistance: false },
+];
+// P(active day) by weekday (Sun..Sat) from real data.
+const EXERCISE_ACTIVE_PROB = [0.43, 0.43, 0.29, 0.14, 0.14, 0.43, 0.57];
+
 /** -------------------------------------------------------------------------
  * Date helpers
  * ---------------------------------------------------------------------- */
@@ -409,6 +425,120 @@ function fillActivitySummary(username, raw, date) {
   };
 }
 
+/** -------------------------------------------------------------------------
+ * Active Zone Minutes (AZM)
+ * ---------------------------------------------------------------------- */
+function synthAzm(username, dateStr) {
+  const v = vitalityFactor(username, dateStr);
+  const r = rngFor(`${username}|${dateStr}|azm`);
+  // log-normal base (median ~9), boosted on high-vitality days for occasional spikes
+  let azm = Math.exp(gauss(r, AZM.lnMean + v * 0.5, AZM.lnSd));
+  if (v > 0.4 && r() < 0.5) azm *= 1.8 + r() * 2.2; // occasional workout spike
+  azm = Math.round(clamp(azm, AZM.min, AZM.max));
+  // fat-burn dominant; cardio appears on bigger days; peak only on large days
+  let cardio = azm > 25 && r() < 0.6 ? Math.round(azm * (0.1 + r() * 0.2)) : 0;
+  let peak = azm > 120 && r() < 0.4 ? Math.round(azm * 0.03) : 0;
+  let fatBurn = Math.max(0, azm - cardio - peak);
+  const value = { activeZoneMinutes: azm, fatBurnActiveZoneMinutes: fatBurn };
+  if (cardio > 0) value.cardioActiveZoneMinutes = cardio;
+  if (peak > 0) value.peakActiveZoneMinutes = peak;
+  return { dateTime: dateStr, value, _synthetic: true };
+}
+
+/** Gap-fill AZM range — key "activities-active-zone-minutes". */
+function fillAzmRange(username, raw, startDate, endDate) {
+  if (!isFill()) return raw;
+  const key = "activities-active-zone-minutes";
+  const list = Array.isArray(raw?.[key]) ? raw[key].slice() : [];
+  const byDate = new Map();
+  for (const e of list) {
+    const d = e?.dateTime || e?.date;
+    if (d) byDate.set(d, e);
+  }
+  const out = [];
+  for (const d of eachDate(startDate, endDate)) {
+    const existing = byDate.get(d);
+    const num = existing ? Number(existing.value?.activeZoneMinutes ?? existing.value) : NaN;
+    out.push(!existing || !Number.isFinite(num) ? synthAzm(username, d) : existing);
+  }
+  return { ...(raw || {}), [key]: out };
+}
+
+/** -------------------------------------------------------------------------
+ * Named exercise sessions (Walk / HIIT) — exact Fitbit `activities[]` shape.
+ * ---------------------------------------------------------------------- */
+function pickExerciseType(r) {
+  const x = r();
+  let acc = 0;
+  for (const t of EXERCISE_TYPES) {
+    acc += t.weight;
+    if (x <= acc) return t;
+  }
+  return EXERCISE_TYPES[0];
+}
+
+/** Returns an array of synthetic session entries for a date (possibly empty on rest days). */
+function synthExerciseSessions(username, dateStr) {
+  const r = rngFor(`${username}|${dateStr}|exercise`);
+  // Is this an active day? (weekday-dependent probability)
+  if (r() > EXERCISE_ACTIVE_PROB[dow(dateStr)]) return [];
+  const nSessions = Math.round(clamp(gauss(r, 3, 1.8), 1, 8));
+  const sessions = [];
+  for (let i = 0; i < nSessions; i++) {
+    const t = pickExerciseType(r);
+    const durationMin = Math.round(clamp(gauss(r, t.durMean, t.durSd), t.durMin, t.durMax));
+    const calories = Math.round(durationMin * t.calPerMin * (0.85 + r() * 0.3));
+    const steps = Math.round(durationMin * t.stepsPerMin * (0.85 + r() * 0.3));
+    const distance = t.hasDistance ? +(durationMin * t.milesPerMin * (0.85 + r() * 0.3)).toFixed(5) : 0;
+    // start times in afternoon/evening window (13:00–19:30)
+    const startMinutes = Math.round(clamp(gauss(r, 16 * 60, 120), 13 * 60, 19 * 60 + 30));
+    const hh = String(Math.floor(startMinutes / 60)).padStart(2, "0");
+    const mm = String(startMinutes % 60).padStart(2, "0");
+    sessions.push({
+      logId: Number(`${hashStr(`${username}|${dateStr}|${i}`)}`),
+      activityId: t.activityId,
+      activityParentId: t.activityId,
+      activityParentName: t.name,
+      name: t.name,
+      calories,
+      distance,
+      steps,
+      duration: durationMin * 60000,
+      startDate: dateStr,
+      startTime: `${hh}:${mm}`,
+      isFavorite: false,
+      hasActiveZoneMinutes: true,
+      hasStartTime: true,
+      _synthetic: true,
+    });
+  }
+  // sort sessions by start time
+  sessions.sort((a, b) => a.startTime.localeCompare(b.startTime));
+  return sessions;
+}
+
+/**
+ * Gap-fill exercise log. Keeps ALL real sessions; only synthesizes for days AFTER the
+ * last real session date (the migration void) — so genuine historical rest days are NOT
+ * given fake workouts. `realActivities` = normalized entries with `startDate`.
+ */
+function fillExerciseLog(username, realActivities, startDate, endDate) {
+  const real = Array.isArray(realActivities) ? realActivities.slice() : [];
+  const byDate = new Set(real.map((a) => a.startDate));
+  let maxRealDate = null;
+  for (const a of real) if (!maxRealDate || a.startDate > maxRealDate) maxRealDate = a.startDate;
+  const out = real.slice();
+  if (isFill()) {
+    for (const d of eachDate(startDate, endDate)) {
+      if (byDate.has(d)) continue;
+      if (maxRealDate && d <= maxRealDate) continue; // within real coverage → genuine rest day
+      out.push(...synthExerciseSessions(username, d));
+    }
+  }
+  out.sort((a, b) => `${a.startDate}T${a.startTime || ""}`.localeCompare(`${b.startDate}T${b.startTime || ""}`));
+  return { activities: out };
+}
+
 module.exports = {
   SYNTHETIC_MODE,
   periodToRange,
@@ -420,8 +550,12 @@ module.exports = {
   fillSpo2Single,
   fillHeartSeries,
   fillActivitySummary,
+  fillAzmRange,
+  fillExerciseLog,
   synthHrv,
   synthBr,
+  synthAzm,
+  synthExerciseSessions,
   // exposed for tests
   _internal: { synthSleep, synthSteps, synthActivityValue, eachDate, vitalityFactor },
 };

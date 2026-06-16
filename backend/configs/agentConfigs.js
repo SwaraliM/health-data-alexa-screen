@@ -287,9 +287,12 @@ TOPIC BUNDLES — always fetch the full bundle for the inferred topic:
 
 SLEEP: sleep_minutes, sleep_deep, sleep_light, sleep_rem, sleep_awake, sleep_efficiency, breathing_rate, spo2, resting_hr
 ACTIVITY: steps, calories, distance, floors, resting_hr
+EXERCISE / WORKOUTS (mentions exercise, workout, gym, training, active zone minutes, HIIT): active_zone_minutes, walk_minutes, hiit_minutes, calories, steps
 HEART: resting_hr, hrv, steps, sleep_minutes
 RESPIRATORY: breathing_rate, spo2, resting_hr, sleep_efficiency
 GENERAL WELLNESS: steps, calories, sleep_minutes, sleep_deep, sleep_rem, sleep_efficiency, resting_hr, hrv
+
+NOTE on exercise metrics: active_zone_minutes is daily Fitbit Active Zone Minutes (intensity). walk_minutes and hiit_minutes are minutes spent in those specific logged workout types per day — chart them together as a stacked_bar/grouped_bar to show workout-type breakdown. Do NOT mix minute metrics with steps/calories in the same stage.
 
 ANALYSIS_GOAL — write an inferential goal, not a data description:
 Instead of: "Show sleep duration for two nights"
@@ -1072,7 +1075,8 @@ explicit_metrics: Only what the user literally mentioned.
 inferred_metrics: What would ENRICH the answer, even if the user did not mention it.
   Use these complete topic bundles — never return fewer than 3 items:
   SLEEP topic (any mention of sleep, last night, tired, rest) → ["sleep_minutes","sleep_deep","sleep_rem","sleep_light","sleep_awake","sleep_efficiency","breathing_rate","spo2"]
-  ACTIVITY topic (steps, walking, active, exercise) → ["steps","calories","distance","floors","resting_hr"]
+  ACTIVITY topic (steps, walking, active, move) → ["steps","calories","distance","floors","resting_hr"]
+  EXERCISE/WORKOUTS topic (exercise, workout, gym, training, HIIT, active zone minutes) → ["active_zone_minutes","walk_minutes","hiit_minutes","calories","steps"]
   HEART topic (heart, heart rate, pulse, bpm) → ["resting_hr","hrv","steps","sleep_minutes"]
   GENERAL/VAGUE ("how am I doing", "this week", "overall") → ["steps","calories","sleep_minutes","sleep_deep","sleep_rem","resting_hr","hrv"]
 
@@ -1162,8 +1166,11 @@ TOPIC BUNDLES (always use the complete list — never a subset):
 SLEEP (any mention of sleep, rest, last night, tired, rested, how did I sleep):
   → sleep_minutes, sleep_deep, sleep_light, sleep_rem, sleep_awake, sleep_efficiency, breathing_rate, spo2, resting_hr
 
-ACTIVITY (any mention of steps, walking, active, exercise, movement, did I move):
+ACTIVITY (any mention of steps, walking, active, movement, did I move):
   → steps, calories, distance, floors, resting_hr
+
+EXERCISE / WORKOUTS (any mention of exercise, workout, gym, training, HIIT, active zone minutes, what workouts):
+  → active_zone_minutes, walk_minutes, hiit_minutes, calories, steps
 
 HEART (any mention of heart, heart rate, pulse, cardiovascular, bpm):
   → resting_hr, hrv, steps, sleep_minutes

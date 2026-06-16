@@ -470,6 +470,77 @@ function adaptActivityGoals(payload) {
   return result;
 }
 
+/**
+ * Active Zone Minutes daily series → metric "active_zone_minutes".
+ * Fitbit shape: { "activities-active-zone-minutes": [ { dateTime, value: { activeZoneMinutes, ... } } ] }
+ */
+function adaptAzmRange(payload) {
+  const rows = asArray(payload?.["activities-active-zone-minutes"]);
+  const adapted = rows
+    .map((item) => {
+      const timestamp = String(item?.dateTime || item?.date || "").trim();
+      const value = safeNumber(item?.value?.activeZoneMinutes ?? item?.value);
+      if (!timestamp || value == null) return null;
+      return {
+        timestamp,
+        label: inferLabelFromTimestamp(timestamp),
+        metric: "active_zone_minutes",
+        value,
+        meta: {
+          fatBurn: safeNumber(item?.value?.fatBurnActiveZoneMinutes),
+          cardio: safeNumber(item?.value?.cardioActiveZoneMinutes),
+          peak: safeNumber(item?.value?.peakActiveZoneMinutes),
+        },
+      };
+    })
+    .filter(Boolean);
+  adapterLog("azm adapted", { points: adapted.length });
+  return adapted;
+}
+
+/**
+ * Named exercise sessions → per-day per-type minute metrics (walk_minutes, hiit_minutes).
+ * Input shape: { activities: [ { startDate, name|activityParentName, duration(ms), calories } ] }
+ * Aggregates total session minutes per day per activity type.
+ */
+const EXERCISE_TYPE_TO_METRIC = {
+  Walk: "walk_minutes",
+  HIIT: "hiit_minutes",
+};
+
+function adaptExerciseSessionsRange(payload) {
+  const rows = asArray(payload?.activities);
+  // accumulate minutes & calories per date+metric
+  const byDateMetric = new Map(); // `${date}|${metric}` -> { minutes, calories }
+  for (const a of rows) {
+    const date = String(a?.startDate || a?.dateTime || "").slice(0, 10);
+    const name = a?.activityParentName || a?.name || a?.activityName;
+    const metric = EXERCISE_TYPE_TO_METRIC[name];
+    if (!date || !metric) continue;
+    const minutes = safeNumber(a?.duration) != null ? safeNumber(a.duration) / 60000 : safeNumber(a?.durationMin);
+    if (minutes == null) continue;
+    const key = `${date}|${metric}`;
+    const cur = byDateMetric.get(key) || { minutes: 0, calories: 0 };
+    cur.minutes += minutes;
+    cur.calories += safeNumber(a?.calories) || 0;
+    byDateMetric.set(key, cur);
+  }
+  const adapted = [];
+  for (const [key, agg] of byDateMetric.entries()) {
+    const [date, metric] = key.split("|");
+    adapted.push({
+      timestamp: date,
+      label: inferLabelFromTimestamp(date),
+      metric,
+      value: Math.round(agg.minutes),
+      meta: { calories: Math.round(agg.calories) },
+    });
+  }
+  adapted.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  adapterLog("exercise sessions adapted", { points: adapted.length });
+  return adapted;
+}
+
 module.exports = {
   adaptStepsRange,
   adaptCaloriesRange,
@@ -481,6 +552,8 @@ module.exports = {
   adaptBreathingRateRange,    // NEW
   adaptSpo2Range,             // NEW
   adaptActivityGoals,         // NEW
+  adaptAzmRange,              // NEW
+  adaptExerciseSessionsRange, // NEW
   adaptRestingHeartRateRange,
   adaptHrvRange,
   adaptIntradayHeart,

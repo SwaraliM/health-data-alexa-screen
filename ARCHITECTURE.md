@@ -454,6 +454,15 @@ realistic synthetic values **in the exact raw Fitbit JSON shape**, so the existi
 > NOTE: This is a demo/runtime resilience layer. To disable once Google Health data is restored,
 > set `SYNTHETIC_MODE` to anything other than `"fill"` (the fill helpers become pass-throughs).
 
+### Exercise data (Active Zone Minutes + named sessions)
+Fitbit exposes exercise data three ways: **named sessions** (`/activities/date/{date}.json` → `activities[]`, and `/activities/list.json`), **Active Zone Minutes** (`/activities/active-zone-minutes/...`), and active-minute buckets in the summary. Amy's real logged sessions are **Walk** (id 90013) and **HIIT** (id 91040); AZM exists historically but is empty for recent dates (migration gap).
+
+New endpoints in `fitbitRouter.js` (both gap-filled via `fetchOrEmpty` + synthetic):
+- `GET /:username/activities/azm/range/date/:start/:end` → AZM time series (`activities-active-zone-minutes`).
+- `GET /:username/activities/log/range/date/:start/:end` → normalized logged **sessions** (`{ activities: [...] }`); pulls real sessions from `/activities/list.json` (the `raw/*` passthrough now forwards query strings) and synthesizes ONLY the post-migration void (days after the last real session) — genuine historical rest days are left empty.
+
+New canonical metrics (`metricResolver.js`): `active_zone_minutes`, `walk_minutes`, `hiit_minutes` (+ "exercise"/"workout" concept + bundle). Adapters (`endpointAdapters.js`): `adaptAzmRange`, and `adaptExerciseSessionsRange` which aggregates sessions into **per-type daily minute metrics** (walk_minutes/hiit_minutes) — mirroring the sleep-stages multi-metric pattern. `dataFetchService.js` routes these (one exercise-log fetch feeds both per-type metrics, like the sleep-stage dedup block). Planner/classifier/executor bundles in `agentConfigs.js` include an EXERCISE/WORKOUTS bundle so questions like "how much did I exercise?" / "what workouts did I do?" pick these metrics and chart them (bar / grouped_bar / stacked_bar). Synthetic generators (`syntheticFitbit.js`): `synthAzm` (log-normal, fat-burn dominant), `synthExerciseSessions` (Walk/HIIT only, weekday-weighted active-day probability, real per-session distributions), `fillAzmRange`, `fillExerciseLog`.
+
 ---
 
 ## Data Fetch Service (`backend/services/qna/dataFetchService.js`)

@@ -343,6 +343,62 @@ fitbitRouter.get("/:username/activities/range/:resource/date/:startDate/:endDate
   }
 });
 
+/**
+ * GET /:username/activities/azm/range/date/:startDate/:endDate
+ * Active Zone Minutes time series. Fitbit: /1/user/-/activities/active-zone-minutes/date/:start/:end.json
+ */
+fitbitRouter.get("/:username/activities/azm/range/date/:startDate/:endDate", async (req, res) => {
+  const { startDate, endDate } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/activities/active-zone-minutes/date/${startDate}/${endDate}.json`;
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillAzmRange(user.username, json, startDate, endDate));
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
+/**
+ * GET /:username/activities/log/range/date/:startDate/:endDate
+ * Logged exercise SESSIONS (named workouts). Fitbit: /1/user/-/activities/list.json (one of before/afterDate).
+ * Returns normalized { activities: [ { startDate, name, activityId, duration(ms), calories, distance, steps, startTime } ] }
+ * with synthetic gap-fill for the post-migration void (real sessions always kept).
+ */
+fitbitRouter.get("/:username/activities/log/range/date/:startDate/:endDate", async (req, res) => {
+  const { startDate, endDate } = req.params;
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  try {
+    const url = `https://api.fitbit.com/1/user/-/activities/list.json?afterDate=${startDate}&sort=asc&limit=100&offset=0`;
+    const raw = await fetchOrEmpty(user, url);
+    const rawList = Array.isArray(raw?.activities) ? raw.activities : [];
+    // Normalize Fitbit list.json entries → uniform session shape, filtered to the window.
+    const real = rawList
+      .map((a) => {
+        const startDateOnly = String(a?.startTime || a?.originalStartTime || "").slice(0, 10);
+        return {
+          startDate: startDateOnly,
+          name: a?.activityName || a?.name || a?.activityParentName,
+          activityId: a?.activityTypeId || a?.activityId,
+          duration: a?.duration,
+          calories: a?.calories,
+          distance: a?.distance,
+          steps: a?.steps,
+          startTime: String(a?.startTime || "").slice(11, 16),
+        };
+      })
+      .filter((a) => a.startDate && a.startDate >= startDate && a.startDate <= endDate);
+
+    return res.status(200).json(synthetic.fillExerciseLog(user.username, real, startDate, endDate));
+  } catch (error) {
+    return handleRouteError(res, error);
+  }
+});
+
 /** -------------------------------------------------------------------------
  * Body endpoints
  * ---------------------------------------------------------------------- */
@@ -712,7 +768,10 @@ fitbitRouter.get("/:username/raw/*", async (req, res) => {
 
   try {
     const fitbitPath = req.params[0];
-    const url = `https://api.fitbit.com/${fitbitPath}`;
+    // Forward the original query string (e.g. /activities/list.json?afterDate=...&limit=...)
+    const qIndex = req.originalUrl.indexOf("?");
+    const queryString = qIndex >= 0 ? req.originalUrl.slice(qIndex) : "";
+    const url = `https://api.fitbit.com/${fitbitPath}${queryString}`;
 
     const json = await fitbitGetJson(user, url);
     return res.status(200).json(json);
