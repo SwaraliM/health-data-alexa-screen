@@ -98,6 +98,27 @@ function looksLikeClarification(text = "") {
   return CLARIFICATION_PATTERN.test(cleaned);
 }
 
+// Evaluative follow-ups about the current chart ("is that good or bad?", "is this normal
+// for my age?", "should I be worried?"). They reference the visible chart deictically and
+// ask for a judgement — answer in-context rather than ignoring or starting a new analysis.
+const EVALUATIVE_FOLLOWUP_PATTERN = /\b(is|are|was|were)\s+(that|this|those|these|it|they|my)\b.*\b(normal|good|bad|healthy|ok|okay|fine|alright|concerning|worrying|worried|problem|high|low|enough|right|safe)\b|\bshould\s+i\s+(be\s+)?(worried|worry|concerned)\b|\b(is|are)\s+(that|this|those|these)\s+(a\s+)?(problem|concern|bad|good|normal|healthy|sign)\b|\bgood\s+or\s+bad\b|\bis\s+that\s+(too|enough)\b/i;
+
+function looksLikeEvaluativeFollowup(text = "") {
+  const cleaned = normalizeUtterance(text);
+  if (!cleaned) return false;
+  return EVALUATIVE_FOLLOWUP_PATTERN.test(cleaned);
+}
+
+// Generic wellness openers an older adult might say instead of naming a metric
+// ("how am I doing?", "how have I been lately?", "check in on my health").
+const GENERIC_WELLNESS_PATTERN = /\bhow\s+(am|have|are|is|'?s)\s+(i|i'?ve|my|things|everything|it)\b|\bhow\s+am\s+i\s+doing\b|\bhow\s+have\s+i\s+been\b|\bcheck\s+(in|up)\b|\bhow'?s\s+my\s+health\b|\bam\s+i\s+(doing\s+)?(ok|okay|alright|well|healthy)\b|\bhow\s+do\s+i\s+look\b/i;
+
+function looksLikeGenericWellness(text = "") {
+  const cleaned = normalizeUtterance(text);
+  if (!cleaned) return false;
+  return GENERIC_WELLNESS_PATTERN.test(cleaned);
+}
+
 function hasHealthSignal(text = "") {
   return HEALTH_KEYWORD_PATTERN.test(text);
 }
@@ -105,6 +126,8 @@ function hasHealthSignal(text = "") {
 function isExplicitHealthQuestion(text = "") {
   const cleaned = normalizeUtterance(text);
   if (!cleaned) return false;
+  // Generic wellness openers ("how am I doing") have no metric keyword but ARE health questions.
+  if (looksLikeGenericWellness(cleaned)) return true;
   if (!hasHealthSignal(cleaned)) return false;
   if (HEALTH_QUESTION_PREFIX_PATTERN.test(cleaned)) return true;
   if (HEALTH_QUESTION_CONTEXT_PATTERN.test(cleaned) && cleaned.split(" ").length >= 3) return true;
@@ -225,11 +248,11 @@ async function resolveAlexaTurn({
     hasActiveInteraction &&
     CHART_VISIBLE_MODES.has(mode) &&
     chartContext &&
-    looksLikeClarification(normalizedUtterance)
+    (looksLikeClarification(normalizedUtterance) || looksLikeEvaluativeFollowup(normalizedUtterance))
   ) {
     return {
       kind: "chart_qna",
-      action: "explain",
+      action: looksLikeEvaluativeFollowup(normalizedUtterance) ? "evaluate" : "explain",
       interruptsActiveInteraction: false,
       resolvedUtterance,
       supplementalMetrics: [],
@@ -328,6 +351,8 @@ module.exports = {
   isExplicitHealthQuestion,
   looksLikeQuestion,
   looksLikeClarification,
+  looksLikeEvaluativeFollowup,
+  looksLikeGenericWellness,
   normalizeControlAction,
   normalizeUtterance,
   resolveAlexaTurn,
