@@ -85,7 +85,9 @@ loginRouter.post("/fitbit-exchange", async (req, res) => {
     return res.status(500).json({ message: "Fitbit credentials not configured on server." });
   }
 
-  const redirectUri = (process.env.FITBIT_REDIRECT_URI || `${req.protocol}://${req.get("host")}/auth-callback`).trim();
+  const host = req.get("host");
+  const protocol = req.get("x-forwarded-proto") || req.protocol;
+  const redirectUri = (process.env.FITBIT_REDIRECT_URI || `${protocol}://${host}/auth-callback`).trim();
 
   try {
     const encodedCredentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
