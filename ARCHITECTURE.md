@@ -427,6 +427,35 @@ These replace sending raw rows to GPT. The evidence bundle is ~30 lines of pre-c
 
 ---
 
+## Synthetic Fitbit Gap-Fill (`backend/services/fitbit/syntheticFitbit.js`)
+
+After Fitbit migrated to Google Health, some metrics (notably **sleep** and **HRV**) stopped
+returning data for recent date windows. To keep QnA, charts, and the dashboard working, the
+Fitbit proxy (`backend/routers/fitbitRouter.js`) gap-fills missing days with deterministic,
+realistic synthetic values **in the exact raw Fitbit JSON shape**, so the existing adapters in
+`endpointAdapters.js` normalize them identically to real data — nothing downstream changes.
+
+- **Mode:** hardcoded gap-fill (`SYNTHETIC_MODE = "fill"`). Real entries are **never** overwritten.
+- **Gap definition:** a date in the requested range that is absent, has a null/empty value, or
+  (for activity series) a `0` value (device-not-worn). Real values `> 0` are preserved.
+- **Upstream failures:** `fitbitRouter.fetchOrEmpty()` treats Fitbit unavailability (e.g. removed
+  metrics, transient errors) as "no data" so the filler can supply values; real auth/token errors
+  (`invalid_token` / 401) are still surfaced.
+- **Determinism:** seeded PRNG keyed by `username|date|metric`, so the same date always yields the
+  same values (stable charts, consistent "yesterday"). A shared per-day "vitality" factor couples
+  metrics (better-recovery days → higher HRV + sleep, lower resting HR).
+- **Model source:** baked-in distribution parameters (mean/sd, weekday patterns, stage fractions)
+  were derived from amy's REAL data window **2026-03-23 → 2026-05-10** (sleep stages, HRV
+  dailyRmssd, breathing rate, SpO2, resting HR, activity series).
+- **Wired endpoints:** sleep (single/range), hrv, br, spo2, heart (period/range), activities
+  (summary, period, range). Real metrics that still return data (steps/calories/HR) keep their
+  real values and only have genuine gaps filled.
+
+> NOTE: This is a demo/runtime resilience layer. To disable once Google Health data is restored,
+> set `SYNTHETIC_MODE` to anything other than `"fill"` (the fill helpers become pass-throughs).
+
+---
+
 ## Data Fetch Service (`backend/services/qna/dataFetchService.js`)
 
 Extracted from orchestrator — all Fitbit fetching logic:

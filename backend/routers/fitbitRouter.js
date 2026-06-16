@@ -16,6 +16,21 @@ const fitbitRouter = express.Router();
 
 const User = require("../models/Users");
 const { USER_NOT_FOUNT, SERVER_ERROR, TOKEN_INVALID } = require("../../utils/constants");
+const synthetic = require("../services/fitbit/syntheticFitbit");
+
+/**
+ * Fetch from Fitbit, but treat upstream UNAVAILABILITY (e.g. metrics removed after the
+ * Google Health migration, or transient request failures) as "no data" so the synthetic
+ * gap-filler can supply realistic values. Real auth/token errors are still surfaced.
+ */
+async function fetchOrEmpty(user, url) {
+  try {
+    return await fitbitGetJson(user, url);
+  } catch (error) {
+    if (error?.errorType === "invalid_token" || Number(error?.status) === 401) throw error;
+    return null;
+  }
+}
 
 const FITBIT_ROUTER_DEBUG = process.env.FITBIT_ROUTER_DEBUG !== "false";
 
@@ -175,8 +190,8 @@ fitbitRouter.get("/:username/activities/summary/:date", async (req, res) => {
   if (!user) return;
 
   try {
-    const json = await fitbitGetJson(user, `https://api.fitbit.com/1/user/-/activities/date/${date}.json`);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, `https://api.fitbit.com/1/user/-/activities/date/${date}.json`);
+    return res.status(200).json(synthetic.fillActivitySummary(user.username, json, date));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -293,8 +308,9 @@ fitbitRouter.get("/:username/activities/period/:resource/date/:date/:period", as
 
   try {
     const url = `https://api.fitbit.com/1/user/-/activities/${resource}/date/${date}/${period}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    const [rangeStart, rangeEnd] = synthetic.periodToRange(date, period);
+    return res.status(200).json(synthetic.fillActivitySeries(user.username, json, resource, rangeStart, rangeEnd));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -320,8 +336,8 @@ fitbitRouter.get("/:username/activities/range/:resource/date/:startDate/:endDate
 
   try {
     const url = `https://api.fitbit.com/1/user/-/activities/${resource}/date/${startDate}/${endDate}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillActivitySeries(user.username, json, resource, startDate, endDate));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -443,8 +459,9 @@ fitbitRouter.get("/:username/heart/period/date/:date/:period", async (req, res) 
 
   try {
     const url = `https://api.fitbit.com/1/user/-/activities/heart/date/${date}/${period}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    const [rangeStart, rangeEnd] = synthetic.periodToRange(date, period);
+    return res.status(200).json(synthetic.fillHeartSeries(user.username, json, rangeStart, rangeEnd));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -461,8 +478,8 @@ fitbitRouter.get("/:username/heart/range/date/:startDate/:endDate", async (req, 
 
   try {
     const url = `https://api.fitbit.com/1/user/-/activities/heart/date/${startDate}/${endDate}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillHeartSeries(user.username, json, startDate, endDate));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -479,8 +496,8 @@ fitbitRouter.get("/:username/hrv/single-day/date/:date", async (req, res) => {
 
   try {
     const url = `https://api.fitbit.com/1/user/-/hrv/date/${date}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillKeyedSeries(user.username, json, "hrv", date, date, synthetic.synthHrv));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -493,8 +510,8 @@ fitbitRouter.get("/:username/hrv/range/date/:startDate/:endDate", async (req, re
 
   try {
     const url = `https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${endDate}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillKeyedSeries(user.username, json, "hrv", startDate, endDate, synthetic.synthHrv));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -511,8 +528,8 @@ fitbitRouter.get("/:username/br/single-day/date/:date", async (req, res) => {
 
   try {
     const url = `https://api.fitbit.com/1/user/-/br/date/${date}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillKeyedSeries(user.username, json, "br", date, date, synthetic.synthBr));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -525,8 +542,8 @@ fitbitRouter.get("/:username/br/range/date/:startDate/:endDate", async (req, res
 
   try {
     const url = `https://api.fitbit.com/1/user/-/br/date/${startDate}/${endDate}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillKeyedSeries(user.username, json, "br", startDate, endDate, synthetic.synthBr));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -543,8 +560,8 @@ fitbitRouter.get("/:username/spo2/single-day/date/:date", async (req, res) => {
 
   try {
     const url = `https://api.fitbit.com/1/user/-/spo2/date/${date}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillSpo2Single(user.username, json, date));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -557,8 +574,8 @@ fitbitRouter.get("/:username/spo2/range/date/:startDate/:endDate", async (req, r
 
   try {
     const url = `https://api.fitbit.com/1/user/-/spo2/date/${startDate}/${endDate}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillSpo2Range(user.username, json, startDate, endDate));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -588,8 +605,8 @@ fitbitRouter.get("/:username/sleep/single-day/date/:date", async (req, res) => {
 
   try {
     const url = `https://api.fitbit.com/1.2/user/-/sleep/date/${date}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillSleepSingle(user.username, json, date));
   } catch (error) {
     return handleRouteError(res, error);
   }
@@ -602,8 +619,8 @@ fitbitRouter.get("/:username/sleep/range/date/:startDate/:endDate", async (req, 
 
   try {
     const url = `https://api.fitbit.com/1.2/user/-/sleep/date/${startDate}/${endDate}.json`;
-    const json = await fitbitGetJson(user, url);
-    return res.status(200).json(json);
+    const json = await fetchOrEmpty(user, url);
+    return res.status(200).json(synthetic.fillSleepRange(user.username, json, startDate, endDate));
   } catch (error) {
     return handleRouteError(res, error);
   }
